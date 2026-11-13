@@ -52,8 +52,9 @@ We have not found the cause yet. The release does not promise bit-identical text
 
 ## Which GPUs, which systems?
 
-Only **Windows 11 and the RTX 5090** (32 GB) are supported and tested. The kernels are written for this card (compute capability 12.0). Other
-NVIDIA cards have not been tested with this release; results from them are welcome (see [CONTRIBUTING.md](../CONTRIBUTING.md)). Linux, macOS and
+Only **Windows 11 and the RTX 5090** (32 GB) are supported and tested. The kernels are built for compute capability 12.0, which
+the whole RTX 50 series shares, and the quickstart stops on any card other than the RTX 5090. Other NVIDIA cards have not been tested with
+this release; results from them are welcome (see [CONTRIBUTING.md](../CONTRIBUTING.md)). Linux, macOS and
 AMD GPUs are not supported, and there is no Linux build. Extending support - 24 GB and 16 GB RTX cards first, then AMD and Mac - is what the
 crowdfunding campaign is for; the order and the conditions are on the [campaign page](https://camp-fire.jp/projects/992233/view).
 

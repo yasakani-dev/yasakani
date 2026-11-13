@@ -40,15 +40,15 @@ Tokens written per second, on one RTX 5090 (stock 600 W, no overclocking), the s
 
 | Engine | Code | Story | Translation | Structured | Code edit | JSONL edit | Long JSONL |
 |---|---|---|---|---|---|---|---|
-| **YASAKANI fastest model** | **529** | **285** | **494** | 909 | **1,222** | **1,156** | **1,260** |
+| **YASAKANI fastest model** | **529** | **201** | **494** | 909 | **1,222** | **1,156** | **1,260** |
 | **YASAKANI quality model** | 486 | 179 | 483 | **930** | 1,136 | 1,151 | 1,160 |
 | MegaCapybara 1.39 Tiny | 465 | 164 | 268 | 599 | 441 | 658 | 666 |
-| mkyt v0.3.2 | 395 | 204 | 374 | 555 | 423 | 634 | 639 |
+| mkyt v0.3.2 | 395 | 181 | 374 | 555 | 423 | 634 | 639 |
 | ignis v0.9.6 | 330 | 167 | 298 | 439 | 331 | 510 | 514 |
 | NInfer (November 2 build) | 264 | 123 | 257 | 386 | 295 | 443 | 438 |
-| vLLM 0.31.0 | 290 | 150 | 261 | 354 | 241 | 426 | 431 |
+| vLLM 0.31.0 | 290 | 148 | 261 | 354 | 241 | 426 | 431 |
 | SGLang 0.5.22 | 252 | 129 | 246 | 371 | 430 | 466 | 451 |
-| llama.cpp b11700 | 242 | 139 | 232 | 337 | 244 | 360 | 362 |
+| llama.cpp b11700 | 242 | 133 | 232 | 337 | 244 | 360 | 362 |
 | TensorFold 0.6.6 | 181 | 104 | 172 | 405 | 383 | 408 | 261 |
 
 **Thinking on** (temperature 1.0, top-p 0.95, top-k 20, min-p 0; the fastest run of each task):
@@ -75,6 +75,16 @@ What these tables are, and are not:
 * Thinking off: the average leaves out runs with a repetition loop or an unrequested tool call, by one rule applied to every engine. This can
   change how many tasks a category holds. For the fastest model's "Code" it matters: 900 tok/s before the exclusion, 529 after; we do not use
   900 as a figure for practical code generation. The table before the exclusion is in [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md).
+* **On November 14, 2026 the rule for repetition was tightened and the table was made again.** The first rule missed some answers that
+  repeat whole paragraphs. The fastest model's "Story" value of 285 included such runs (the English mystery story, 454 tok/s). With the new
+  rule (for story and translation: a run is left out when lines that occur more than once make up 20% or more of its lines), applied to
+  every engine alike, only the "Story" column changes: fastest model 285 -> 201, mkyt 204 -> 181, vLLM 150 -> 148, llama.cpp 139 -> 133.
+  The table made again, and the 12 prompts one by one, are in [tools/speed/](tools/speed/).
+* The large gaps are in the 3 tasks of our own (1.8 to 2.8 times the next engine). These tasks mostly copy their input, the kind of
+  output that speculative decoding predicts best. In the four categories of the 12 published prompts the fastest model is 1.1 to 1.5
+  times the next engine. For 3 of the 12 prompts (CUDA code, TypeScript code, the English mystery story) the fastest model's answer was
+  a repetition loop or an unrequested tool call, so they are not compared. The quality model's "Story" value is about the same as the
+  next engine's (179 against 181).
 * Thinking on: for each task the fastest run is taken, then the category is averaged. YASAKANI chose from 5 runs, the other engines from 2,
   so the number of tries is not equal; the table of plain averages is in [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md). Many runs ended at the
   output limit, so this is not a comparison of time-to-answer or of accuracy.
@@ -145,7 +155,7 @@ of the nvidia-smi values before and after loading).
 
 | | |
 |---|---|
-| GPU | NVIDIA **GeForce RTX 5090** (32 GB). The kernels are built for this card (compute capability 12.0) only. |
+| GPU | NVIDIA **GeForce RTX 5090** (32 GB). The kernels are built for compute capability 12.0, which the whole RTX 50 series shares, but only the RTX 5090 has been tested, and the quickstart stops on any other card |
 | OS | **Windows 11**, 64-bit (the only version tested) |
 | Driver | a current NVIDIA driver (tested with 616.92) |
 | Software | Microsoft Visual C++ 2015-2022 x64 runtime, Python 3.10 or newer |

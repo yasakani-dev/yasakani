@@ -31,6 +31,13 @@ left out by one saved rule shared by all engines. The exclusion can change the n
 the value is 900 tok/s before the exclusion and 529 tok/s after it. We do not use the former as a representative figure for practical code
 generation. The table before the exclusion is kept below.
 
+On November 14, 2026 the rule for repetition was tightened and the table of the README was made again: for story and translation, a run is
+also left out when lines that occur more than once make up 20% or more of its lines, for every engine alike. Only the "Story" column
+changed (fastest model 285 -> 201, mkyt 204 -> 181, vLLM 150 -> 148, llama.cpp 139 -> 133). The table is the output of
+[`tools/speed/tables_strict.py`](../tools/speed/tables_strict.py);
+[`tools/speed/SPEED_TABLES_STRICT.md`](../tools/speed/SPEED_TABLES_STRICT.md) also lists the 12 prompts one by one. The first tally is kept in
+[`bench/20261108/tables/`](../bench/20261108/tables/).
+
 Thinking on uses temperature 1.0, top-p 0.95, top-k 20, min-p 0. It is a comparison of records: the fastest run of each task is chosen and
 averaged per category. YASAKANI's value is chosen from 5 runs and the other engines' from 2, so the number of tries is not equal. The table
 tallied by plain averages is also given below. Many runs ended at the output limit, so this is not a comparison of the time to reach an answer
@@ -48,15 +55,15 @@ November 6. This does not rank the latest version of every program, or every use
 
 | Engine | Code | Story | Translation | Structured | Code edit | JSONL edit | Long JSONL |
 |---|---|---|---|---|---|---|---|
-| YASAKANI fastest model | 529 | 285 | 494 | 909 | 1,222 | 1,156 | 1,260 |
+| YASAKANI fastest model | 529 | 201 | 494 | 909 | 1,222 | 1,156 | 1,260 |
 | YASAKANI quality model | 486 | 179 | 483 | 930 | 1,136 | 1,151 | 1,160 |
 | MegaCapybara 1.39 Tiny | 465 | 164 | 268 | 599 | 441 | 658 | 666 |
-| mkyt v0.3.2 | 395 | 204 | 374 | 555 | 423 | 634 | 639 |
+| mkyt v0.3.2 | 395 | 181 | 374 | 555 | 423 | 634 | 639 |
 | ignis v0.9.6 | 330 | 167 | 298 | 439 | 331 | 510 | 514 |
 | NInfer (November 2 build) | 264 | 123 | 257 | 386 | 295 | 443 | 438 |
-| vLLM 0.31.0 | 290 | 150 | 261 | 354 | 241 | 426 | 431 |
+| vLLM 0.31.0 | 290 | 148 | 261 | 354 | 241 | 426 | 431 |
 | SGLang 0.5.22 | 252 | 129 | 246 | 371 | 430 | 466 | 451 |
-| llama.cpp b11700 | 242 | 139 | 232 | 337 | 244 | 360 | 362 |
+| llama.cpp b11700 | 242 | 133 | 232 | 337 | 244 | 360 | 362 |
 | TensorFold 0.6.6 | 181 | 104 | 172 | 405 | 383 | 408 | 261 |
 
 ## Thinking on: the table of the README (fastest run of each task, tok/s)

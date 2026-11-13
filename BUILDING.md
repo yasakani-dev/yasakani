@@ -11,7 +11,7 @@ The release page has a prebuilt `yskn.dll`. You can also build it yourself. You 
 | C++ compiler | Microsoft Visual C++ 19.44.35226 (Visual Studio 2022 Build Tools, toolset 14.44.35207) |
 | CUDA | NVIDIA CUDA Toolkit 13.2 (nvcc 13.2.78) |
 | Build tools | CMake (3.24 or newer is required) and Ninja |
-| Target | compute capability 12.0 (`sm_120`): the RTX 5090 only |
+| Target | compute capability 12.0 (`sm_120`), which the whole RTX 50 series shares. Tested on the RTX 5090 only |
 
 The `yskn.dll` on the release page is this build (SHA-256 `0f5d973b791c8d66034d87bdfc7f2c018718dc0e851b9a6ee6dc1eb275150bbb`). It was built
 from this source with the two commands below (the CUDA compiler was named explicitly with `-DCMAKE_CUDA_COMPILER`), and it is the build

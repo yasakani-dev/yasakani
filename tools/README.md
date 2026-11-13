@@ -10,6 +10,7 @@ Everything here is for checking what this project publishes without having to tr
 | [`yskn_decode.py`](yskn_decode.py) | reads a `.yskn` model file without the engine: lists what is inside, turns a tensor back into ordinary weights, compares every tensor with the original checkpoint. Python and numpy, no GPU |
 | [`yskn_fixture.py`](yskn_fixture.py), [`testdata/`](testdata/) | a small test file in the same format, and the values a reader must get from it |
 | [`records/`](records/) | what `yskn_decode.py compare` gives for the two released models, tensor by tensor |
+| [`speed/`](speed/) | the thinking-off speed table made again with a stricter rule for repetition, the same for every engine, and the 12 published prompts one by one |
 | [`quality/`](quality/) | the quality measurement: the 20 evaluation windows, a program that makes the reference from the original model, a program that measures a released model with the engine |
 
 The file format is defined in [docs/FORMAT.md](../docs/FORMAT.md).
