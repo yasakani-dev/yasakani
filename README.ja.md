@@ -239,6 +239,7 @@ yasakani serve --model-dir D:\models\qwen38-quality --dll D:\yasakani\yskn.dll
 掲載を希望された方のお名前は、このリポジトリに載せ、起動時のクレジットにも以後の版から反映します。開発の様子や測定の結果は X（[https://x.com/yasakani_dev](https://x.com/yasakani_dev)）で発信しています。
 
 **海外にお住まいの方へ：** この CAMPFIRE のクラウドファンディングは、日本にお住まいの方だけが支援できます（CAMPFIRE の決まりで、データでお届けするお礼を海外の方には出せないため）。
+海外からは GitHub Sponsors（[https://github.com/sponsors/yasakani-dev](https://github.com/sponsors/yasakani-dev)）で支援できます。お礼の品はありません。使い道は同じで、対応する GPU を増やすための検証機材です。
 このリポジトリにスターを付ける、試して測った結果を知らせる、といった形でも力になります。
 
 ## ライセンス

@@ -262,7 +262,9 @@ Supporters who wish to be named are credited in this repository, and in the star
 measurements: https://x.com/yasakani_dev
 
 **Outside Japan:** the CAMPFIRE campaign is only for backers living in Japan (CAMPFIRE's rules do not allow digital rewards, like this
-campaign's, for backers abroad). Starring this repository, trying the engine and reporting what you measure helps a lot.
+campaign's, for backers abroad). From abroad you can support the development through GitHub Sponsors:
+https://github.com/sponsors/yasakani-dev - there are no rewards, and the support goes to the same purpose, test hardware for more GPUs.
+Starring this repository, trying the engine and reporting what you measure helps a lot too.
 
 ## License
 
