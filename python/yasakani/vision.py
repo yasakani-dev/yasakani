@@ -326,8 +326,8 @@ class VisionProcessor:
 
     def check(self):
         """Check the options at start, before the model loads.  The encoder itself still opens at the first image."""
-        if sys.platform != "win32":
-            raise RuntimeError("image input works only on Windows (it uses the Windows build of llama.cpp b10488)")
+        if sys.platform not in ("win32", "linux"):
+            raise RuntimeError("image input works only on Windows and Linux (it uses llama.cpp b10488)")
         keys = {}
         for option, path in (("--mmproj", self.mmproj), ("--vision-model", self.model)):
             if not path.is_file():
@@ -371,10 +371,12 @@ class VisionProcessor:
         # Replacing a projector/model/backend invalidates cached features, including after a server restart.  The per-image limit
         # changes the features (the image is downsized differently).  The thread count did not change them in our tests (1 to 32
         # threads, bit for bit), but it stays in the key: a cache entry is only reused under exactly the settings that made it.
-        paths = [self.mmproj, self.model, self.llama_dir / "llama.dll", self.llama_dir / "mtmd.dll"]
-        paths += sorted(self.llama_dir.glob("ggml*.dll"))
+        # The projector on the GPU gives slightly different features, so that choice is part of the key too.
+        from ._mtmd import lib_name, use_gpu
+        paths = [self.mmproj, self.model, self.llama_dir / lib_name("llama"), self.llama_dir / lib_name("mtmd")]
+        paths += sorted(self.llama_dir.glob(lib_name("ggml*")))
         files = [(str(p.resolve()), p.stat().st_size, p.stat().st_mtime_ns) for p in paths]
-        return json.dumps(["b10488-cpu-bf16-rne-v2", self.threads, self.max_image_tokens, files]).encode()
+        return json.dumps(["b10488-cpu-bf16-rne-v2", self.threads, self.max_image_tokens, files] + (["gpu"] if use_gpu() else [])).encode()
 
     def _cached(self, key):
         """Features from the memory or the disk cache, or None.  A damaged or unreadable disk entry counts as missing."""

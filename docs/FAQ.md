@@ -119,7 +119,7 @@ downloaded with the one on the release page, and run `yasakani verify` on the mo
 Yes: it serves the OpenAI chat-completions API on `http://127.0.0.1:8765/v1`. Supported request fields, the way the thinking text is returned and the
 loop guard are described in [python/README.md](../python/README.md). It generates one request at a time; `n` above 1
 and `logprobs` are not supported. Tool / function calling is supported since 0.1.1 (`tools` with `tool_choice` `auto` or `none`).
-Images are accepted since 0.1.2 through the optional image input (Windows only; a community contribution, [#4](https://github.com/yasakani-dev/yasakani/pull/4); see
+Images are accepted since 0.1.2 through the optional image input (a community contribution, [#4](https://github.com/yasakani-dev/yasakani/pull/4); see
 [python/README.md](../python/README.md#image-input-optional)).
 
 ## Can I use it commercially?

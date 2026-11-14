@@ -6,7 +6,7 @@ This package is the part you talk to: a local **OpenAI-compatible server**, a **
 whether your files and your installation are the reference ones. The engine itself is the DLL; the package loads it, applies the
 default settings the published numbers were measured with, handles the chat template and the tokenizer, and streams the answer.
 
-Status: version `0.1.2`. Text, and optionally still images (new in 0.1.2, Windows only, see [Image input](#image-input-optional)). One request is generated at a time. Tool calling is new in 0.1.1.
+Status: version `0.1.2`. Text, and optionally still images (new in 0.1.2, see [Image input](#image-input-optional)). One request is generated at a time. Tool calling is new in 0.1.1.
 
 ## What you need
 
@@ -121,7 +121,7 @@ print(r.choices[0].message.tool_calls)
 
 ### Image input (optional)
 
-Image input works on **Windows only**. The engine library already has the entry for image features (`yskn_set_visual`); the server feeds it
+Image input works on Windows and, with llama.cpp built from source, on Linux (see [Linux](#image-input-on-linux) below). The engine library already has the entry for image features (`yskn_set_visual`); the server feeds it
 when it is started with three more files. Without them the server is text only, as before: a request with an image is answered with 400 at
 once, without waiting for a running generation.
 
@@ -174,6 +174,16 @@ server, so delete the folder when you no longer want it.
   which is not published: **87.8** with the quality model, against 89.8 for the original BF16 model in llama.cpp. With the projector on the GPU
   their score fell to 79.6 and 81.6 in two runs, which is why the projector runs on the CPU here. We have not measured image quality ourselves; we checked that it works on an
   RTX 5090 with the quality model and a few simple test images.
+* <a id="image-input-on-linux"></a>**Linux.** There is no llama.cpp release to compare with, so `--llama-dir` is a folder with the shared libraries of
+  llama.cpp b10488 built from source (`libllama.so`, `libmtmd.so`, `libggml.so`, `libggml-base.so` and the backends; the commands are in
+  [BUILDING.md](../BUILDING.md#image-input-on-linux)). Only their presence is checked at start, not a checksum; the structure layout is
+  still checked when the encoder opens. By default the projector runs on the CPU, as on Windows. With the environment variable
+  `YASAKANI_VISION_GPU=1` and a CUDA build of llama.cpp it runs on the GPU **with flash attention switched off**. Measured by the
+  contributor of the Linux port on an RTX 5090, against the features of the CPU: with flash attention the relative error was 3% at 1,024 image
+  tokens and 10% at 4,096; without it 0.6 to 0.7%, at 0.15 s per 1,024-token image and 0.44 s per 2,048-token image instead of 7 s and 20 s
+  on the CPU (14 threads). Without flash attention the GPU memory of an encode grows with the square of the image tokens: about 4 GiB at
+  2,048, and at 4,096 (about 17 GiB) it did not fit next to the model. The image test above has not been repeated in this mode, so it is off
+  by default. The variable is ignored on Windows.
 * Image tokens get Qwen's three-axis positions (time, row, column); the text after an image continues from the largest of them.
 * Requests without images are handled as before: the same prompt tokens and the same answers. After a request with an image the engine
   starts the next prompt from the beginning (no reuse of the earlier turns).
