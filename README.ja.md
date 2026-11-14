@@ -1,5 +1,8 @@
 # YASAKANI（ヤサカニ）
 
+Apple Silicon向け実験版：[macOSアプリ・プリビルド・ビルド手順](docs/MACOS.md)。
+同じ`.yskn`モデルを別実装のMetalバックエンドで実行します。下記CUDA版の測定値とは別です。
+
 **Windows** と **NVIDIA RTX 5090 1 枚**で、**Qwen3.8-27B** を速く動かすローカル AI エンジンです。オープンソース（Apache License 2.0）。
 English: [README.md](README.md)
 

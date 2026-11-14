@@ -47,6 +47,7 @@ class ServerConfig:
             except ValueError:
                 default_thinking_budget = 0
         self.default_thinking_budget = max(0, int(default_thinking_budget))
+        self.web_ui = None
 
 
 class ApiState:
@@ -243,6 +244,18 @@ def make_handler(state: ApiState):
                 return self._json(code, body)
             if self._unauthorized():
                 return
+            if cfg.web_ui is not None and path == "/":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(cfg.web_ui)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; "
+                                 "style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'")
+                self.end_headers()
+                self.wfile.write(cfg.web_ui)
+                return
+            if cfg.web_ui is not None and path == "/webchat/config":
+                return self._json(200, dict(model="custom"))
             if path in ("/v1/models", "/v1/models/"):
                 return self._json(200, dict(object="list", data=[dict(id=cfg.model_id, object="model", owned_by="local")]))
             if path == "/v1/models/" + cfg.model_id:

@@ -92,9 +92,11 @@ def _gpu_memory_warning(device: int = 0) -> Optional[str]:
 
 
 def _add_engine_args(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument("--backend", choices=("auto", "cuda", "metal"), default="auto",
+                    help="auto: Metal on macOS, CUDA elsewhere (an explicit --dll selects CUDA)")
     sp.add_argument("--model-dir", help="folder with the model files (default: $YASAKANI_MODEL_DIR)")
-    sp.add_argument("--dll", help="path of yskn.dll (default: $YASAKANI_DLL, or the bin folder next to the package)")
-    sp.add_argument("--max-ctx", type=int, default=None, help="context length in tokens: input + thinking + answer (default: the model's 262144)")
+    sp.add_argument("--dll", help="native library path (with --backend metal: libyskn_metal.dylib)")
+    sp.add_argument("--max-ctx", type=int, default=None, help="context length: input + thinking + answer (default: 4096 on Metal; model limit on CUDA)")
     sp.add_argument("--device", type=int, default=0, help="CUDA device index (default 0)")
     sp.add_argument("--seed0", type=int, default=1, help="seed of the first request; every request without its own seed uses the next one")
 
@@ -142,17 +144,30 @@ def _vision(args):
     return vision
 
 
+def _backend(args):
+    backend = getattr(args, "backend", "auto")
+    return ("metal" if sys.platform == "darwin" and not getattr(args, "dll", None) else "cuda") if backend == "auto" else backend
+
+
 def _open_stack(args, *, warm: bool = True):
     """Model folder -> (pack, engine, formatter, runner).  The tokenizer is loaded first so a broken folder fails before the long load."""
     from .chat import ChatRunner
     from .engine import Engine
     from .textio import ChatFormatter
-    pack = ModelPack.load(_model_dir(args))
+    backend = _backend(args)
+    pack = ModelPack.load(_model_dir(args), require_aux=backend != "metal")
     fmt = ChatFormatter(pack.root)
+    if backend == "metal" and any(getattr(args, k, None) for k in ("mmproj", "llama_dir", "vision_model")):
+        raise YasakaniError("the experimental Metal backend currently supports text input only")
     vision = _vision(args)                       # wrong image input options fail here, before the long load
     _say("loading the model (%s of weights) ..." % _human(pack.weights.stat().st_size))
     t0 = time.time()
-    eng = Engine(pack, max_ctx=args.max_ctx, device=args.device, dll=args.dll)
+    if backend == "metal":
+        from .metal_engine import MetalEngine
+        _say("backend: experimental Metal (sequential decoding, float32 state; not CUDA reference output)")
+        eng = MetalEngine(pack, max_ctx=args.max_ctx, device=args.device, dll=args.dll)
+    else:
+        eng = Engine(pack, max_ctx=args.max_ctx, device=args.device, dll=args.dll)
     try:
         if eng.removed_env:
             _say("note: ignored %d YSKN_* setting(s) from the environment: %s" % (len(eng.removed_env), ", ".join(sorted(eng.removed_env))))
@@ -163,7 +178,7 @@ def _open_stack(args, *, warm: bool = True):
         eng.close()
         raise
     _say("model ready in %.0f s (context %d tokens)" % (time.time() - t0, eng.max_ctx))
-    note = _gpu_memory_warning(args.device)
+    note = _gpu_memory_warning(args.device) if backend == "cuda" else None
     if note:
         _say(note)
     return pack, eng, fmt, runner
@@ -172,6 +187,7 @@ def _open_stack(args, *, warm: bool = True):
 # ---- info -------------------------------------------------------------------------------------------------------------------------
 def cmd_info(args) -> int:
     ok = True
+    backend = _backend(args)
     print("yasakani", __version__)
     print("python  ", platform.python_version(), platform.system(), platform.machine())
     for mod in ("numpy", "tokenizers", "jinja2"):
@@ -182,20 +198,27 @@ def cmd_info(args) -> int:
             print("%-8s MISSING  (pip install %s)" % (mod, mod))
             ok = False
     try:
-        dll = find_library(args.dll)
+        if backend == "metal":
+            from .metal_engine import find_metal_library
+            dll = find_metal_library(args.dll)
+        else:
+            dll = find_library(args.dll)
         h = hashlib.sha256(dll.read_bytes()).hexdigest()
         print("engine   %s  %s  sha256 %s" % (dll.name, _human(dll.stat().st_size), h[:16]))
     except YasakaniError as ex:
         print("engine   NOT FOUND:", ex)
         ok = False
-    for ln in _gpu_lines():
+    print("backend  " + backend)
+    for ln in (["Metal system default device (availability checked when opening a model)"] if backend == "metal" else _gpu_lines()):
         print("gpu      " + ln)
     d = getattr(args, "model_dir", None) or os.environ.get("YASAKANI_MODEL_DIR")
     if d:
         try:
-            pack = ModelPack.load(d)
+            pack = ModelPack.load(d, require_aux=backend != "metal")
             print("model    %s  (id %s, context up to %d tokens)" % (pack.root.name, pack.model_id, pack.max_ctx))
-            for label, p in (("weights", pack.weights), ("draft", pack.draft), ("draft head", pack.draft_head), ("kv profile", pack.kv_profile)):
+            files = (("weights", pack.weights),) if backend == "metal" else (
+                ("weights", pack.weights), ("draft", pack.draft), ("draft head", pack.draft_head), ("kv profile", pack.kv_profile))
+            for label, p in files:
                 print("  %-10s %-26s %s" % (label, p.name, _human(p.stat().st_size)))
             print("  checksums  %s" % ("%d files listed in yasakani.json" % len(pack.sha256) if pack.sha256 else "none listed (yasakani.json missing)"))
             from .textio import ChatFormatter
@@ -211,12 +234,23 @@ def cmd_info(args) -> int:
 
 # ---- verify -----------------------------------------------------------------------------------------------------------------------
 def cmd_verify(args) -> int:
-    pack = ModelPack.load(_model_dir(args))
+    backend = _backend(args)
+    pack = ModelPack.load(_model_dir(args), require_aux=backend != "metal")
+    if backend == "metal":
+        auxiliary = {p for p in (pack.draft, pack.draft_head, pack.kv_profile)}
+        for name in list(pack.sha256):
+            path = pack.root / name
+            if path in auxiliary and not path.is_file():
+                print("  %-30s SKIP (not used by Metal and not downloaded)" % name)
+                del pack.sha256[name]
     if not pack.sha256:
         print("no checksums are listed for this folder (yasakani.json missing or without \"sha256\").")
         return 2
     print("checking %d files (reads about %s, one to two minutes) ..." % (len(pack.sha256), _human(sum((pack.root / n).stat().st_size for n in pack.sha256 if (pack.root / n).is_file()))))
-    res = pack.verify(progress=lambda n, ok: print("  %-30s %s" % (n, "OK" if ok else "DIFFERENT"), flush=True))
+    try:
+        res = pack.verify(progress=lambda n, ok: print("  %-30s %s" % (n, "OK" if ok else "DIFFERENT"), flush=True))
+    except OSError as ex:
+        raise YasakaniError("cannot verify model files: %s" % ex) from ex
     bad = [n for n, ok in res.items() if not ok]
     print("all files match." if not bad else "%d file(s) differ: %s  (download them again)" % (len(bad), ", ".join(bad)))
     return 0 if not bad else 1
@@ -243,6 +277,13 @@ def cmd_serve(args) -> int:
         raise YasakaniError("refusing to listen on %s without --api-key: anyone who can reach this computer could use the GPU" % args.host)
     cfg = ServerConfig(host=args.host, port=args.port, api_key=args.api_key, default_max_tokens=args.default_max_tokens,
                        max_tokens_cap=args.max_tokens_cap)
+    if getattr(args, "web_ui", None):
+        if not local or args.api_key:
+            raise YasakaniError("--web-ui requires a loopback host without --api-key")
+        try:
+            cfg.web_ui = Path(args.web_ui).read_bytes()
+        except OSError as ex:
+            raise YasakaniError("cannot read --web-ui: %s" % ex) from ex
     state = ApiState(cfg)
     state.version = __version__
     try:
@@ -481,21 +522,25 @@ def _selfcheck_run(eng, fmt):
 
 
 def cmd_selfcheck(args) -> int:
+    backend = _backend(args)
     pack, eng, fmt, runner = _open_stack(args, warm=True)
     try:
         got = _selfcheck_run(eng, fmt)
     finally:
         eng.close()
     if args.write:
-        Path(args.write).write_text(json.dumps(dict(format=SELFCHECK_FORMAT, model_id=pack.model_id, yasakani=__version__, cases=got), indent=1) + "\n",
+        Path(args.write).write_text(json.dumps(dict(format=SELFCHECK_FORMAT, model_id=pack.model_id, yasakani=__version__, backend=backend, cases=got), indent=1) + "\n",
                                     encoding="utf-8")
         print("wrote %d reference record(s) to %s" % (len(got), args.write))
         return 0
-    ref_path = Path(args.reference) if args.reference else pack.root / "selfcheck.json"
+    ref_path = Path(args.reference) if args.reference else pack.root / ("selfcheck-metal.json" if backend == "metal" else "selfcheck.json")
     if not ref_path.is_file():
         print("no reference file (%s).  Download selfcheck.json next to the model files, or pass --reference FILE." % ref_path)
         return 2
     ref = json.loads(ref_path.read_text(encoding="utf-8"))
+    if ref.get("backend", "cuda") != backend:
+        print("the reference belongs to a different backend; use a separately reviewed %s reference" % backend)
+        return 2
     if ref.get("format") != SELFCHECK_FORMAT:
         print("the reference file has an unknown format (%r)" % ref.get("format"))
         return 2
@@ -521,16 +566,18 @@ def cmd_selfcheck(args) -> int:
 
 # ---- entry point ------------------------------------------------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="yasakani", description="Run Qwen3.8-27B locally on one RTX 5090 (Windows) with the YASAKANI engine.")
+    ap = argparse.ArgumentParser(prog="yasakani", description="Run Qwen3.8-27B locally with YASAKANI (CUDA or experimental macOS Metal).")
     ap.add_argument("--version", action="version", version="yasakani " + __version__)
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="{info,serve,chat,bench,selfcheck,verify}")
 
     sp = sub.add_parser("info", help="check this computer, the engine library and (with --model-dir) a model folder")
+    sp.add_argument("--backend", choices=("auto", "cuda", "metal"), default="auto")
     sp.add_argument("--model-dir")
     sp.add_argument("--dll")
     sp.set_defaults(func=cmd_info)
 
     sp = sub.add_parser("verify", help="check the model files against the checksums listed in yasakani.json")
+    sp.add_argument("--backend", choices=("auto", "cuda", "metal"), default="auto")
     sp.add_argument("--model-dir")
     sp.set_defaults(func=cmd_verify)
 
@@ -542,6 +589,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--default-max-tokens", type=int, default=32768, help="answer limit when a request does not give one")
     sp.add_argument("--max-tokens-cap", type=int, default=None, help="upper limit for any request")
     sp.add_argument("--no-warmup", action="store_true", help="skip the short warm-up run at start")
+    sp.add_argument("--web-ui", metavar="HTML", help="serve the bundled chat page at / (loopback only)")
     _add_vision_args(sp)
     sp.set_defaults(func=cmd_serve)
 

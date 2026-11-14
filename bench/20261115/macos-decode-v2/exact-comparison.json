@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "scope": "8 predictions over 27 prompt tokens and 7 consumed generated tokens",
+  "logits_bit_identical": true,
+  "final_state_bit_identical": true,
+  "output_ids_and_text_identical": true,
+  "checks": {
+    "settings": true,
+    "model": true,
+    "logits": true,
+    "generated": true,
+    "final_state": true
+  },
+  "before": "exact-before.json",
+  "after": "exact-after.json"
+}
