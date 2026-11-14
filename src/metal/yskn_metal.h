@@ -9,6 +9,10 @@ extern "C" {
 void* yskn_metal_open(const char* path);
 void yskn_metal_close(void* handle);
 int yskn_metal_linear(void* handle, const char* name, const float* x, int n, float* y, int m);
+// Row-major x[batch,n], y[batch,m]; the backend tiles bounded scratch internally.
+int yskn_metal_linear_batch(void* handle, const char* name, const float* x, int batch, int n, float* y, int m);
+// Common x[n], 1 to 3 matrices; concatenate logical outputs into y[m].
+int yskn_metal_linear_multi(void* handle, const char** names, int count, const float* x, int n, float* y, int m);
 int yskn_metal_row(void* handle, const char* name, int row, float* out, int n);
 int yskn_metal_embedding(void* handle, int token, float* out, int n);
 const char* yskn_metal_last_error(void);

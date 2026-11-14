@@ -23,6 +23,7 @@ def main():
     lib.yskn_metal_close.argtypes = [C.c_void_p]
     lib.yskn_metal_last_error.restype = C.c_char_p
     lib.yskn_metal_linear.argtypes = [C.c_void_p, C.c_char_p, C.c_void_p, C.c_int, C.c_void_p, C.c_int]
+    lib.yskn_metal_linear_batch.argtypes = [C.c_void_p, C.c_char_p, C.c_void_p, C.c_int, C.c_int, C.c_void_p, C.c_int]
     lib.yskn_metal_embedding.argtypes = [C.c_void_p, C.c_int, C.c_void_p, C.c_int]
     c = ref.Container(sys.argv[2])
     h = lib.yskn_metal_open(str(Path(sys.argv[2]).resolve()).encode())
@@ -47,24 +48,27 @@ def main():
         for name in names:
             started = time.monotonic()
             t = ref.checked(c.tensors[name])
-            x = rng.standard_normal(t["cols"]).astype(np.float32)
-            rotated_x = ref.fwht512(x * ref.signs_of(t["rot_in"], t["cols"]))
+            inputs = rng.standard_normal((5, t["cols"])).astype(np.float32)
+            rotated_x = ref.fwht512(inputs * ref.signs_of(t["rot_in"], t["cols"]))
             units = ref.unit_words(c, t)
             lut = ref.value_table(c, t)
             scales = c.array(t["scale_off"], "<f2", t["physical_rows"]).astype(np.float32)
-            expected = np.empty(t["physical_rows"], np.float32)
+            expected = np.empty((5, t["physical_rows"]), np.float32)
             # Only 128 decoded rows at a time (under 9 MiB for these matrices).
             for first in range(0, t["physical_rows"], 128):
                 last = min(first + 128, t["physical_rows"])
                 block = lut[ref.states(units[first:last], t["bits"])].reshape(last - first, t["cols"])
-                expected[first:last] = (block @ rotated_x) * scales[first:last]
+                expected[:, first:last] = (rotated_x @ block.T) * scales[first:last]
             if t["rot_out"] is not None:
                 expected = ref.fwht512(expected) * ref.signs_of(t["rot_out"], t["physical_rows"])
-            expected = expected[:t["rows"]]
-            actual = np.empty(t["rows"], np.float32)
-            check(lib.yskn_metal_linear(h, name.encode(), x.ctypes.data, x.size, actual.ctypes.data, actual.size))
+            expected = expected[:, :t["rows"]]
+            single = np.empty(t["rows"], np.float32)
+            check(lib.yskn_metal_linear(h, name.encode(), inputs[0].ctypes.data, t["cols"], single.ctypes.data, single.size))
+            np.testing.assert_allclose(single, expected[0], atol=2e-3, rtol=2e-4)
+            actual = np.empty((5, t["rows"]), np.float32)
+            check(lib.yskn_metal_linear_batch(h, name.encode(), inputs.ctypes.data, 5, t["cols"], actual.ctypes.data, t["rows"]))
             np.testing.assert_allclose(actual, expected, atol=2e-3, rtol=2e-4)
-            print("PASS linear", name, "max error", float(np.max(np.abs(actual - expected))),
+            print("PASS linear and batch=5", name, "max error", float(np.max(np.abs(actual - expected))),
                   "seconds", round(time.monotonic() - started, 3), flush=True)
         print("PASS: real released-model embedding and matrix operations (not full generation)")
     finally:

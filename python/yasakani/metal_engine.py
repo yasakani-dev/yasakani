@@ -56,6 +56,15 @@ class MetalOps:
             for name, (args, result) in signatures.items():
                 fn = getattr(self.lib, "yskn_metal_" + name)
                 fn.argtypes, fn.restype = args, result
+            self._batch = getattr(self.lib, "yskn_metal_linear_batch", None)
+            if self._batch is not None:
+                self._batch.argtypes = [C.c_void_p, C.c_char_p, C.c_void_p, C.c_int, C.c_int, C.c_void_p, C.c_int]
+                self._batch.restype = C.c_int
+            self._multi = getattr(self.lib, "yskn_metal_linear_multi", None)
+            if self._multi is not None:
+                self._multi.argtypes = [C.c_void_p, C.POINTER(C.c_char_p), C.c_int, C.c_void_p,
+                                        C.c_int, C.c_void_p, C.c_int]
+                self._multi.restype = C.c_int
             self.handle = self.lib.yskn_metal_open(os.fsencode(path))
             if not self.handle:
                 raise YasakaniError(self.error())
@@ -94,6 +103,41 @@ class MetalOps:
         out = np.empty(self.container.model["hidden"], dtype=np.float32)
         self._check(self.lib.yskn_metal_embedding(self.handle, int(token), out.ctypes.data, len(out)))
         return out
+
+    def linear_batch(self, name, x):
+        """A bounded group of tokens sharing the same compressed weight matrix."""
+        if not self.handle:
+            raise YasakaniError("the Metal backend is closed")
+        desc = self.container.tensors[name]
+        x = np.ascontiguousarray(x, dtype=np.float32)
+        if x.ndim != 2 or x.shape[1] != desc["cols"] or not 1 <= len(x) <= 32:
+            raise ValueError("%s: expected 1 to 32 rows with %d columns" % (name, desc["cols"]))
+        if self._batch is None:
+            return np.stack([self.linear(name, row) for row in x])
+        out = np.empty((len(x), desc["rows"]), dtype=np.float32)
+        self._check(self._batch(self.handle, name.encode(), x.ctypes.data, len(x), x.shape[1],
+                                out.ctypes.data, out.shape[1]))
+        return out
+
+    def linear_multi(self, names, x):
+        """Independent projections of one input, submitted together to Metal."""
+        if not self.handle:
+            raise YasakaniError("the Metal backend is closed")
+        names = tuple(names)
+        if not 1 <= len(names) <= 3:
+            raise ValueError("expected 1 to 3 projection names")
+        x = np.ascontiguousarray(x, dtype=np.float32)
+        descriptors = [self.container.tensors[name] for name in names]
+        if x.ndim != 1 or any(x.shape != (desc["cols"],) for desc in descriptors):
+            raise ValueError("multi-projection input shape mismatch")
+        if self._multi is None:
+            return [self.linear(name, x) for name in names]
+        sizes = [desc["rows"] for desc in descriptors]
+        out = np.empty(sum(sizes), dtype=np.float32)
+        encoded = (C.c_char_p * len(names))(*(name.encode() for name in names))
+        self._check(self._multi(self.handle, encoded, len(names), x.ctypes.data, len(x),
+                                out.ctypes.data, len(out)))
+        return list(np.split(out, np.cumsum(sizes)[:-1]))
 
     def vector(self, name):
         if name not in self._vectors:
@@ -216,10 +260,17 @@ class MetalEngine:
             out = []
             start = time.perf_counter()
             logits = None
-            for index, token in enumerate(ids):
-                if self._cancel.is_set():
-                    break
-                logits = self.model.forward(int(token), logits=index == len(ids) - 1)
+            if hasattr(self.model, "prefill"):
+                for first in range(0, len(ids), 32):
+                    if self._cancel.is_set():
+                        break
+                    last = min(first + 32, len(ids))
+                    logits = self.model.prefill(ids[first:last], cancel=self._cancel.is_set, logits=last == len(ids))
+            else:
+                for index, token in enumerate(ids):
+                    if self._cancel.is_set():
+                        break
+                    logits = self.model.forward(int(token), logits=index == len(ids) - 1)
             prefill = (time.perf_counter() - start) * 1000
             start = time.perf_counter()
             finish = "length"

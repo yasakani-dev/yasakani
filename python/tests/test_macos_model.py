@@ -155,6 +155,29 @@ class TinyOps:
         return self.vectors[name]
 
 
+class TinyBatchOps(TinyOps):
+    """Exact scalar projection arithmetic behind the optional batch contract."""
+    def __init__(self, directory):
+        super().__init__(directory)
+        self.batch_calls = []
+
+    def linear_batch(self, name, x):
+        self.batch_calls.append((name, x.shape))
+        return np.stack([self.weights[name] @ row for row in x])
+
+
+class TinyMultiOps(TinyBatchOps):
+    """Shared-input projections preserve scalar math and record submissions."""
+    def __init__(self, directory):
+        super().__init__(directory)
+        self.multi_calls = []
+
+    def linear_multi(self, names, x):
+        assert x.dtype == np.float32 and x.flags.c_contiguous
+        self.multi_calls.append(tuple(names))
+        return [self.weights[name] @ x for name in names]
+
+
 def dense_oracle(ops, tokens):
     """Independent float64 sequence computation with explicit head/state loops."""
     w = {k: v.astype(np.float64) for k, v in ops.weights.items()}
@@ -293,6 +316,255 @@ class ModelTests(unittest.TestCase):
         tokens = [i % 8 for i in range(66)]
         actual = np.array([model.forward(t) for t in tokens])
         np.testing.assert_allclose(actual, dense_oracle(self.ops, tokens), rtol=3e-5, atol=3e-6)
+
+
+class MultiProjectionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.ops = TinyMultiOps(self.temp.name)
+
+    def test_grouped_decode_matches_scalar_state_and_independent_oracle(self):
+        scalar_ops = TinyOps(self.temp.name)
+        scalar = Model(scalar_ops.path, 16, scalar_ops)
+        grouped = Model(self.ops.path, 16, self.ops)
+        tokens = [3, 1, 5, 2, 4]
+        actual = []
+        for token in tokens:
+            expected = scalar.forward(token)
+            actual.append(grouped.forward(token))
+            np.testing.assert_array_equal(actual[-1], expected)
+            np.testing.assert_array_equal(grouped.state_hash(), scalar.state_hash())
+        np.testing.assert_allclose(actual, dense_oracle(self.ops, tokens), rtol=2e-5, atol=2e-6)
+        expected_groups = [
+            ("layers.0.linear_attn.in_proj_qkv", "layers.0.linear_attn.in_proj_z"),
+            ("layers.0.mlp.gate_proj", "layers.0.mlp.up_proj"),
+            ("layers.1.self_attn.q_proj", "layers.1.self_attn.k_proj", "layers.1.self_attn.v_proj"),
+            ("layers.1.mlp.gate_proj", "layers.1.mlp.up_proj"),
+        ]
+        expected_scalars = ["layers.0.linear_attn.out_proj", "layers.0.mlp.down_proj",
+                            "layers.1.self_attn.o_proj", "layers.1.mlp.down_proj", "lm_head"]
+        self.assertEqual(self.ops.multi_calls, expected_groups * len(tokens))
+        self.assertEqual(self.ops.calls, expected_scalars * len(tokens))
+        self.assertEqual(len(scalar_ops.calls), 14 * len(tokens))
+        self.assertEqual(self.ops.batch_calls, [])
+        # Head omission still advances exactly the same recurrent and KV state.
+        self.ops.calls.clear()
+        self.assertIsNone(grouped.forward(6, logits=False))
+        self.assertIsNone(scalar.forward(6, logits=False))
+        self.assertNotIn("lm_head", self.ops.calls)
+        np.testing.assert_array_equal(grouped.state_hash(), scalar.state_hash())
+
+    def test_noncallable_optional_operation_uses_scalar_fallback(self):
+        self.ops.linear_multi = None
+        model = Model(self.ops.path, 8, self.ops)
+        tokens = [1, 6, 2]
+        actual = [model.forward(token) for token in tokens]
+        np.testing.assert_allclose(actual, dense_oracle(self.ops, tokens), rtol=2e-5, atol=2e-6)
+        self.assertEqual(self.ops.multi_calls, [])
+        self.assertEqual(len(self.ops.calls), 14 * len(tokens))
+
+    def test_shared_input_is_contiguous_float32(self):
+        model = Model(self.ops.path, 8, self.ops)
+        names = ("layers.0.mlp.gate_proj", "layers.0.mlp.up_proj")
+        x = np.arange(8, dtype=np.float64)[::2]
+        self.assertFalse(x.flags.c_contiguous)
+        actual = model._linears(names, x)
+        for name, result in zip(names, actual):
+            np.testing.assert_array_equal(result, self.ops.weights[name] @ x.astype(np.float32))
+
+    def test_invalid_grouped_results_require_reset_without_scalar_retry(self):
+        bad_results = {
+            "missing": lambda values: values[:-1],
+            "extra": lambda values: values + [values[0]],
+            "none": lambda values: None,
+            "shape": lambda values: [values[0], np.zeros(1, np.float32), values[2]],
+            "nan": lambda values: [values[0], values[1], np.full_like(values[2], np.nan)],
+            "inf": lambda values: [np.full_like(values[0], np.inf), values[1], values[2]],
+        }
+        for case, corrupt in bad_results.items():
+            with self.subTest(case=case):
+                ops = TinyMultiOps(self.temp.name)
+                original = ops.linear_multi
+                def multi(names, x):
+                    values = original(names, x)
+                    return corrupt(values) if names[0] == "layers.1.self_attn.q_proj" else values
+                ops.linear_multi = multi
+                model = Model(ops.path, 8, ops)
+                with self.assertRaises(FloatingPointError):
+                    model.forward(1)
+                self.assertEqual((model.position, model._failed), (0, True))
+                self.assertTrue(np.any(model._linear_state[0][1] != 0))
+                self.assertNotIn(1, model._kv)
+                self.assertNotIn("layers.1.self_attn.q_proj", ops.calls)
+                for operation in (lambda: model.forward(0), lambda: model.prefill([0])):
+                    with self.assertRaisesRegex(RuntimeError, "reset"):
+                        operation()
+                ops.linear_multi = original
+                model.reset()
+                np.testing.assert_allclose(model.forward(1), dense_oracle(ops, [1])[0], rtol=2e-5, atol=2e-6)
+
+    def test_native_group_failure_propagates_without_fallback(self):
+        def fail(names, x):
+            raise RuntimeError("native submission failed")
+        self.ops.linear_multi = fail
+        model = Model(self.ops.path, 8, self.ops)
+        with self.assertRaisesRegex(RuntimeError, "native submission failed"):
+            model.forward(1)
+        self.assertEqual((model.position, model._failed), (0, True))
+        self.assertEqual(self.ops.calls, [])
+
+    def test_prefill_keeps_batch_projections_before_grouped_decode(self):
+        model = Model(self.ops.path, 8, self.ops)
+        np.testing.assert_allclose(model.prefill([1, 2]), dense_oracle(self.ops, [1, 2])[-1], rtol=2e-5, atol=2e-6)
+        self.assertEqual(self.ops.multi_calls, [])
+        self.assertEqual(len(self.ops.batch_calls), 13)
+        self.assertEqual(self.ops.calls, ["lm_head"])
+        np.testing.assert_allclose(model.forward(3), dense_oracle(self.ops, [1, 2, 3])[-1], rtol=2e-5, atol=2e-6)
+        self.assertEqual(len(self.ops.multi_calls), 4)
+        self.assertEqual(len(self.ops.batch_calls), 13)
+
+
+class PrefillTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.ops = TinyOps(self.temp.name)
+
+    def assert_state_equal(self, first, second, *, exact=True):
+        self.assertEqual(first.position, second.position)
+        compare = np.testing.assert_array_equal if exact else lambda a, b: np.testing.assert_allclose(a, b, rtol=2e-5, atol=2e-6)
+        for layer, pair in first._linear_state.items():
+            for a, b in zip(pair, second._linear_state[layer]):
+                compare(a, b)
+        for layer, pair in first._kv.items():
+            for a, b in zip(pair, second._kv[layer]):
+                compare(a[:first.position], b[:second.position])
+        if exact:
+            np.testing.assert_array_equal(first.state_hash(), second.state_hash())
+
+    def test_rowwise_fallback_matches_every_chunk_and_following_decode(self):
+        scalar, batch = Model(self.ops.path, 80, self.ops), Model(self.ops.path, 80, self.ops)
+        # Exercise continuation from scalar decode, both full-sized chunks and KV growth.
+        np.testing.assert_array_equal(scalar.forward(4), batch.forward(4))
+        for tokens in ([i % 8 for i in range(32)], [i % 8 for i in range(32)], [5, 1]):
+            for index, token in enumerate(tokens):
+                expected = scalar.forward(token, logits=index == len(tokens) - 1)
+            actual = batch.prefill(tokens)
+            np.testing.assert_array_equal(actual, expected)
+            self.assert_state_equal(scalar, batch)
+        np.testing.assert_array_equal(scalar.forward(3), batch.forward(3))
+        self.assert_state_equal(scalar, batch)
+
+    def test_batch_contract_groups_projections_and_preserves_state(self):
+        ops = TinyBatchOps(self.temp.name)
+        scalar, batch = Model(ops.path, 16, ops), Model(ops.path, 16, ops)
+        tokens = [3, 1, 5, 2, 4]
+        for token in tokens:
+            expected = scalar.forward(token)
+        ops.calls.clear()
+        actual = batch.prefill(np.asarray(tokens, np.int32))
+        np.testing.assert_array_equal(actual, expected)
+        np.testing.assert_allclose(actual, dense_oracle(ops, tokens)[-1], rtol=2e-5, atol=2e-6)
+        self.assert_state_equal(scalar, batch)
+        # Six GDN/MLP and seven full-attention/MLP projections, once per chunk.
+        self.assertEqual(len(ops.batch_calls), 13)
+        self.assertTrue(all(shape[0] == len(tokens) for _, shape in ops.batch_calls))
+        self.assertEqual(ops.calls, ["lm_head"])
+
+    def test_dense_matrix_batch_matches_scalar_with_float32_tolerance(self):
+        ops = TinyBatchOps(self.temp.name)
+        ops.linear_batch = lambda name, x: x @ ops.weights[name].T
+        scalar, batch = Model(ops.path, 40, ops), Model(ops.path, 40, ops)
+        tokens = [i % 8 for i in range(32)]
+        for token in tokens:
+            expected = scalar.forward(token)
+        actual = batch.prefill(tokens)
+        np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-6)
+        self.assert_state_equal(scalar, batch, exact=False)
+        self.assertEqual(int(actual.argmax()), int(expected.argmax()))
+        np.testing.assert_allclose(batch.forward(4), scalar.forward(4), rtol=2e-5, atol=2e-6)
+
+    def test_head_is_omitted_except_when_requested(self):
+        model = Model(self.ops.path, 16, self.ops)
+        self.assertIsNone(model.prefill([3, 1, 5], logits=False))
+        self.assertNotIn("lm_head", self.ops.calls)
+        self.assertEqual(model.position, 3)
+        actual = model.prefill([2, 4])
+        self.assertEqual(self.ops.calls.count("lm_head"), 1)
+        np.testing.assert_allclose(actual, dense_oracle(self.ops, [3, 1, 5, 2, 4])[-1], rtol=2e-5, atol=2e-6)
+
+    def test_validation_errors_do_not_change_existing_state(self):
+        model = Model(self.ops.path, 8, self.ops)
+        model.forward(1)
+        before = model.state_hash()
+        for tokens in ([], [True], [1.0], [[1]], [-1], [8], [0] * 33, [0] * 8,
+                       np.array([2**64 - 1], dtype=np.uint64)):
+            with self.subTest(tokens=tokens), self.assertRaises(ValueError):
+                model.prefill(tokens)
+            np.testing.assert_array_equal(model.state_hash(), before)
+        with self.assertRaises(TypeError):
+            model.prefill([0], cancel=True)
+        np.testing.assert_array_equal(model.state_hash(), before)
+        self.assertEqual(model.prefill([0]).shape, (8,))
+
+    def test_cancelled_gdn_chunk_requires_reset(self):
+        model = Model(self.ops.path, 16, self.ops)
+        original = model._gdn_step
+        calls = []
+        def step(*args):
+            result = original(*args)
+            calls.append(1)
+            return result
+        model._gdn_step = step
+        result = model.prefill([1, 2, 3, 4], cancel=lambda: len(calls) >= 2)
+        self.assertIsNone(result)
+        self.assertEqual((len(calls), model.position, model._failed), (2, 0, True))
+        self.assertTrue(np.any(model._linear_state[0][1] != 0))
+        for operation in (lambda: model.forward(0), lambda: model.prefill([0])):
+            with self.assertRaisesRegex(RuntimeError, "reset"):
+                operation()
+        model.reset()
+        self.assertTrue(np.isfinite(model.prefill([1])).all())
+
+    def test_cancelled_attention_continuation_never_commits_partial_position(self):
+        model = Model(self.ops.path, 16, self.ops)
+        model.prefill([1, 2])
+        original = model._attention_step
+        cancelled = []
+        def step(*args):
+            result = original(*args)
+            cancelled.append(1)
+            return result
+        model._attention_step = step
+        self.assertIsNone(model.prefill([3, 4], cancel=lambda: bool(cancelled)))
+        self.assertEqual((model.position, model._failed, len(cancelled)), (2, True, 1))
+
+    def test_cancel_after_last_projection_invalidates_chunk(self):
+        model = Model(self.ops.path, 16, self.ops)
+        self.assertIsNone(model.prefill([1, 2], cancel=lambda: "lm_head" in self.ops.calls))
+        self.assertEqual((model.position, model._failed), (0, True))
+        model.reset()
+        before = len(self.ops.calls)
+        self.assertIsNone(model.prefill([1], cancel=lambda: True))
+        self.assertEqual(len(self.ops.calls), before)
+        self.assertTrue(model._failed)
+
+    def test_invalid_batch_result_invalidates_chunk_and_can_reset(self):
+        for bad in (np.zeros((2, 1), np.float32), np.full((2, 16), np.nan, np.float32)):
+            with self.subTest(shape=bad.shape):
+                ops = TinyBatchOps(self.temp.name)
+                original = ops.linear_batch
+                ops.linear_batch = lambda name, x: bad if name == "layers.1.self_attn.q_proj" else original(name, x)
+                model = Model(ops.path, 16, ops)
+                with self.assertRaises(FloatingPointError):
+                    model.prefill([1, 2])
+                self.assertEqual((model.position, model._failed), (0, True))
+                with self.assertRaisesRegex(RuntimeError, "reset"):
+                    model.forward(0)
+                ops.linear_batch = original
+                model.reset()
+                self.assertTrue(np.isfinite(model.prefill([1, 2])).all())
 
 
 class PrimitiveTests(unittest.TestCase):

@@ -166,7 +166,10 @@ of the nvidia-smi values before and after loading).
 | Software | Microsoft Visual C++ 2015-2022 x64 runtime, Python 3.10 or newer |
 | Disk / RAM | 20 GB free (one model is a download of about 13 to 15 GB); 32 GB of RAM recommended (tested on a PC with 96 GB) |
 
-Not supported in this release: macOS, AMD GPUs, other NVIDIA GPUs (the RTX 4090, 3090 and the 16 GB cards have not been tested with
+For Apple Silicon, see the separate [experimental macOS app and Metal backend](docs/MACOS.md),
+including its own measured performance and limitations.
+
+Not supported by the CUDA release: macOS, AMD GPUs, other NVIDIA GPUs (the RTX 4090, 3090 and the 16 GB cards have not been tested with
 this release), other models. Support for more GPUs is the purpose of the crowdfunding campaign; see [Support](#support).
 
 **Linux:** the engine can be built from source (contributed in [#3](https://github.com/yasakani-dev/yasakani/pull/3), which lists the commands; we checked it on WSL2 /

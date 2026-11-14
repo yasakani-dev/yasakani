@@ -26,6 +26,8 @@ def main():
     lib.yskn_metal_close.argtypes = [C.c_void_p]
     lib.yskn_metal_last_error.restype = C.c_char_p
     lib.yskn_metal_linear.argtypes = [C.c_void_p, C.c_char_p, C.c_void_p, C.c_int, C.c_void_p, C.c_int]
+    lib.yskn_metal_linear_batch.argtypes = [C.c_void_p, C.c_char_p, C.c_void_p, C.c_int, C.c_int, C.c_void_p, C.c_int]
+    lib.yskn_metal_linear_multi.argtypes = [C.c_void_p, C.POINTER(C.c_char_p), C.c_int, C.c_void_p, C.c_int, C.c_void_p, C.c_int]
     lib.yskn_metal_row.argtypes = [C.c_void_p, C.c_char_p, C.c_int, C.c_void_p, C.c_int]
     lib.yskn_metal_embedding.argtypes = [C.c_void_p, C.c_int, C.c_void_p, C.c_int]
     fixture = ROOT / "tools/testdata/tiny.yskn"
@@ -48,6 +50,16 @@ def main():
                 np.testing.assert_allclose(actual, expected, atol=3e-4, rtol=2e-4)
                 print("PASS linear", name, "max error", float(np.max(np.abs(actual - expected))))
                 count += 1
+            for batch in (1, 2, 3, 4, 7, 8, 9, 17, 32):
+                inputs = rng.standard_normal((batch, t["cols"])).astype(np.float32)
+                actual = np.empty((batch, t["rows"]), np.float32)
+                rc = lib.yskn_metal_linear_batch(handle, name.encode(), inputs.ctypes.data, batch, t["cols"],
+                                                actual.ctypes.data, t["rows"])
+                if rc:
+                    raise RuntimeError(lib.yskn_metal_last_error().decode())
+                np.testing.assert_allclose(actual, inputs @ matrix.T, atol=3e-4, rtol=2e-4)
+                count += 1
+            print("PASS batches 1..32", name)
             if t["rot_out"] is None:
                 for row in (0, t["rows"] - 1):
                     actual = np.empty(t["cols"], np.float32)
@@ -57,12 +69,42 @@ def main():
                     np.testing.assert_allclose(actual, matrix[row], atol=3e-6, rtol=2e-5)
                     count += 1
                     print("PASS row", name, row)
+        def multi(names, x, c=container, h=handle):
+            packed_names = (C.c_char_p * len(names))(*(name.encode() for name in names))
+            out = np.empty(sum(c.tensors[name]["rows"] for name in names), np.float32)
+            rc = lib.yskn_metal_linear_multi(h, packed_names, len(names), x.ctypes.data, len(x), out.ctypes.data, len(out))
+            if rc:
+                raise RuntimeError(lib.yskn_metal_last_error().decode())
+            expected = np.concatenate([reference.decode(c, reference.checked(c.tensors[name])) @ x for name in names])
+            np.testing.assert_allclose(out, expected, atol=3e-4, rtol=2e-4)
+            return out
+        for names in (("tiny.body6",), ("tiny.body6", "tiny.head"),
+                      ("tiny.head", "tiny.embed", "tiny.body6"), ("tiny.head", "tiny.head")):
+            multi(names, rng.standard_normal(512).astype(np.float32))
+            count += 1
+        # Every invalid projection is rejected before any output is written.
+        x = np.ones(512, np.float32)
+        sentinel = np.full(672, 12345, np.float32)
+        for names, n, m in (((b"tiny.body6",), 512, 1), ((b"tiny.body6",), 513, 512),
+                            ((b"tiny.body6", b"tiny.body8"), 512, 1024),
+                            ((b"tiny.body6", b"missing"), 512, 512),
+                            ((b"tiny.body6", None), 512, 512),
+                            ((), 512, 512), ((b"tiny.head",) * 4, 512, 256)):
+            pointers = (C.c_char_p * len(names))(*names)
+            rc = lib.yskn_metal_linear_multi(handle, pointers, len(names), x.ctypes.data, n, sentinel.ctypes.data, m)
+            assert rc == -1 and lib.yskn_metal_last_error()
+            np.testing.assert_array_equal(sentinel, np.full(672, 12345, np.float32))
+            count += 1
+        assert lib.yskn_metal_linear_multi(handle, None, 1, x.ctypes.data, 512, sentinel.ctypes.data, 512) == -1
+        count += 1
         x = np.zeros(512, np.float32)
         assert lib.yskn_metal_linear(handle, b"missing", x.ctypes.data, x.size, x.ctypes.data, x.size) == -1
         assert b"tensor not found" in lib.yskn_metal_last_error()
         first = next(iter(container.tensors.values()))
         assert lib.yskn_metal_linear(handle, first["name"].encode(), x.ctypes.data, 1, x.ctypes.data, 1) == -1
-        count += 2
+        assert lib.yskn_metal_linear_batch(handle, first["name"].encode(), x.ctypes.data, 0,
+                                           first["cols"], x.ctypes.data, first["rows"]) == -1
+        count += 3
     finally:
         lib.yskn_metal_close(handle)
     # Native boundary: invalid files fail before touching GPU memory.
@@ -97,6 +139,19 @@ def main():
             struct.pack_into("<Q", damaged, 8, len(encoded))
             damaged[32:32 + len(encoded)] = encoded
             fixture_out.write_bytes(damaged)
+        body = dict(container.tensors["tiny.body6"])
+        changed = dict(body, name="different_signs", rows=499,
+                       rot_in=dict(body["rot_in"], sign_seed=983, sign_offset=129, rule="splitmix64"))
+        head = dict(original_header, tensors=[body, changed])
+        write_header(head)
+        h = lib.yskn_metal_open(str(fixture_out).encode())
+        assert h, lib.yskn_metal_last_error().decode()
+        try:
+            c = reference.Container(str(fixture_out))
+            multi(("tiny.body6", "different_signs", "tiny.body6"), rng.standard_normal(512).astype(np.float32), c, h)
+            count += 1
+        finally:
+            lib.yskn_metal_close(h)
         emb = dict(container.tensors["tiny.embed"])
         head = dict(original_header)
         head["tensors"] = [dict(emb, name=name) for name in ("embed_tokens", "embed_tokens.res", "embed_tokens.res2")]
@@ -157,6 +212,13 @@ def main():
                     out = np.empty(17, np.float32)
                     assert lib.yskn_metal_linear(h, b"test", x.ctypes.data, x.size, out.ctypes.data, out.size) == 0
                     np.testing.assert_allclose(out, expected_matrix @ x, atol=3e-5, rtol=2e-4)
+                    count += 1
+                    inputs = rng.normal(size=(3, 512)).astype(np.float32)
+                    batch_out = np.empty((3, 17), np.float32)
+                    assert lib.yskn_metal_linear_batch(h, b"test", inputs.ctypes.data, 3, 512, batch_out.ctypes.data, 17) == 0
+                    np.testing.assert_allclose(batch_out, inputs @ expected_matrix.T, atol=3e-5, rtol=2e-4)
+                    count += 1
+                    multi(("test", "test", "test"), x, c, h)
                     count += 1
                 finally:
                     lib.yskn_metal_close(h)

@@ -1,7 +1,7 @@
 # Experimental macOS version
 
 This port runs the original `.yskn` weights on **Apple Silicon, macOS 14 or newer**.
-Compressed matrix-vector products run on Metal. Attention, recurrent state and
+Compressed matrix products run on Metal. Attention, recurrent state and
 small operations run through NumPy on the CPU. The prebuilt app needs no CUDA,
 separate Python installation, Homebrew or compiler.
 
@@ -54,8 +54,16 @@ To select a nonstandard Metal library use `--backend metal --dll PATH` or
 `YASAKANI_METAL_LIBRARY`. The default context for Metal is 4,096 tokens.
 
 Sampling is seeded and repeatable within this backend. Requests start with a
-fresh recurrent state (no prefix cache). Cancellation is checked at token
-boundaries. Published CUDA `selfcheck.json` files are not Metal reference files;
+fresh recurrent state (no prefix cache). Prefill processes at most 32 tokens by
+layer, reusing compressed weights across up to eight inputs per GPU tile. Causal
+attention and recurrent state still advance in token order; decode remains
+one token at a time. Independent Q/K/V, GDN input and MLP gate/up projections
+share one GPU submission during decode. For the tested 27B model this reduces
+matrix submissions from 401 to 257 per decoded token, excluding embedding.
+Cancellation is checked between projections and state
+updates during prefill, and between tokens during decode. A cancelled partial
+chunk invalidates the state until reset; the next request starts fresh.
+Published CUDA `selfcheck.json` files are not Metal reference files;
 use a separately generated and reviewed `selfcheck-metal.json` (or `--reference`).
 References written by Metal are labeled with their backend and CUDA references
 are refused.
@@ -105,6 +113,48 @@ build/venv/bin/python macos/smoke.py --app build/macos-dist/YASAKANI.app --model
 
 The smoke test starts its own loopback server and stops it afterwards. It checks
 nonempty, repeatable generation, not broad language quality or CUDA parity.
+
+To measure generation on the same machine before and after a change:
+
+```sh
+build/venv/bin/python macos/benchmark.py --model-dir /path/to/model \
+  --library build/bin/libyskn_metal.dylib --output build/after.json --runs 2
+build/venv/bin/python macos/compare_benchmarks.py \
+  --before build/before.json --after build/after.json --output build/comparison.json
+```
+
+Use an unchanged baseline checkout/library for `before.json`; `PYTHONPATH` can
+select its Python package. The runner records source/library hashes, token IDs,
+hardware, runtime and settings. It separates the first request from repeated
+requests, resets state each time and does not cache prompts. `--hash-weights`
+verifies the actual weights; otherwise the manifest checksum is only a recorded
+expectation. `--profile` adds instrumentation and is excluded from speed claims.
+The comparison rejects mismatched settings, outputs or incomplete measurements.
+Decode throughput counts only tokens generated after the first token, which is
+produced by prefill.
+
+## Performance update (2026-11-14–15)
+
+On an M2 Max / 32 GiB using the released 27B speed model, three warm requests
+with fresh state gave the following medians:
+
+| Request | Previous total | Updated total | Improvement |
+|---|---:|---:|---:|
+| 23-token arithmetic prompt, 2 output tokens | 14.147 s | 7.748 s | 1.83× |
+| 27-token counting prompt, 16 output tokens | 25.506 s | 17.070 s | 1.49× |
+
+All output token IDs matched the previous backend. Prefill improved by 2.05×
+and 2.38×, respectively. Sustained decode did **not** improve in this measurement:
+counting fell from 1.610 to 1.461 token/s at the median, with substantial run-to-run
+variation. These results establish lower total latency for the tested requests,
+not a general decode-throughput or model-quality improvement.
+
+The [measurement report and raw results](../bench/20261114/macos/README.md)
+include every repetition, first-request times, source/library hashes, outputs,
+reproduction commands and limitations. Validation: 162 Python tests passed,
+33 optional image tests skipped; 92 real-GPU checks and allocation-failure/retry
+checks passed. Released-model matrix comparisons matched the independent decoder
+with maximum absolute error `1.55e-5`.
 
 ## Validation of the initial port (2026-11-14)
 

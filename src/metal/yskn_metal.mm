@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -26,7 +27,7 @@ using json = nlohmann::json;
 thread_local std::string error;
 struct Params {
     uint32_t rows, cols, bits, warp, parts, row;
-    uint32_t stream_offset, lut_offset, scale_offset;
+    uint32_t stream_offset, lut_offset, scale_offset, batch;
 };
 struct Rotation { uint64_t seed, offset; bool splitmix; };
 struct Region { id<MTLBuffer> buffer = nil; uint32_t offset = 0; };
@@ -94,7 +95,8 @@ struct Model {
     size_t length = 0, mapped_length = 0, page = 0;
     id<MTLDevice> device = nil;
     id<MTLCommandQueue> queue = nil;
-    id<MTLComputePipelineState> mv = nil, reduce = nil, row = nil;
+    id<MTLComputePipelineState> mv = nil, mv6 = nil, mv8 = nil, reduce = nil, row = nil;
+    id<MTLComputePipelineState> batch6[3] = {}, batch8[3] = {};
     id<MTLBuffer> input = nil, partial = nil, output = nil;
     std::unordered_map<std::string, Tensor> tensors;
     uint64_t embedding_offset = 0, embedding_count = 0;
@@ -197,7 +199,10 @@ struct Model {
             if (!p) throw std::runtime_error("Metal pipeline creation failed: " + ns_error(failure));
             return p;
         };
-        mv = pipeline(@"compressed_mv"); reduce = pipeline(@"reduce_mv"); row = pipeline(@"compressed_row");
+        mv = pipeline(@"compressed_mv"); mv6 = pipeline(@"compressed_mv6"); mv8 = pipeline(@"compressed_mv8");
+        batch6[0] = pipeline(@"compressed_mv6_b2"); batch6[1] = pipeline(@"compressed_mv6_b4"); batch6[2] = pipeline(@"compressed_mv6_b8");
+        batch8[0] = pipeline(@"compressed_mv8_b2"); batch8[1] = pipeline(@"compressed_mv8_b4"); batch8[2] = pipeline(@"compressed_mv8_b8");
+        reduce = pipeline(@"reduce_mv"); row = pipeline(@"compressed_row");
         if (!queue) throw std::runtime_error("Metal command queue creation failed");
     }
     Tensor& get(const char* name) {
@@ -230,7 +235,7 @@ struct Model {
     }
     Params params(const Tensor& t) {
         return {t.physical_rows, t.cols, t.bits, uint32_t(t.warp), std::min(uint32_t(8), t.cols / 256), 0,
-                t.stream.offset, t.lut.offset, t.scale.offset};
+                t.stream.offset, t.lut.offset, t.scale.offset, 1};
     }
     id<MTLCommandBuffer> command() {
         id<MTLCommandBuffer> cmd = [queue commandBuffer];
@@ -252,30 +257,133 @@ struct Model {
         [cmd commit]; [cmd waitUntilCompleted];
         if (cmd.status != MTLCommandBufferStatusCompleted) throw std::runtime_error("Metal execution failed: " + ns_error(cmd.error));
     }
+    bool fast_tensor(const Tensor& t) const {
+        return t.warp && (t.bits == 6 || t.bits == 8) && !(t.stream.offset % 4) && !(t.lut.offset % 4) && !(t.scale.offset % 2);
+    }
+    void encode_linear(id<MTLCommandBuffer> cmd, const Tensor& t, const Params& p,
+                       size_t input_offset, size_t partial_offset, size_t output_offset) {
+        id<MTLComputeCommandEncoder> e = encoder(cmd);
+        [e setBuffer:t.stream.buffer offset:0 atIndex:0]; [e setBuffer:t.lut.buffer offset:0 atIndex:1];
+        [e setBuffer:t.scale.buffer offset:0 atIndex:2]; [e setBuffer:input offset:input_offset atIndex:3];
+        [e setBuffer:partial offset:partial_offset atIndex:4]; [e setBytes:&p length:sizeof(p) atIndex:5];
+        id<MTLComputePipelineState> kernel = mv;
+        if (fast_tensor(t)) {
+            if (p.batch == 1) kernel = t.bits == 6 ? mv6 : mv8;
+            else {
+                int tile = p.batch <= 2 ? 0 : (p.batch <= 4 ? 1 : 2);
+                kernel = t.bits == 6 ? batch6[tile] : batch8[tile];
+            }
+        }
+        dispatch(e, kernel, size_t(t.physical_rows) * p.parts);
+        e = encoder(cmd);
+        [e setBuffer:partial offset:partial_offset atIndex:0]; [e setBuffer:output offset:output_offset atIndex:1]; [e setBytes:&p length:sizeof(p) atIndex:2];
+        dispatch(e, reduce, size_t(p.batch) * t.physical_rows);
+    }
+    void linear_tile(Tensor& t, const float* x, int batch, int n, float* y, int m) {
+        Params p = params(t); p.batch = uint32_t(batch);
+        if (size_t(batch) * t.physical_rows * p.parts > UINT32_MAX)
+            throw std::runtime_error("Metal batch scratch exceeds shader indexing range");
+        buffer(input, size_t(batch) * n * 4); buffer(output, size_t(batch) * t.physical_rows * 4);
+        buffer(partial, size_t(batch) * t.physical_rows * p.parts * 4);
+        float* in = static_cast<float*>(input.contents);
+        for (int b = 0; b < batch; ++b) {
+            for (int i = 0; i < n; ++i) in[size_t(b) * n + i] = x[size_t(b) * n + i] * t.in_signs[i];
+            hadamard(in + size_t(b) * n, t.cols);
+        }
+        id<MTLCommandBuffer> cmd = command();
+        encode_linear(cmd, t, p, 0, 0, 0);
+        wait(cmd);
+        float* out = static_cast<float*>(output.contents);
+        for (int b = 0; b < batch; ++b) {
+            float* row_out = out + size_t(b) * t.physical_rows;
+            if (t.output_rotation) {
+                hadamard(row_out, t.physical_rows);
+                for (uint32_t i = 0; i < t.physical_rows; ++i) row_out[i] *= t.out_signs[i];
+            }
+            std::memcpy(y + size_t(b) * m, row_out, size_t(m) * 4);
+        }
+    }
     void linear(const char* name, const float* x, int n, float* y, int m) {
         Tensor& t = get(name);
         if (!x || !y || n != int(t.cols) || m != int(t.rows)) throw std::runtime_error("linear input/output shape mismatch");
-        Params p = params(t);
-        buffer(input, size_t(n) * 4); buffer(output, size_t(t.physical_rows) * 4);
-        buffer(partial, size_t(t.physical_rows) * p.parts * 4);
-        float* in = static_cast<float*>(input.contents);
-        for (int i = 0; i < n; ++i) in[i] = x[i] * t.in_signs[i];
-        hadamard(in, t.cols);
-        id<MTLCommandBuffer> cmd = command();
-        id<MTLComputeCommandEncoder> e = encoder(cmd);
-        [e setBuffer:t.stream.buffer offset:0 atIndex:0]; [e setBuffer:t.lut.buffer offset:0 atIndex:1];
-        [e setBuffer:t.scale.buffer offset:0 atIndex:2]; [e setBuffer:input offset:0 atIndex:3];
-        [e setBuffer:partial offset:0 atIndex:4]; [e setBytes:&p length:sizeof(p) atIndex:5];
-        dispatch(e, mv, size_t(t.physical_rows) * p.parts);
-        e = encoder(cmd);
-        [e setBuffer:partial offset:0 atIndex:0]; [e setBuffer:output offset:0 atIndex:1]; [e setBytes:&p length:sizeof(p) atIndex:2];
-        dispatch(e, reduce, t.physical_rows); wait(cmd);
-        float* out = static_cast<float*>(output.contents);
-        if (t.output_rotation) {
-            hadamard(out, t.physical_rows);
-            for (uint32_t i = 0; i < t.physical_rows; ++i) out[i] *= t.out_signs[i];
+        linear_tile(t, x, 1, n, y, m);
+    }
+    void linear_batch(const char* name, const float* x, int batch, int n, float* y, int m) {
+        Tensor& t = get(name);
+        if (!x || !y || batch < 1 || n != int(t.cols) || m != int(t.rows))
+            throw std::runtime_error("linear_batch input/output shape mismatch");
+        const int tile = fast_tensor(t) ? 8 : 1;
+        for (int first = 0; first < batch;) {
+            int count = std::min(tile, batch - first);
+            linear_tile(t, x + size_t(first) * n, count, n, y + size_t(first) * m, m);
+            first += count;
         }
-        std::memcpy(y, out, size_t(m) * 4);
+    }
+    void linear_multi(const char* const* names, int count, const float* x, int n, float* y, int m) {
+        if (!names || !x || !y || count < 1 || count > 3 || n < 1 || m < 1)
+            throw std::runtime_error("linear_multi expects 1 to 3 names and nonempty input/output");
+        struct Projection {
+            Tensor* tensor = nullptr;
+            Params parameters{};
+            size_t input_offset = 0, partial_offset = 0, output_offset = 0, result_offset = 0;
+        };
+        std::array<Projection, 3> projections;
+        size_t input_bytes = 0, partial_bytes = 0, output_bytes = 0;
+        int logical_rows = 0;
+        auto reserve = [](size_t& total, size_t elements) {
+            if (elements > (std::numeric_limits<size_t>::max() - total) / sizeof(float))
+                throw std::runtime_error("linear_multi scratch size overflow");
+            size_t offset = total;
+            total += elements * sizeof(float);
+            return offset;
+        };
+        // Validate every projection and reserve disjoint ranges before encoding or
+        // submitting any GPU work. A later invalid name/shape cannot partly run.
+        for (int i = 0; i < count; ++i) {
+            Tensor& t = get(names[i]);
+            if (n != int(t.cols) || t.rows > uint32_t(std::numeric_limits<int>::max() - logical_rows))
+                throw std::runtime_error("linear_multi input shape or combined output size mismatch");
+            Params p = params(t);
+            const size_t partial_elements = size_t(t.physical_rows) * p.parts;
+            if (partial_elements > UINT32_MAX)
+                throw std::runtime_error("linear_multi scratch exceeds shader indexing range");
+            Projection& projection = projections[i];
+            projection.tensor = &t; projection.parameters = p;
+            projection.input_offset = reserve(input_bytes, t.cols);
+            projection.partial_offset = reserve(partial_bytes, partial_elements);
+            projection.output_offset = reserve(output_bytes, t.physical_rows);
+            projection.result_offset = size_t(logical_rows);
+            logical_rows += int(t.rows);
+        }
+        if (m != logical_rows) throw std::runtime_error("linear_multi combined output shape mismatch");
+        if (input_bytes > device.maxBufferLength || partial_bytes > device.maxBufferLength || output_bytes > device.maxBufferLength)
+            throw std::runtime_error("linear_multi scratch exceeds device maxBufferLength");
+        buffer(input, input_bytes); buffer(partial, partial_bytes); buffer(output, output_bytes);
+        for (int i = 0; i < count; ++i) {
+            const auto& projection = projections[i];
+            const Tensor& t = *projection.tensor;
+            float* in = reinterpret_cast<float*>(static_cast<uint8_t*>(input.contents) + projection.input_offset);
+            // Rotations may have different signs even when the input is shared.
+            for (int j = 0; j < n; ++j) in[j] = x[j] * t.in_signs[j];
+            hadamard(in, t.cols);
+        }
+        id<MTLCommandBuffer> cmd = command();
+        for (int i = 0; i < count; ++i) {
+            const auto& projection = projections[i];
+            encode_linear(cmd, *projection.tensor, projection.parameters, projection.input_offset,
+                          projection.partial_offset, projection.output_offset);
+        }
+        wait(cmd);
+        for (int i = 0; i < count; ++i) {
+            const auto& projection = projections[i];
+            const Tensor& t = *projection.tensor;
+            float* out = reinterpret_cast<float*>(static_cast<uint8_t*>(output.contents) + projection.output_offset);
+            if (t.output_rotation) {
+                hadamard(out, t.physical_rows);
+                for (uint32_t j = 0; j < t.physical_rows; ++j) out[j] *= t.out_signs[j];
+            }
+            std::memcpy(y + projection.result_offset, out, size_t(t.rows) * sizeof(float));
+        }
     }
     void embedding(int token, float* out, int n) {
         if (!embedding_count) {
@@ -340,6 +448,12 @@ extern "C" void yskn_metal_close(void* handle) { @autoreleasepool { delete stati
 extern "C" const char* yskn_metal_last_error(void) { return error.c_str(); }
 extern "C" int yskn_metal_linear(void* h, const char* name, const float* x, int n, float* y, int m) {
     return call([&] { Model& model = checked(h); std::lock_guard<std::mutex> lock(model.mutex); model.linear(name, x, n, y, m); });
+}
+extern "C" int yskn_metal_linear_batch(void* h, const char* name, const float* x, int batch, int n, float* y, int m) {
+    return call([&] { Model& model = checked(h); std::lock_guard<std::mutex> lock(model.mutex); model.linear_batch(name, x, batch, n, y, m); });
+}
+extern "C" int yskn_metal_linear_multi(void* h, const char** names, int count, const float* x, int n, float* y, int m) {
+    return call([&] { Model& model = checked(h); std::lock_guard<std::mutex> lock(model.mutex); model.linear_multi(names, count, x, n, y, m); });
 }
 extern "C" int yskn_metal_row(void* h, const char* name, int r, float* out, int n) {
     return call([&] { Model& model = checked(h); std::lock_guard<std::mutex> lock(model.mutex); model.decode_row(name, r, out, n); });

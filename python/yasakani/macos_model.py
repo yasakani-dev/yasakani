@@ -18,6 +18,10 @@ import numpy as np
 from .yskn_format import Container, FormatError, NumpyOps
 
 
+class _PrefillCancelled(Exception):
+    """Internal control flow: partially advanced layers cannot be resumed."""
+
+
 def sigmoid(x):
     x = np.asarray(x, dtype=np.float32)
     # exp(-abs(x)) is bounded even for large negative gates.
@@ -80,9 +84,11 @@ class Model:
     """One stateful, sequential model. Callers must serialize forward/reset.
 
     ``ops`` implements ``linear(name, x)``, ``embedding(token)`` and
-    ``vector(name)`` in the original model's coordinates. Linear outputs are
-    unrounded float32 vectors. The default NumPy implementation is for checking
-    correctness, not for interactive use with a 27B model.
+    ``vector(name)`` in the original model's coordinates. Optional
+    ``linear_batch(name, X)`` takes/returns row-major float32 matrices, while
+    ``linear_multi(names, x)`` returns one float32 vector per named projection
+    of a shared input. Linear outputs are unrounded float32. The default NumPy
+    implementation is for checking correctness, not interactive use with a 27B model.
     """
     def __init__(self, path, max_ctx, ops=None):
         self.container = Container(path)
@@ -219,35 +225,81 @@ class Model:
             raise FloatingPointError("non-finite result or incorrect shape from " + name)
         return out
 
+    def _linears(self, names, x):
+        """Project one input several ways, allowing a single native submission."""
+        multi = getattr(self.ops, "linear_multi", None)
+        if not callable(multi):
+            return [self._linear(name, x) for name in names]
+        outputs = multi(names, np.ascontiguousarray(x, dtype=np.float32))
+        if not isinstance(outputs, (list, tuple)) or len(outputs) != len(names):
+            raise FloatingPointError("incorrect number of results from grouped projections")
+        checked = []
+        for name, output in zip(names, outputs):
+            out = np.asarray(output, dtype=np.float32)
+            if out.shape != (self.container.tensors[name]["rows"],) or not np.all(np.isfinite(out)):
+                raise FloatingPointError("non-finite result or incorrect shape from " + name)
+            checked.append(out)
+        return checked
+
+    def _linear_batch(self, name, x, check_cancel):
+        check_cancel()
+        x = np.ascontiguousarray(x, dtype=np.float32)
+        batch = getattr(self.ops, "linear_batch", None)
+        if callable(batch):
+            out = np.asarray(batch(name, x), dtype=np.float32)
+        else:
+            # A reference or older ops implementation keeps the identical scalar
+            # projection arithmetic, while the model still executes layer-major.
+            rows = []
+            for row in x:
+                check_cancel()
+                rows.append(self._linear(name, row))
+            out = np.stack(rows)
+        check_cancel()
+        if out.shape != (len(x), self.container.tensors[name]["rows"]) or not np.all(np.isfinite(out)):
+            raise FloatingPointError("non-finite result or incorrect batch shape from " + name)
+        return out
+
     def _attention(self, layer, p, x):
         p += "self_attn."
+        q_gate, k, v = self._linears((p + "q_proj", p + "k_proj", p + "v_proj"), x)
+        out = self._attention_step(layer, p, q_gate, k, v, self.position)
+        return self._linear(p + "o_proj", out)
+
+    def _attention_step(self, layer, p, q_gate, k, v, position):
+        """Commit one projected token; shared by scalar decode and chunk prefill."""
         # Q and the output gate are interleaved per attention head, not two global halves.
-        q_gate = self._linear(p + "q_proj", x).reshape(self.heads, 2, self.head_dim)
+        q_gate = q_gate.reshape(self.heads, 2, self.head_dim)
         q, gate = q_gate[:, 0], q_gate[:, 1]
-        k = self._linear(p + "k_proj", x).reshape(self.kv_heads, self.head_dim)
-        v = self._linear(p + "v_proj", x).reshape(self.kv_heads, self.head_dim)
-        q = rotary(rms_norm(q, self._vector(p + "q_norm"), self.eps), self.position, self.rotary_dim, self.rope_theta)
-        k = rotary(rms_norm(k, self._vector(p + "k_norm"), self.eps), self.position, self.rotary_dim, self.rope_theta)
+        k = k.reshape(self.kv_heads, self.head_dim)
+        v = v.reshape(self.kv_heads, self.head_dim)
+        q = rotary(rms_norm(q, self._vector(p + "q_norm"), self.eps), position, self.rotary_dim, self.rope_theta)
+        k = rotary(rms_norm(k, self._vector(p + "k_norm"), self.eps), position, self.rotary_dim, self.rope_theta)
         if layer not in self._kv:
             capacity = min(64, self.max_ctx)
             self._kv[layer] = (np.empty((capacity, self.kv_heads, self.head_dim), np.float32),
                                np.empty((capacity, self.kv_heads, self.head_dim), np.float32))
         keys, values = self._kv[layer]
-        if self.position == len(keys):
+        if position == len(keys):
             capacity = min(self.max_ctx, 2 * len(keys))
             new_keys = np.empty((capacity, self.kv_heads, self.head_dim), np.float32)
             new_values = np.empty_like(new_keys)
-            new_keys[:self.position], new_values[:self.position] = keys, values
+            new_keys[:position], new_values[:position] = keys, values
             keys, values = self._kv[layer] = new_keys, new_values
-        keys[self.position], values[self.position] = k, v
-        out = grouped_attention(q, keys[:self.position + 1], values[:self.position + 1])
-        return self._linear(p + "o_proj", (out * sigmoid(gate)).reshape(-1))
+        keys[position], values[position] = k, v
+        out = grouped_attention(q, keys[:position + 1], values[:position + 1])
+        return (out * sigmoid(gate)).reshape(-1)
 
     def _gdn(self, layer, p, x):
         p += "linear_attn."
+        mixed, z = self._linears((p + "in_proj_qkv", p + "in_proj_z"), x)
+        out = self._gdn_step(layer, p, x, mixed, z)
+        return self._linear(p + "out_proj", out)
+
+    def _gdn_step(self, layer, p, x, mixed, z):
+        """Commit one convolution/delta-rule step using already projected values."""
         history, state = self._linear_state[layer]
-        mixed = self._linear(p + "in_proj_qkv", x)
-        z = self._linear(p + "in_proj_z", x).reshape(self.value_heads, self.value_dim)
+        z = z.reshape(self.value_heads, self.value_dim)
         weights = self._vector(p + "conv1d").reshape(self.conv_channels, self.conv_size)
         convolved = np.sum(history.T * weights[:, :-1], axis=1) + mixed * weights[:, -1]
         history[:-1] = history[1:]
@@ -265,7 +317,85 @@ class Model:
         decay = -np.exp(self._vector(p + "A_log")) * np.logaddexp(0, a + self._vector(p + "dt_bias"))
         core = delta_step(state, q, k, v, beta, decay)
         out = rms_norm(core, self._vector(p + "norm"), self.eps, offset=0) * silu(z)
-        return self._linear(p + "out_proj", out.reshape(-1))
+        return out.reshape(-1)
+
+    def prefill(self, tokens, *, cancel=None, logits=True):
+        """Commit up to 32 prompt tokens, batching projections by layer.
+
+        Chunks may continue an existing prefix. Attention sees only preceding
+        tokens, and each layer's convolution/recurrent state advances in token
+        order. Only the final token needs a vocabulary projection. A cancelled
+        or failed chunk invalidates the state: ``reset()`` is required before
+        another operation. Cancellation returns None; successful logits=False
+        also returns None, with position advanced by the complete chunk.
+        """
+        if self._failed:
+            raise RuntimeError("model state is invalid after a failed prefill; call reset()")
+        ids = np.asarray(tokens)
+        if (ids.ndim != 1 or not 1 <= len(ids) <= 32
+                or not np.issubdtype(ids.dtype, np.integer)):
+            raise ValueError("prefill expects an integer vector of 1 to 32 tokens")
+        if np.any(ids < 0) or np.any(ids >= self.vocab):
+            raise ValueError("token id is outside the model vocabulary")
+        if self.position + len(ids) > self.max_ctx:
+            raise ValueError("prefill exceeds the model context")
+        if cancel is not None and not callable(cancel):
+            raise TypeError("cancel must be callable")
+
+        def check_cancel():
+            if cancel is not None and cancel():
+                raise _PrefillCancelled()
+
+        def project(name, x):
+            return self._linear_batch(name, x, check_cancel)
+
+        start = self.position
+        try:
+            x = np.empty((len(ids), self.hidden), dtype=np.float32)
+            for index, token in enumerate(ids):
+                check_cancel()
+                embedding = np.asarray(self.ops.embedding(int(token)), dtype=np.float32)
+                if embedding.shape != (self.hidden,) or not np.all(np.isfinite(embedding)):
+                    raise FloatingPointError("invalid embedding")
+                x[index] = embedding
+            for layer, kind in enumerate(self.layer_types):
+                check_cancel()
+                p = "layers.%d." % layer
+                norm = rms_norm(x, self._vector(p + "input_layernorm"), self.eps)
+                if kind == "linear_attention":
+                    a = p + "linear_attn."
+                    mixed = project(a + "in_proj_qkv", norm)
+                    z = project(a + "in_proj_z", norm)
+                    attended = np.empty((len(ids), self.value_heads * self.value_dim), np.float32)
+                    for index in range(len(ids)):
+                        check_cancel()
+                        attended[index] = self._gdn_step(layer, a, norm[index], mixed[index], z[index])
+                    x += project(a + "out_proj", attended)
+                else:
+                    a = p + "self_attn."
+                    q = project(a + "q_proj", norm)
+                    k = project(a + "k_proj", norm)
+                    v = project(a + "v_proj", norm)
+                    attended = np.empty((len(ids), self.heads * self.head_dim), np.float32)
+                    for index in range(len(ids)):
+                        check_cancel()
+                        attended[index] = self._attention_step(layer, a, q[index], k[index], v[index], start + index)
+                    x += project(a + "o_proj", attended)
+                norm = rms_norm(x, self._vector(p + "post_attention_layernorm"), self.eps)
+                gate = project(p + "mlp.gate_proj", norm)
+                up = project(p + "mlp.up_proj", norm)
+                x += project(p + "mlp.down_proj", silu(gate) * up)
+            check_cancel()
+            result = self._linear("lm_head", rms_norm(x[-1], self._vector("norm"), self.eps)) if logits else None
+            check_cancel()
+            self.position = start + len(ids)
+            return result
+        except _PrefillCancelled:
+            self._failed = True
+            return None
+        except BaseException:
+            self._failed = True
+            raise
 
     def forward(self, token, logits=True):
         """Commit one token; omit the expensive vocabulary projection during prefill."""
@@ -284,8 +414,7 @@ class Model:
                 norm = rms_norm(x, self._vector(p + "input_layernorm"), self.eps)
                 x += self._attention(layer, p, norm) if kind == "full_attention" else self._gdn(layer, p, norm)
                 norm = rms_norm(x, self._vector(p + "post_attention_layernorm"), self.eps)
-                gate = self._linear(p + "mlp.gate_proj", norm)
-                up = self._linear(p + "mlp.up_proj", norm)
+                gate, up = self._linears((p + "mlp.gate_proj", p + "mlp.up_proj"), norm)
                 x += self._linear(p + "mlp.down_proj", silu(gate) * up)
             result = self._linear("lm_head", rms_norm(x, self._vector("norm"), self.eps)) if logits else None
             self.position += 1
