@@ -20,6 +20,9 @@ classifiers = [
 [project.scripts]
 yasakani = "yasakani.cli:main"
 
+[project.optional-dependencies]
+vision = ["Pillow>=10"]
+
 [tool.setuptools]
 packages = ["yasakani"]
 

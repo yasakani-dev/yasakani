@@ -114,6 +114,32 @@ print(r.choices[0].message.tool_calls)
 * Input, thinking and answer together are limited to the context length (262,144 tokens by default; `--max-ctx` lowers it and the memory it needs).
 * Asking again with the earlier conversation in front of a new question does not recompute the earlier turns (`usage.prompt_tokens_details.cached_tokens`).
 
+### Image input (optional)
+
+The engine library already has the entry for image features (`yskn_set_visual`); the server feeds it when it is started with three more files.
+Without them the server is text only, exactly as before, and a request with an image is answered with 400.
+
+| | |
+|---|---|
+| `--mmproj` | the projector of Qwen3.8-27B: `mmproj-Qwen3.8-27B-BF16.gguf` from [ggml-org/Qwen3.8-27B-GGUF](https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF) (931,145,888 bytes, sha256 `de2a4986…f53fe8`) |
+| `--llama-dir` | the folder of the llama.cpp **b10488** release for Windows (`llama.dll`, `mtmd.dll`, `ggml*.dll`); its multimodal library turns the image into features |
+| `--vision-model` | any Qwen3.8-27B GGUF (for example `Qwen3.8-27B-Q4_K_M.gguf` of the same repository). Only its settings and vocabulary are read, never its weights |
+
+```bat
+pip install .[vision]
+yasakani serve --model-dir D:\models\qwen38-quality --dll D:\yasakani\yskn.dll ^
+  --mmproj D:\gguf\mmproj-Qwen3.8-27B-BF16.gguf --llama-dir D:\llama-b10488 --vision-model D:\gguf\Qwen3.8-27B-Q4_K_M.gguf
+```
+
+Send the image as an OpenAI `image_url` part with a `data:image/...;base64,` URI, in a user message (up to 16 images, 24 MiB and 40 million pixels each).
+Local file paths are accepted only with `--vision-allow-local-files`; remote URLs never. `--vision-cache FOLDER` keeps the features of images seen before.
+
+* The image is encoded on the CPU (a few seconds; 2.6 s for our test image with 8 threads); generation then runs on the GPU as usual.
+  On the GPU the features came out slightly different and the image score of our test fell (87.8 on the CPU, 79.6 and 81.6 in two GPU runs).
+* Our test of image understanding (5 levels, 49 questions) gave **87.8** with the quality model, against 89.8 for the original BF16 model in llama.cpp.
+* Image tokens get Qwen's three-axis positions (time, row, column); the text after an image continues from the largest of them.
+* Without image input nothing changes: the same three greedy questions gave the same tokens with and without these changes.
+
 ### Safety of the server
 
 * By default only this computer can connect. The `Host` header must name the address the server is bound to, and a browser request from another web page

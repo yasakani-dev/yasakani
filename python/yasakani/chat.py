@@ -99,6 +99,14 @@ def _clean_content(c, i: int):
     if isinstance(c, list):
         parts = []
         for p in c:
+            if isinstance(p, dict) and p.get("type") == "image_url":
+                value = p.get("image_url")
+                if not isinstance(value, dict) or not isinstance(value.get("url"), str) or not value["url"]:
+                    raise RequestError("messages[%d]: image_url needs a nonempty url string" % i)
+                if value.get("detail", "auto") not in ("auto", "low", "high"):
+                    raise RequestError("messages[%d]: invalid image detail" % i)
+                parts.append({"type": "image_url", "image_url": dict(value)})
+                continue
             if not isinstance(p, dict) or p.get("type") not in ("text", None) or "text" not in p:
                 raise RequestError("messages[%d]: only text content is supported" % i)
             parts.append({"type": "text", "text": str(p["text"])})
@@ -134,7 +142,7 @@ def _clean_tool_calls(calls, i: int) -> List[dict]:
 
 
 def clean_messages(messages) -> List[dict]:
-    """Validate OpenAI-style messages (text only) and return plain dicts the template understands.  ``developer`` is read as
+    """Validate OpenAI-style messages and return plain dicts.  ``developer`` is read as
     ``system``; an assistant message may carry ``tool_calls`` and a ``tool`` message carries the result of one call."""
     if not isinstance(messages, list) or not messages:
         raise RequestError("messages must be a non-empty list")
@@ -146,6 +154,8 @@ def clean_messages(messages) -> List[dict]:
         if role not in ("system", "user", "assistant", "tool"):
             raise RequestError("messages[%d]: role must be system, user, assistant or tool" % i)
         msg = {"role": role, "content": _clean_content(m.get("content"), i)}
+        if role != "user" and isinstance(msg["content"], list) and any(p["type"] == "image_url" for p in msg["content"]):
+            raise RequestError("messages[%d]: images are supported only in user messages" % i)
         if role == "assistant":
             if isinstance(m.get("reasoning_content"), str):
                 msg["reasoning_content"] = m["reasoning_content"]
@@ -181,9 +191,10 @@ def clean_tools(tools) -> Optional[List[dict]]:
 class ChatRunner:
     """Runs chat requests on one engine, one at a time."""
 
-    def __init__(self, engine: Engine, fmt: ChatFormatter, seed0: int = 1):
+    def __init__(self, engine: Engine, fmt: ChatFormatter, seed0: int = 1, *, vision=None):
         self.engine = engine
         self.fmt = fmt
+        self.vision = vision
         self._seed = int(seed0)
         self._seed_lock = threading.Lock()
         self.bridge = fmt.encode(loopguard.BRIDGE)
@@ -202,32 +213,59 @@ class ChatRunner:
         self.engine.warmup([plain, chat], n_gen=32)
 
     def prepare(self, p: ChatParams):
+        from .vision import split_images, PreparedVisual
+        messages, sources = split_images(p.messages)
+        if sources and self.vision is None:
+            raise RequestError("only text content is supported: image input is not configured "
+                               "(start the server with --mmproj, --llama-dir and --vision-model)")
         kw = dict(p.template_kwargs)
         if p.tools:
             kw["tools"] = p.tools
             try:
                 from jinja2.exceptions import TemplateError
-                prompt, in_reasoning = self.fmt.prompt(p.messages, **kw)
+                prompt, in_reasoning = self.fmt.prompt(messages, **kw)
             except TemplateError as ex:                  # e.g. a tool result without a user message before it
                 raise RequestError("the chat template does not accept these messages: %s" % ex)
         else:
-            prompt, in_reasoning = self.fmt.prompt(p.messages, **kw)
+            prompt, in_reasoning = self.fmt.prompt(messages, **kw)
+        if sources:
+            if not self.engine.supports_visual:
+                raise RequestError("the engine library does not support image input (yskn_set_visual is missing)")
+            try:
+                prompt, visual = self.vision.prepare(prompt, sources, self.fmt, self.engine.max_ctx - CONTEXT_MARGIN)
+            except (ValueError, OSError, RuntimeError, ImportError) as ex:
+                raise RequestError("image input: %s" % ex) from ex
+            return PreparedVisual(prompt, in_reasoning, visual)
         return prompt, in_reasoning
 
     def prepare_checked(self, p: ChatParams):
         """``prepare`` plus the length check: ``ContextLengthError`` if the input leaves no room for an answer.  The message uses
         the words programs look for ("exceeds the model's maximum context length of N tokens"): an agent program that sees them
         shortens the conversation and tries again."""
-        prompt, in_reasoning = self.prepare(p)
+        prepared = self.prepare(p)
+        prompt, in_reasoning = prepared
         if len(prompt) >= self.engine.max_ctx - CONTEXT_MARGIN:
             raise ContextLengthError("the input is too long: %d tokens exceeds the model's maximum context length of %d tokens "
                                      "(input, thinking and answer together)" % (len(prompt), self.engine.max_ctx))
-        return prompt, in_reasoning
+        return prepared
 
     def run(self, p: ChatParams, emit: Callable[[str, str], None], prepared=None) -> Usage:
         """Generate the reply, calling ``emit("reasoning" | "content", text)`` as text becomes available.  Raises ``RequestError`` for
         a request that cannot be served, ``YasakaniError`` for an engine failure.  ``prepared`` is the result of ``prepare_checked``
         when the caller has already made it (the server does, to answer a request it cannot serve before it starts a stream)."""
+        if prepared is None:
+            prepared = self.prepare_checked(p)
+        visual = getattr(prepared, "visual", None)
+        if visual is not None:
+            with self.engine.visual_input(**visual):
+                return self._run(p, emit, prepared)
+        return self._run(p, emit, prepared)
+
+    def close(self):
+        if self.vision is not None:
+            self.vision.close()
+
+    def _run(self, p, emit, prepared):
         eng = self.engine
         prompt, in_reasoning = prepared if prepared is not None else self.prepare_checked(p)
         max_new = max(1, int(p.max_tokens))

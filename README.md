@@ -251,7 +251,7 @@ part contributes, and the source files that go with each.
 
 ## Limits
 
-* Windows 11 + RTX 5090 + Qwen3.8-27B only. One request at a time. Text only: no images, no `n` above 1, no `logprobs`. Tool / function calling: `tools` with `tool_choice` `auto` or `none` (new in 0.1.1; a forced `tool_choice` is not supported). It is new and has been tested far less than plain chat.
+* Windows 11 + RTX 5090 + Qwen3.8-27B only. One request at a time. Images only through the optional image input of the server ([python/README.md](python/README.md#image-input-optional)); no `n` above 1, no `logprobs`. Tool / function calling: `tools` with `tool_choice` `auto` or `none` (new in 0.1.1; a forced `tool_choice` is not supported). It is new and has been tested far less than plain chat.
 * The release files are not code-signed, so Windows may warn about them (see [SECURITY.md](SECURITY.md)).
 * The answers are not identical to the original model's (see Quality).
 
