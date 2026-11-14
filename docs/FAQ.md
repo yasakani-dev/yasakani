@@ -97,8 +97,9 @@ API key will do). If it does not connect:
 
 ## Can I use other models, for example Qwen4?
 
-Not in this release: it runs Qwen3.8-27B only. The tool that converts a model to the YASAKANI file format is **not** part of this release; the
-published models work as they are. Whether other models can be supported is decided one by one, and nothing is promised.
+Not in this release: it runs Qwen3.8-27B only. The program that made the two model files ([tools/convert/](../tools/convert/), added on
+November 14, 2026) knows the layers of Qwen3.8-27B only, and the engine runs this model only, so another model needs changes in both.
+Whether other models can be supported is decided one by one, and nothing is promised.
 
 ## Does it send my prompts anywhere?
 

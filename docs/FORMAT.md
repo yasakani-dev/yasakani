@@ -9,9 +9,8 @@ original weights, or write one.
 * A small test file and the values a reader must get from it: [`tools/testdata/`](../tools/testdata/).
 * The reader of the engine: [`src/format.hpp`](../src/format.hpp) and [`src/loader.cpp`](../src/loader.cpp).
 
-What this document does not give you: the program that made the released files. The conversion tool is not public; its method
-is described in [TECHNOLOGY.md](TECHNOLOGY.md), section 3.2. With this document you can check what the released files contain,
-but you cannot rebuild them from the original weights bit for bit. See [section 9](#9-writing-a-file).
+The program that made the released files from the original weights is in [`tools/convert/`](../tools/convert/) (added on
+November 14, 2026); its method is described in [TECHNOLOGY.md](TECHNOLOGY.md), section 3.2. See [section 9](#9-writing-a-file).
 
 ## 1. Overview
 
@@ -271,6 +270,8 @@ A writer has to produce, for every matrix, a value table, a scale per row and a 
 close to the one it wants to store, and then lay the data out as in sections 2 to 4. Since every bit string is a valid code,
 `tools/yskn_fixture.py` is a complete (if useless) writer: it fills the streams with pseudo-random bits.
 
-Choosing good codes is the hard part. The released files were made by a conversion tool that is not public. Its method is described
-in [TECHNOLOGY.md](TECHNOLOGY.md), section 3.2 (the statistics it collects, how it searches for the codes, how the rounding error is
-passed on, the calibration text); that description is not detailed enough to reproduce the released files bit for bit.
+Choosing good codes is the hard part. The program that made the released files is in [`tools/convert/`](../tools/convert/), with
+the data it needs; its method is described in [TECHNOLOGY.md](TECHNOLOGY.md), section 3.2. Run again on the PC that made the
+released files, it gave the same codes for every matrix of the body and for the embedding table, and with the output matrix
+taken from a released file it gave the released files byte for byte. Whether another PC gives the same codes depends on its
+arithmetic ([`tools/convert/README.md`](../tools/convert/README.md), "What we got" and "Limits").

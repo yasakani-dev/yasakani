@@ -1,9 +1,10 @@
 # Tools for checking the published files
 
-日本語：このフォルダーには、公開したモデルファイルと品質の数字を、エンジンを信用せずに自分で確かめるための道具があります。ファイル形式の定義は
+日本語：このフォルダーには、公開したモデルファイルと品質の数字を、エンジンを信用せずに自分で確かめるための道具と、モデルファイルを作った変換のプログラム（`convert/`）があります。ファイル形式の定義は
 [docs/FORMAT.ja.md](../docs/FORMAT.ja.md) です。
 
-Everything here is for checking what this project publishes without having to trust the engine.
+Everything here is for checking what this project publishes without having to trust the engine, and `convert/` is the program
+that made the model files.
 
 | | |
 |---|---|
@@ -12,6 +13,7 @@ Everything here is for checking what this project publishes without having to tr
 | [`records/`](records/) | what `yskn_decode.py compare` gives for the two released models, tensor by tensor |
 | [`speed/`](speed/) | the thinking-off speed table made again with a stricter rule for repetition, the same for every engine, and the 12 published prompts one by one |
 | [`quality/`](quality/) | the quality measurement: the 20 evaluation windows, a program that makes the reference from the original model, a program that measures a released model with the engine |
+| [`convert/`](convert/) | the converter that made the released model files from the original weights: the program, the CUDA kernel of its search, the data it needs, and what we got when we ran it again |
 
 The file format is defined in [docs/FORMAT.md](../docs/FORMAT.md).
 
@@ -19,5 +21,4 @@ The file format is defined in [docs/FORMAT.md](../docs/FORMAT.md).
     python tools/yskn_decode.py info    qwen38_27b_quality.yskn
     python tools/yskn_decode.py compare qwen38_27b_quality.yskn --original <folder with the *.safetensors of Qwen/Qwen3.8-27B>
 
-What is not here: the conversion tool that makes a `.yskn` file from the original weights. It is not public
-([docs/FORMAT.md](../docs/FORMAT.md), section 9).
+Making a `.yskn` file from the original weights: [`convert/README.md`](convert/README.md).

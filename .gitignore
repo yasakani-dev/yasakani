@@ -1,4 +1,5 @@
 /build/
+/tools/convert/native/build/
 __pycache__/
 *.pyc
 *.egg-info/

@@ -97,7 +97,8 @@ The code that reads the format is in `src/format.hpp` and `src/loader.cpp`.
 
 ### 3.2 How the codes are made (the conversion)
 
-The conversion tool is not part of this release. This is how it works.
+The conversion program is in [`tools/convert/`](../tools/convert/) (added on November 14, 2026), with the data it needs and what
+we got when we ran it again. This is how it works.
 
 1. **Collect statistics.** Calibration text is run through the original model, and two statistics are taken for every matrix:
    * input side: the second-order statistics of the values that enter the matrix;
