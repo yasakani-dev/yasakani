@@ -1,5 +1,8 @@
 # YASAKANI
 
+Experimental Apple Silicon port: [macOS app, prebuilt artifacts and source build](docs/MACOS.md).
+It runs the same `.yskn` weights with a separate Metal backend; the CUDA measurements below do not apply to it.
+
 A local LLM engine for **Windows** and **one NVIDIA RTX 5090**, built for one model: **Qwen3.8-27B**. Open source, Apache License 2.0.
 日本語は [README.ja.md](README.ja.md)。
 

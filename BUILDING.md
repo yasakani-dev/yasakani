@@ -1,5 +1,8 @@
 # Building yskn.dll from source
 
+For the experimental Apple Silicon Metal library and standalone macOS launcher,
+see [docs/MACOS.md](docs/MACOS.md). The CUDA instructions below apply to Windows/Linux.
+
 The release page has a prebuilt `yskn.dll`. You can also build it yourself. You do not need a GPU to build it, only to run it.
 日本語：Visual Studio 2022 Build Tools（C++）、CUDA Toolkit、CMake、Ninja を入れ、「x64 Native Tools Command Prompt for VS 2022」で下の 2 つのコマンドを実行します。
 

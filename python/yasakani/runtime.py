@@ -116,7 +116,7 @@ class ModelPack:
     DEFAULT_FILES = dict(weights="qwen38_27b_e3x.yskn", draft="bdraft2_k8.yskn", draft_head="bdraft2_k8.shead", kv_profile="kvq_u5.bin")
 
     @classmethod
-    def load(cls, root) -> "ModelPack":
+    def load(cls, root, *, require_aux: bool = True) -> "ModelPack":
         root = Path(root)
         if not root.is_dir():
             raise YasakaniError("model folder not found: %s" % root)
@@ -127,7 +127,7 @@ class ModelPack:
             meta = json.loads(mf.read_text(encoding="utf-8"))
             files.update(meta.get("files") or {})
         paths = {k: root / v for k, v in files.items() if k in cls.DEFAULT_FILES}
-        missing = [str(p.name) for p in paths.values() if not p.is_file()]
+        missing = [str(p.name) for k, p in paths.items() if (require_aux or k == "weights") and not p.is_file()]
         if missing:
             raise YasakaniError("model folder %s is missing: %s" % (root, ", ".join(missing)))
         for need in ("tokenizer.json", "tokenizer_config.json"):
