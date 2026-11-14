@@ -163,8 +163,11 @@ of the nvidia-smi values before and after loading).
 | Software | Microsoft Visual C++ 2015-2022 x64 runtime, Python 3.10 or newer |
 | Disk / RAM | 20 GB free (one model is a download of about 13 to 15 GB); 32 GB of RAM recommended (tested on a PC with 96 GB) |
 
-Not supported in this release: Linux, macOS, AMD GPUs, other NVIDIA GPUs (the RTX 4090, 3090 and the 16 GB cards have not been tested with
+Not supported in this release: macOS, AMD GPUs, other NVIDIA GPUs (the RTX 4090, 3090 and the 16 GB cards have not been tested with
 this release), other models. Support for more GPUs is the purpose of the crowdfunding campaign; see [Support](#support).
+
+**Linux:** the engine can be built from source (contributed in [#3](https://github.com/yasakani-dev/yasakani/pull/3), which lists the commands; we checked it on WSL2 /
+Ubuntu 24.04 with an RTX 5090). There is no prebuilt Linux release or launcher yet: that is one of the crowdfunding goals.
 
 Close other programs that use a lot of GPU memory (games, other LLM servers) before you start. When the memory runs out there is no error:
 generation just becomes several times slower (a warning is printed at start in that case).
@@ -251,7 +254,7 @@ part contributes, and the source files that go with each.
 
 ## Limits
 
-* Windows 11 + RTX 5090 + Qwen3.8-27B only. One request at a time. Text only: no images, no `n` above 1, no `logprobs`. Tool / function calling: `tools` with `tool_choice` `auto` or `none` (new in 0.1.1; a forced `tool_choice` is not supported). It is new and has been tested far less than plain chat.
+* Windows 11 + RTX 5090 + Qwen3.8-27B only (Linux: build from source). One request at a time. Text only: no images, no `n` above 1, no `logprobs`. Tool / function calling: `tools` with `tool_choice` `auto` or `none` (new in 0.1.1; a forced `tool_choice` is not supported). It is new and has been tested far less than plain chat.
 * The release files are not code-signed, so Windows may warn about them (see [SECURITY.md](SECURITY.md)).
 * The answers are not identical to the original model's (see Quality).
 

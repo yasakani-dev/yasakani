@@ -43,7 +43,7 @@ GPU をほかのプログラムが使っていないとき、同じ依頼のく�
 ## どの GPU・どの OS で動く？
 
 動作を確認していて、サポートするのは **Windows 11 と RTX 5090**（32 GB）だけです。カーネルは計算能力 12.0 向けにビルドしてあります。これは RTX 50 シリーズに共通で、起動ファイルは RTX 5090 以外では止まります。
-ほかの NVIDIA のカードは、この版では試していません。試した結果の報告は歓迎します（[CONTRIBUTING.md](../CONTRIBUTING.md)）。Linux、macOS、AMD の GPU は対応していません。Linux 用のビルドもありません。
+ほかの NVIDIA のカードは、この版では試していません。試した結果の報告は歓迎します（[CONTRIBUTING.md](../CONTRIBUTING.md)）。macOS と AMD の GPU には対応していません。Linux はソースからビルドすれば動きます（寄稿 [#3](https://github.com/yasakani-dev/yasakani/pull/3)。WSL2・Ubuntu 24.04・RTX 5090 で確認）。ビルド済みの Linux 版と起動ファイルは、クラウドファンディングの目標の 1 つです。
 対応を広げること（まず 24 GB・16 GB の RTX、その先に AMD と Mac）が、クラウドファンディングの目的です。順番と条件は[プロジェクトのページ](https://camp-fire.jp/projects/992233/view)にあります。
 
 ## どれくらいのメモリ・ディスクが要る？
