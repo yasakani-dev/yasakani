@@ -13,6 +13,12 @@
 #include "signs.hpp"
 #include "devmem.hpp"   
 
+#ifndef _WIN32
+// 64-bit file offsets: MSVC names them _fseeki64 / _ftelli64, POSIX names them fseeko / ftello.
+#define _fseeki64 fseeko
+#define _ftelli64 ftello
+#endif
+
 #if YSKN_KVX_MODE == 3
 #include <vector>
 #include <string>
