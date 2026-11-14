@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 the YASAKANI authors
+// Modified in the unofficial RTX 3090 (sm_86) fork: CUDA errors during the upload now throw (see FORK_RTX3090.md).
 #include <cstdlib>
 #include <cmath>
 #include <algorithm>
@@ -10,8 +11,12 @@
 #include "devmem.hpp"   
 namespace yskn {
 static float h2f_host(uint16_t u) { __half h = *reinterpret_cast<__half*>(&u); return __half2float(h); }
-template <class T2> static T2* dev_copy(const void* src, size_t bytes) { T2* d = nullptr; cudaMalloc(&d, bytes); cudaMemcpy(d, src, bytes, cudaMemcpyHostToDevice); return d; }
-template <class T2> static T2* dev_zero(size_t bytes) { T2* d = nullptr; cudaMalloc(&d, bytes); cudaMemset(d, 0, bytes); return d; }
+static void cuda_check(cudaError_t e, const char* what, size_t bytes) {   // RTX 3090 fork
+  if (e != cudaSuccess) throw std::runtime_error(std::string("upload: ") + what + " (" + std::to_string(bytes) + " bytes): " + cudaGetErrorString(e)); }
+template <class T2> static T2* dev_copy(const void* src, size_t bytes) { T2* d = nullptr; cuda_check(cudaMalloc(&d, bytes), "cudaMalloc", bytes); cuda_check(cudaMemcpy(d, src, bytes, cudaMemcpyHostToDevice), "cudaMemcpy", bytes); return d; }
+template <class T2> static T2* dev_zero(size_t bytes) { T2* d = nullptr; cuda_check(cudaMalloc(&d, bytes), "cudaMalloc", bytes); cuda_check(cudaMemset(d, 0, bytes), "cudaMemset", bytes); return d; }
+static void repack_check(int rc, size_t bytes) {   // RTX 3090 fork: yskn_repack_warp_to_frag returns cudaGetLastError(), which clears it
+  cuda_check((cudaError_t)rc, "repack", bytes); cuda_check(cudaDeviceSynchronize(), "repack sync", bytes); }
 
 uint16_t* Model::upload_vector(const std::string& name, int n) { const VectorDesc& v = c.vector(name); if (v.n != n) throw std::runtime_error("vector size mismatch: " + name); return dev_copy<uint16_t>(c.at<uint16_t>(v.off), (size_t)n * 2); }
 
@@ -40,7 +45,7 @@ DevTensor Model::upload_linear(const TensorDesc& d, int Mmax, int want_workers, 
   if (!d.has_rar) {
     const int wps = 4 * d.bits; const size_t nwords = (size_t)rows * seqs * wps;
     uint32_t* dw = dev_copy<uint32_t>(words, nwords * 4); cudaMalloc(&t.frag, nwords * 4);
-    yskn_repack_warp_to_frag(dw, (uint32_t*)t.frag, rows, seqs, wps, nullptr); cudaDeviceSynchronize(); cudaFree(dw);
+    repack_check(yskn_repack_warp_to_frag(dw, (uint32_t*)t.frag, rows, seqs, wps, nullptr), nwords * 4); cudaFree(dw);
     t.tiles_by_k.assign(9, {}); for (int i = 0; i < ntiles; ++i) t.tiles_by_k[d.bits].push_back(i); t.kmax = d.bits;
   } else {
     const uint8_t* kt = c.at<uint8_t>(d.rar.k_off); const uint64_t* off = c.at<uint64_t>(d.rar.off_off);
@@ -48,7 +53,7 @@ DevTensor Model::upload_linear(const TensorDesc& d, int Mmax, int want_workers, 
     for (int i = 0; i < ntiles; ++i) { tk[i] = kt[i]; toff[i] = total_u4; total_u4 += (size_t)64 * seqs * (4 * kt[i]) / 4; }
     cudaMalloc(&t.frag, total_u4 * 16);
     for (int i = 0; i < ntiles; ++i) { const int wps = 4 * tk[i]; const size_t nw = (size_t)64 * seqs * wps;
-      uint32_t* dw = dev_copy<uint32_t>(words + off[i], nw * 4); yskn_repack_warp_to_frag(dw, (uint32_t*)(t.frag + toff[i]), 64, seqs, wps, nullptr); cudaDeviceSynchronize(); cudaFree(dw); }
+      uint32_t* dw = dev_copy<uint32_t>(words + off[i], nw * 4); repack_check(yskn_repack_warp_to_frag(dw, (uint32_t*)(t.frag + toff[i]), 64, seqs, wps, nullptr), nw * 4); cudaFree(dw); }
     t.tile_off = dev_copy<uint64_t>(toff.data(), ntiles * 8); t.tile_k = dev_copy<uint8_t>(tk.data(), ntiles);
     t.tiles_by_k.assign(9, {}); t.kmax = 0; for (int i = 0; i < ntiles; ++i) { t.tiles_by_k[tk[i]].push_back(i); t.kmax = std::max(t.kmax, (int)tk[i]); }
   }

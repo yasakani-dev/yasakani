@@ -1,3 +1,4 @@
+# Modified in the unofficial RTX 3090 (sm_86) fork: YSKN_CUDA_ARCH build target (see FORK_RTX3090.md).
 cmake_minimum_required(VERSION 3.24)
 project(yasakani_engine LANGUAGES CXX CUDA)
 
@@ -7,7 +8,10 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_ARCHITECTURES 120)
+# RTX 3090 fork: the target is a cache variable. 120 (the RTX 50 series) stays the default and builds the upstream code unchanged;
+# 86 (RTX 3090, Ampere) is experimental.  cmake -DYSKN_CUDA_ARCH=86 ...
+set(YSKN_CUDA_ARCH "120" CACHE STRING "CUDA compute capability to build for: 120 (upstream default) or 86 (RTX 3090, experimental)")
+set(CMAKE_CUDA_ARCHITECTURES ${YSKN_CUDA_ARCH})
 find_package(CUDAToolkit REQUIRED)
 
 add_library(yskn SHARED
@@ -43,7 +47,7 @@ add_library(yskn SHARED
   src/test_hooks.cpp
 )
 target_include_directories(yskn PRIVATE src include third_party)
-target_compile_definitions(yskn PRIVATE YSKN_BUILD YSKN_KVX_MODE=3 NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_definitions(yskn PRIVATE YSKN_BUILD YSKN_KVX_MODE=3 NOMINMAX _CRT_SECURE_NO_WARNINGS YSKN_CUDA_ARCH=${YSKN_CUDA_ARCH})
 if(MSVC)
   target_compile_options(yskn PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:/utf-8;/bigobj;/O2;/d1trimfile:${CMAKE_SOURCE_DIR}/>
