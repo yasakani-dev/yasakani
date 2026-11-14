@@ -15,9 +15,11 @@ fastest model (`yasakani-dev/Qwen3.8-27B-YASAKANI-speed`, revision `cd78f90d`), 
 | `yasakani verify` | all 12 files match |
 | `yasakani selfcheck --max-ctx 32768` | 3 of 3 pass: the token ids are the same as the reference made on an RTX 5090 (3, 160 and 32 tokens) |
 | `quickstart/lookahead_check.py` (context 262,144, greedy, 768 tokens) | the text is the same with and without look-ahead in all 4 tasks |
+| `yasakani serve --max-ctx 32768` with `bench/20261108/scripts/custom_bench.py` (the three tasks of `bench/20261103/prompts/cases.json`, greedy, one run) | `edit_code` (4,769 prompt tokens, 4,708 written) and `edit_jsonl` are exact; `jsonl_orders_8k` wrote 8,192 tokens. All three answers are byte-identical to the RTX 5090 records in `bench/20261108/results/n12_ysk_speed_v8/own/`. Speed: 379 / 360 / 386 tok/s (5090: 1,222 / 1,156 / 1,260) |
 | GPU memory | context 32,768: about 14.6 GiB for the engine; context 262,144: it loads, with 3.8 GB (of 25.8 GB) left free |
 
-Speed, tokens per second (the upstream figures for the RTX 5090 are from docs/TECHNOLOGY.md, table 1.3):
+Speed, tokens per second, measured with `lookahead_check.py` at context 262,144 (the upstream figures for the RTX 5090
+are from docs/TECHNOLOGY.md, table 1.3, measured at context 16,384):
 
 | | no look-ahead | prose | thinking | code | CSV to JSON |
 |---|---|---|---|---|---|
@@ -27,8 +29,10 @@ Speed, tokens per second (the upstream figures for the RTX 5090 are from docs/TE
 One pass takes 21.4 ms without look-ahead (7.9 ms on the 5090). Nothing was tuned for this card: the worker
 counts, splits and grids are the upstream values for the 5090, and PDL is off.
 
-Not checked: the quality model, repeated runs, long prompts, long generations, the server, tool calls, other
-8.x cards, accuracy against the original model. This is one PC and one run of each command.
+Not checked: the quality model, repeated runs, prompts longer than about 4,800 tokens, sampling (temperature above 0),
+thinking over long generations, tool calls, the terminal chat, other 8.x cards, accuracy against the original model.
+The `120` build of this fork has not been run on an RTX 50 series card: only its device code was compared with upstream.
+This is one PC and one run of each command.
 
 ## Build
 
@@ -76,14 +80,18 @@ Not changed: tuning values (workers, splits, grids), messages that mention sm_12
 非公式のフォークです。RTX 3090 (sm_86) 向けに `-DYSKN_CUDA_ARCH=86` でビルドできるようにしました。
 sm_90 以上の命令 2 種類 (PDL の griddepcontrol と L2 の一括先読み) を 8.6 では外し、実行時にも切っています。
 加えて、ロード中の CUDA の失敗を黙って進めずに例外にしました。RTX 3090 の実機 1 台で、最速モデルの
-selfcheck (5090 で作られた基準と 3 本ともトークン列が一致) と、先読みあり/なしの一致 (4 課題) まで確かめています。
-速度は調整前で、先読みなし 47 tok/s、先読みあり 90〜393 tok/s です。品質モデル・長い生成・サーバーは未確認です。
+selfcheck (5090 で作られた基準と 3 本ともトークン列が一致)、先読みあり/なしの一致 (4 課題)、サーバー経由の
+長い入力・長い生成 3 課題 (5090 の記録とバイト単位で一致) まで確かめています。速度は調整前で、5090 の
+0.31〜0.37 倍 (先読みなし 47 tok/s、先読みあり 90〜393 tok/s) です。品質モデル・温度つきの生成・端末の chat は未確認です。
 
-使い方 (quickstart は 5090 以外で止まるので使いません):
+使い方 (quickstart は 5090 以外で止まるので使いません。Windows SDK を含む Visual Studio の C++ ツール、
+CUDA Toolkit、CMake、Ninja が要ります):
 
 ```
 cmake -S . -B build86 -G Ninja -DCMAKE_BUILD_TYPE=Release -DYSKN_CUDA_ARCH=86
 cmake --build build86
+python -m pip install numpy tokenizers jinja2
 set PYTHONPATH=<このフォルダ>\python
-python -X utf8 -m yasakani chat --model-dir <モデルのフォルダ> --dll build86\yskn.dll --max-ctx 32768
+python -X utf8 -m yasakani selfcheck --model-dir <モデルのフォルダ> --dll build86\yskn.dll --max-ctx 32768
+python -X utf8 -m yasakani serve     --model-dir <モデルのフォルダ> --dll build86\yskn.dll --max-ctx 32768
 ```
