@@ -48,5 +48,10 @@ if(MSVC)
   target_compile_options(yskn PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:/utf-8;/bigobj;/O2;/d1trimfile:${CMAKE_SOURCE_DIR}/>
     $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8;-Xcompiler=/bigobj;-Xcompiler=/d1trimfile:${CMAKE_SOURCE_DIR}/;-O3;--fmad=false>)
+else()
+  # Same CUDA code generation as the MSVC build: --fmad=false keeps the output identical to the reference.
+  target_compile_options(yskn PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-O3;--fmad=false>)
+  # build/bin/libyskn.so is one of the places the Python package looks, so --dll is not needed.
+  set_target_properties(yskn PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 endif()
 target_link_libraries(yskn PRIVATE CUDA::cudart)
