@@ -8,8 +8,16 @@ The kernels read the compressed trellis stream directly. Input and output H512
 transforms run on the CPU; the matrix products and compressed row decoding run on
 Metal. The aligned 6/8-bit warp path reads packed words and half-precision value pairs directly; other valid layouts retain the byte-addressed decoder.
 The model file is privately memory-mapped and exposed through page-aligned
-Metal buffers without expanding or copying the complete weights. Keep the file
-unchanged while a handle is open. Buffers are created lazily for each tensor.
+Metal buffers without expanding or copying the complete weights. When the whole
+file fits the device's `maxBufferLength`, all tensors share one buffer. A
+page-aligned binding offset and a separate page-local shader offset preserve
+addressing above 4 GiB. This avoids registering many overlapping buffer views
+while preserving the existing kernels and projection arithmetic.
+When the file exceeds the device limit, buffers are created lazily per tensor.
+A failed whole-file allocation is reported as an open error; it does not
+silently fall back or retry. The caller can retry opening a new handle. Keep
+the file unchanged while a handle is open. These APIs also support macOS 14,
+the minimum version for the distributed application.
 
 Supported storage: 4–8 bits per step, row/warp layouts, zero start, H512 rotations,
 mulberry32/splitmix64 signs, physical row padding, optional embedding residuals, and plain BF16/F16 embedding vectors.
@@ -51,8 +59,21 @@ This runs real Metal operations against the independent decoder in
 shape-error checks. It fails if Metal is unavailable (including sandbox denial);
 it does not substitute CPU results or count unavailable hardware as a pass.
 
-For an installed released model, compare selected embeddings and three body
-matrices with bounded row-block decoding:
+The standalone allocation regression injects a failed whole-file allocation and
+retries opening, then forces the device buffer-size limit to exercise per-tensor
+fallback. It checks that a failed tensor initialization and failed scratch growth
+leave subsequent calls usable, and that fallback output matches the shared map:
+
+```sh
+clang++ -std=c++17 -O3 -fobjc-arc -Ithird_party src/metal/check_allocation.mm \
+  -framework Foundation -framework Metal -o build/check_metal_allocation
+build/check_metal_allocation tools/testdata/tiny.yskn
+```
+
+For an installed released model, compare selected embeddings and body matrices
+with bounded row-block decoding. The default selection also includes a late
+body matrix whose stream starts above 4 GiB, when present, to check large binding
+offsets in both single and batched operations:
 
 ```sh
 python src/metal/check_model_ops.py build/bin/libyskn_metal.dylib /path/to/model.yskn

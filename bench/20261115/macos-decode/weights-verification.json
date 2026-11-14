@@ -1,0 +1,10 @@
+{
+  "verified_at": "2026-11-14T15:35:37.064154+00:00",
+  "weights": "qwen38_27b_speed.yskn",
+  "size_bytes": 10311344128,
+  "mtime_ns": 1794665162086162913,
+  "sha256_expected": "3ba17a76871a2b5e86fb1d01ab677e6b35ff5ccc27d4f03ad941501e3319d1ca",
+  "sha256_actual": "3ba17a76871a2b5e86fb1d01ab677e6b35ff5ccc27d4f03ad941501e3319d1ca",
+  "status": "matches_manifest",
+  "note": "Rehashed after all timed runs; size and mtime agree with all four run reports. No per-run hash verification is implied."
+}

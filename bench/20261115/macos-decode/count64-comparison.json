@@ -1,0 +1,380 @@
+{
+  "status": "comparable",
+  "schema_version": 1,
+  "compared_at": "2026-11-14T15:35:30.057449+00:00",
+  "basis": "warm medians; speedup above 1 means faster; cold-first runs are excluded",
+  "warm_runs_per_side": 3,
+  "metrics": {
+    "prefill_ms": {
+      "before": {
+        "samples": [
+          8733.470999868587,
+          7030.188167002052,
+          4776.666749967262
+        ],
+        "mean": 6846.775305612634,
+        "median": 7030.188167002052,
+        "min": 4776.666749967262,
+        "max": 8733.470999868587
+      },
+      "after": {
+        "samples": [
+          4644.563250010833,
+          4550.888125086203,
+          4608.893291791901
+        ],
+        "mean": 4601.448222296312,
+        "median": 4608.893291791901,
+        "min": 4550.888125086203,
+        "max": 4644.563250010833
+      },
+      "speedup": 1.5253527738475305
+    },
+    "gen_ms": {
+      "before": {
+        "samples": [
+          28659.060207894072,
+          28852.323125116527,
+          34165.51333409734
+        ],
+        "mean": 30558.965555702645,
+        "median": 28852.323125116527,
+        "min": 28659.060207894072,
+        "max": 34165.51333409734
+      },
+      "after": {
+        "samples": [
+          25422.17112495564,
+          25629.128499887884,
+          25463.343999814242
+        ],
+        "mean": 25504.881208219256,
+        "median": 25463.343999814242,
+        "min": 25422.17112495564,
+        "max": 25629.128499887884
+      },
+      "speedup": 1.1330924612779456
+    },
+    "total_ms": {
+      "before": {
+        "samples": [
+          37394.91887507029,
+          35885.415917029604,
+          38944.242500001565
+        ],
+        "mean": 37408.19243070049,
+        "median": 37394.91887507029,
+        "min": 35885.415917029604,
+        "max": 38944.242500001565
+      },
+      "after": {
+        "samples": [
+          30068.81962507032,
+          30182.585750008002,
+          30074.1520000156
+        ],
+        "mean": 30108.519125031307,
+        "median": 30074.1520000156,
+        "min": 30068.81962507032,
+        "max": 30182.585750008002
+      },
+      "speedup": 1.2434238835745357
+    },
+    "decode_tokens_per_s": {
+      "before": {
+        "samples": [
+          2.1982577077892733,
+          2.1835330114252476,
+          1.8439646840349302
+        ],
+        "mean": 2.07525180108315,
+        "median": 2.1835330114252476,
+        "min": 1.8439646840349302,
+        "max": 2.1982577077892733
+      },
+      "after": {
+        "samples": [
+          2.4781518340955597,
+          2.458140548956848,
+          2.4741447941974783
+        ],
+        "mean": 2.470145725749962,
+        "median": 2.4741447941974783,
+        "min": 2.458140548956848,
+        "max": 2.4781518340955597
+      },
+      "speedup": 1.1330924612779456
+    }
+  },
+  "model_identity": {
+    "before": {
+      "sha256_expected_from_manifest": "3ba17a76871a2b5e86fb1d01ab677e6b35ff5ccc27d4f03ad941501e3319d1ca",
+      "sha256_actual": null,
+      "declared_verification": "not_performed_by_this_run",
+      "verification_by_comparison": "not_performed"
+    },
+    "after": {
+      "sha256_expected_from_manifest": "3ba17a76871a2b5e86fb1d01ab677e6b35ff5ccc27d4f03ad941501e3319d1ca",
+      "sha256_actual": null,
+      "declared_verification": "not_performed_by_this_run",
+      "verification_by_comparison": "not_performed"
+    },
+    "basis": "matching_manifest_expectations_only",
+    "note": "This tool compares recorded identities; it does not read or rehash model files. Manifest expectations alone do not prove that the measured files match those expectations."
+  },
+  "host": {
+    "system": "Darwin",
+    "release": "25.6.0",
+    "machine": "arm64",
+    "macos_version": "26.6.2",
+    "python": "3.14.10",
+    "logical_cpus": 12,
+    "hardware_model": "Mac14,6",
+    "chip": "Apple M2 Max",
+    "memory_bytes": 34359738368,
+    "packages": {
+      "numpy": "2.5.4",
+      "tokenizers": "0.23.3",
+      "Jinja2": "3.1.6"
+    },
+    "thread_environment": {}
+  },
+  "settings": {
+    "prompt": "Write the numbers from 1 to 100, separated by commas.",
+    "prompt_ids": [
+      248045,
+      846,
+      198,
+      7734,
+      279,
+      4947,
+      494,
+      220,
+      16,
+      310,
+      220,
+      16,
+      15,
+      15,
+      11,
+      18101,
+      539,
+      73982,
+      13,
+      248046,
+      198,
+      248045,
+      74455,
+      198,
+      248068,
+      271,
+      248069,
+      271
+    ],
+    "prompt_tokens": 28,
+    "enable_thinking": false,
+    "max_ctx": 512,
+    "max_new": 64,
+    "fixed_length": true,
+    "stop_ids": null,
+    "sampling_requested": {
+      "temperature": 0.0,
+      "seed": 42
+    },
+    "warm_repetitions": 3,
+    "prefix_cache": false,
+    "reset_state_each_request": true,
+    "profiling_overhead": false,
+    "cold_definition": "first request after model load; OS and driver caches are not flushed",
+    "sampling_effective": {
+      "temperature": 0.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "seed": 0,
+      "mode": 3
+    },
+    "seed_note": "Greedy sampling ignores the seed; normalization may reset it to zero."
+  },
+  "outputs": {
+    "token_ids_identical": true,
+    "token_ids": [
+      16,
+      11,
+      220,
+      17,
+      11,
+      220,
+      18,
+      11,
+      220,
+      19,
+      11,
+      220,
+      20,
+      11,
+      220,
+      21,
+      11,
+      220,
+      22,
+      11,
+      220,
+      23,
+      11,
+      220,
+      24,
+      11,
+      220,
+      16,
+      15,
+      11,
+      220,
+      16,
+      16,
+      11,
+      220,
+      16,
+      17,
+      11,
+      220,
+      16,
+      18,
+      11,
+      220,
+      16,
+      19,
+      11,
+      220,
+      16,
+      20,
+      11,
+      220,
+      16,
+      21,
+      11,
+      220,
+      16,
+      22,
+      11,
+      220,
+      16,
+      23,
+      11,
+      220,
+      16
+    ],
+    "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 1"
+  },
+  "provenance": {
+    "before": {
+      "source": {
+        "package_directory": "<baseline-f342895>/python/yasakani",
+        "version": "0.1.2",
+        "git_head": null,
+        "git_dirty": null,
+        "sha256_by_file": {
+          "python/yasakani/__init__.py": "bf366b25e39e8fbb90f4569fcb9f89b8fa556c7a5c03e030949613c3f0d9b688",
+          "python/yasakani/__main__.py": "aad89b5330181709052dae1e7f59db746d61c67b9e2c7d33a226d3d562e1192b",
+          "python/yasakani/_mtmd.py": "119e26cd2a512745bde5ad33c367495ae8b840ce2c6c41c5e53c494aa039fead",
+          "python/yasakani/_native.py": "03082b3bfa082d569900daadfef8ce18c23e11dffc2be4fe312ab5d59724fbdf",
+          "python/yasakani/chat.py": "07757819d1f2ec421ca10712b16776b16badc8c29ce1ec05cff85843a5a8f360",
+          "python/yasakani/cli.py": "30337d065b0da72a336cb819995f7c9d461bc7e3c9199ec19a23186dc2c0a282",
+          "python/yasakani/engine.py": "ff7b7907cf4e0fa6dc40f182f07ee4fc71e675b84e45a48bb89ce96e69828ce6",
+          "python/yasakani/loopguard.py": "829ae7ee01247a9a1114ba9fa1100c6211cc5cced5247991d0f7f9d17dc18c4e",
+          "python/yasakani/macos_model.py": "a059068d4a8ef525e0e8b95021c3eed82957dd46e58960e72e1367976708a822",
+          "python/yasakani/metal_engine.py": "acdc39fa931ad0d288a7ac307319e3632a7678d0d0b926509e142f9d87ff6b71",
+          "python/yasakani/runtime.py": "4ff099035d268d771ee2b2b91068adad2da15dfa28b3f1ec1dbbc6e4fca43804",
+          "python/yasakani/server.py": "2413de2b6a15c6eb524c7b9494fe7b26ad07b9daf8f93548787fb20047fee82f",
+          "python/yasakani/textio.py": "07b0cdf87567d428e1cff0953bd5cb0e5420ee640b5be7ccd5f908f1d11862af",
+          "python/yasakani/vision.py": "4a884a58f38701b622be105bf2191de374e1d36636a6820645f3bbb0a9518eab",
+          "python/yasakani/yskn_format.py": "3662cb1f462ac4a2c795cd142fb2dc5b8d0eb422bc0277a31e72d629c22c3bb8",
+          "CMakeLists.txt": "d5f1fc3ed024d90b3240482ff1f88dfe380e762dd949ab86cbe61627393380cd",
+          "src/metal/yskn_metal.mm": "75affbe144541b08c0f9fc3cd86b38672b39a927ea7026021d1c177adbe93f5b",
+          "src/metal/yskn_metal.h": "6c2fa8bcd1cfe386d046c644fec45a017c2cc413210b5537b12b781fb5d48283",
+          "src/metal/kernels.hpp": "2b0d3d23b7a7320a119a625b1e0b7800548dffe3f9465c4c27b7d5e16c598e8a"
+        },
+        "runner_sha256": "76415c26b7c62c2f8653e7985444433a765b56a9af27a8d42dbf220fc1b00508"
+      },
+      "library": {
+        "path": "<baseline-f342895>/libyskn_metal.dylib",
+        "size_bytes": 261888,
+        "sha256_actual": "4628ebde1ab6174f1d363f7740ebc0aeb5a1bc14d8b77afb9cab8c00ef5e6b1a"
+      }
+    },
+    "after": {
+      "source": {
+        "package_directory": "<checkout>/python/yasakani",
+        "version": "0.1.2",
+        "git_head": "f342895b3105aa34c1b877273a0228469c4339a4",
+        "git_dirty": true,
+        "sha256_by_file": {
+          "python/yasakani/__init__.py": "bf366b25e39e8fbb90f4569fcb9f89b8fa556c7a5c03e030949613c3f0d9b688",
+          "python/yasakani/__main__.py": "aad89b5330181709052dae1e7f59db746d61c67b9e2c7d33a226d3d562e1192b",
+          "python/yasakani/_mtmd.py": "119e26cd2a512745bde5ad33c367495ae8b840ce2c6c41c5e53c494aa039fead",
+          "python/yasakani/_native.py": "03082b3bfa082d569900daadfef8ce18c23e11dffc2be4fe312ab5d59724fbdf",
+          "python/yasakani/chat.py": "07757819d1f2ec421ca10712b16776b16badc8c29ce1ec05cff85843a5a8f360",
+          "python/yasakani/cli.py": "30337d065b0da72a336cb819995f7c9d461bc7e3c9199ec19a23186dc2c0a282",
+          "python/yasakani/engine.py": "ff7b7907cf4e0fa6dc40f182f07ee4fc71e675b84e45a48bb89ce96e69828ce6",
+          "python/yasakani/loopguard.py": "829ae7ee01247a9a1114ba9fa1100c6211cc5cced5247991d0f7f9d17dc18c4e",
+          "python/yasakani/macos_model.py": "a059068d4a8ef525e0e8b95021c3eed82957dd46e58960e72e1367976708a822",
+          "python/yasakani/metal_engine.py": "acdc39fa931ad0d288a7ac307319e3632a7678d0d0b926509e142f9d87ff6b71",
+          "python/yasakani/runtime.py": "4ff099035d268d771ee2b2b91068adad2da15dfa28b3f1ec1dbbc6e4fca43804",
+          "python/yasakani/server.py": "2413de2b6a15c6eb524c7b9494fe7b26ad07b9daf8f93548787fb20047fee82f",
+          "python/yasakani/textio.py": "07b0cdf87567d428e1cff0953bd5cb0e5420ee640b5be7ccd5f908f1d11862af",
+          "python/yasakani/vision.py": "4a884a58f38701b622be105bf2191de374e1d36636a6820645f3bbb0a9518eab",
+          "python/yasakani/yskn_format.py": "3662cb1f462ac4a2c795cd142fb2dc5b8d0eb422bc0277a31e72d629c22c3bb8",
+          "CMakeLists.txt": "d5f1fc3ed024d90b3240482ff1f88dfe380e762dd949ab86cbe61627393380cd",
+          "src/metal/yskn_metal.mm": "c09176e5fb649197ea2f491b90185687cae80452ef5bdc3769d2662e52f243d7",
+          "src/metal/yskn_metal.h": "6c2fa8bcd1cfe386d046c644fec45a017c2cc413210b5537b12b781fb5d48283",
+          "src/metal/kernels.hpp": "2b0d3d23b7a7320a119a625b1e0b7800548dffe3f9465c4c27b7d5e16c598e8a"
+        },
+        "runner_sha256": "76415c26b7c62c2f8653e7985444433a765b56a9af27a8d42dbf220fc1b00508"
+      },
+      "library": {
+        "path": "<checkout>/build/perf-release/bin/libyskn_metal.dylib",
+        "size_bytes": 245184,
+        "sha256_actual": "3c63be4d6b050eb97d6c0d51cfcef9e4f18b70c11138a3ab39f9d4d844414fbf"
+      }
+    }
+  },
+  "cold_first": {
+    "before": {
+      "prefill_ms": 11881.649292074144,
+      "gen_ms": 33971.87504195608,
+      "total_ms": 45877.3185829632,
+      "decode_tokens_per_s": 1.8544752069820547
+    },
+    "after": {
+      "prefill_ms": 10453.494375105947,
+      "gen_ms": 25266.151417046785,
+      "total_ms": 35742.38054198213,
+      "decode_tokens_per_s": 2.493454541616283
+    }
+  },
+  "limit": "A speedup for this prompt, generated sequence and machine; it is not a general model-quality or throughput claim.",
+  "performance_gate": {
+    "required": true,
+    "status": "passed",
+    "criterion": "every warm-median latency speedup must be strictly greater than 1",
+    "metrics": {
+      "prefill_ms": {
+        "speedup": 1.5253527738475305,
+        "passed": true
+      },
+      "gen_ms": {
+        "speedup": 1.1330924612779456,
+        "passed": true
+      },
+      "total_ms": {
+        "speedup": 1.2434238835745357,
+        "passed": true
+      }
+    }
+  },
+  "inputs": {
+    "before": "<checkout>/build/decode-final-before64.json",
+    "after": "<checkout>/build/decode-final-after64.json"
+  },
+  "publication_note": "Only local absolute paths were replaced by placeholders. Timings, output IDs, and source/library hashes are unchanged."
+}

@@ -17,6 +17,21 @@ sys.path.insert(0, str(ROOT / "tools"))
 import yskn_decode as ref
 
 
+def default_tensors(container):
+    names = ["layers.0.linear_attn.in_proj_qkv", "layers.3.self_attn.k_proj", "layers.0.mlp.down_proj"]
+    # Exercise the high host binding offset separately from the uint32 shader
+    # offset. Prefer a late down projection to keep CPU reference memory bounded.
+    high = [t for t in container.tensors.values() if t.get("role") == "body" and t["stream_off"] > 2**32]
+    preferred = [t for t in high if t["name"].endswith(".mlp.down_proj")]
+    if high:
+        name = max(preferred or high, key=lambda t: t["stream_off"])["name"]
+        if name not in names:
+            names.append(name)
+    else:
+        print("INFO: no body stream above 4 GiB; large-offset coverage unavailable", flush=True)
+    return names
+
+
 def main():
     lib = C.CDLL(str(Path(sys.argv[1]).resolve()))
     lib.yskn_metal_open.argtypes, lib.yskn_metal_open.restype = [C.c_char_p], C.c_void_p
@@ -43,7 +58,7 @@ def main():
             check(lib.yskn_metal_embedding(h, token, actual.ctypes.data, actual.size))
             np.testing.assert_allclose(actual, expected, atol=2e-5, rtol=2e-4)
             print("PASS embedding", token, "max error", float(np.max(np.abs(actual - expected))), flush=True)
-        names = sys.argv[3:] or ["layers.0.linear_attn.in_proj_qkv", "layers.3.self_attn.k_proj", "layers.0.mlp.down_proj"]
+        names = sys.argv[3:] or default_tensors(c)
         rng = np.random.default_rng(261114)
         for name in names:
             started = time.monotonic()
@@ -69,7 +84,7 @@ def main():
             check(lib.yskn_metal_linear_batch(h, name.encode(), inputs.ctypes.data, 5, t["cols"], actual.ctypes.data, t["rows"]))
             np.testing.assert_allclose(actual, expected, atol=2e-3, rtol=2e-4)
             print("PASS linear and batch=5", name, "max error", float(np.max(np.abs(actual - expected))),
-                  "seconds", round(time.monotonic() - started, 3), flush=True)
+                  "stream offset", t["stream_off"], "seconds", round(time.monotonic() - started, 3), flush=True)
         print("PASS: real released-model embedding and matrix operations (not full generation)")
     finally:
         lib.yskn_metal_close(h)

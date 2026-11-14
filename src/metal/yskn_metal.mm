@@ -30,7 +30,7 @@ struct Params {
     uint32_t stream_offset, lut_offset, scale_offset, batch;
 };
 struct Rotation { uint64_t seed, offset; bool splitmix; };
-struct Region { id<MTLBuffer> buffer = nil; uint32_t offset = 0; };
+struct Region { id<MTLBuffer> buffer = nil; uint32_t offset = 0; size_t base_offset = 0; };
 struct Tensor {
     std::string name;
     uint32_t rows = 0, physical_rows = 0, cols = 0, bits = 0;
@@ -97,19 +97,20 @@ struct Model {
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> mv = nil, mv6 = nil, mv8 = nil, reduce = nil, row = nil;
     id<MTLComputePipelineState> batch6[3] = {}, batch8[3] = {};
-    id<MTLBuffer> input = nil, partial = nil, output = nil;
+    id<MTLBuffer> input = nil, partial = nil, output = nil, shared_map = nil;
     std::unordered_map<std::string, Tensor> tensors;
     uint64_t embedding_offset = 0, embedding_count = 0;
     uint32_t embedding_width = 0;
     bool embedding_bf16 = false;
     std::mutex mutex;
-    ~Model() { tensors.clear(); input = nil; partial = nil; output = nil; if (bytes) munmap(bytes, mapped_length); }
+    ~Model() { tensors.clear(); input = nil; partial = nil; output = nil; shared_map = nil; if (bytes) munmap(bytes, mapped_length); }
     void bounds(uint64_t off, uint64_t count) const {
         if (off > length || count > length - off) throw std::runtime_error("YSKN data runs past end of file");
     }
     Region region(uint64_t off, uint64_t count) {
         bounds(off, count);
         size_t start = size_t(off) / page * page;
+        if (shared_map) return {shared_map, uint32_t(off - start), start};
         size_t end = (size_t(off + count) + page - 1) / page * page;
         size_t size = end - start;
         if (!size || size > device.maxBufferLength) throw std::runtime_error("tensor exceeds this Metal device's maxBufferLength");
@@ -187,6 +188,13 @@ struct Model {
         }
         device = MTLCreateSystemDefaultDevice();
         if (!device || !device.hasUnifiedMemory) throw std::runtime_error("an Apple Silicon Mac with a Metal device is required");
+        // Reuse one no-copy resource when the complete file fits. Bind a page-aligned
+        // base so shader-relative offsets stay uint32 even for files above 4 GiB.
+        // A failed allocation is reported; only the size limit selects per-region maps.
+        if (mapped_length <= device.maxBufferLength) {
+            shared_map = [device newBufferWithBytesNoCopy:bytes length:mapped_length options:MTLResourceStorageModeShared deallocator:nil];
+            if (!shared_map) throw std::runtime_error("Metal could not map the complete compressed model");
+        }
         queue = [device newCommandQueue];
         NSError* failure = nil;
         MTLCompileOptions* options = [MTLCompileOptions new];
@@ -263,8 +271,8 @@ struct Model {
     void encode_linear(id<MTLCommandBuffer> cmd, const Tensor& t, const Params& p,
                        size_t input_offset, size_t partial_offset, size_t output_offset) {
         id<MTLComputeCommandEncoder> e = encoder(cmd);
-        [e setBuffer:t.stream.buffer offset:0 atIndex:0]; [e setBuffer:t.lut.buffer offset:0 atIndex:1];
-        [e setBuffer:t.scale.buffer offset:0 atIndex:2]; [e setBuffer:input offset:input_offset atIndex:3];
+        [e setBuffer:t.stream.buffer offset:t.stream.base_offset atIndex:0]; [e setBuffer:t.lut.buffer offset:t.lut.base_offset atIndex:1];
+        [e setBuffer:t.scale.buffer offset:t.scale.base_offset atIndex:2]; [e setBuffer:input offset:input_offset atIndex:3];
         [e setBuffer:partial offset:partial_offset atIndex:4]; [e setBytes:&p length:sizeof(p) atIndex:5];
         id<MTLComputePipelineState> kernel = mv;
         if (fast_tensor(t)) {
@@ -418,8 +426,8 @@ struct Model {
         buffer(output, size_t(n) * 4);
         id<MTLCommandBuffer> cmd = command();
         id<MTLComputeCommandEncoder> e = encoder(cmd);
-        [e setBuffer:t.stream.buffer offset:0 atIndex:0]; [e setBuffer:t.lut.buffer offset:0 atIndex:1];
-        [e setBuffer:t.scale.buffer offset:0 atIndex:2]; [e setBuffer:output offset:0 atIndex:3]; [e setBytes:&p length:sizeof(p) atIndex:4];
+        [e setBuffer:t.stream.buffer offset:t.stream.base_offset atIndex:0]; [e setBuffer:t.lut.buffer offset:t.lut.base_offset atIndex:1];
+        [e setBuffer:t.scale.buffer offset:t.scale.base_offset atIndex:2]; [e setBuffer:output offset:0 atIndex:3]; [e setBytes:&p length:sizeof(p) atIndex:4];
         dispatch(e, row, t.cols); wait(cmd);
         float* values = static_cast<float*>(output.contents);
         hadamard(values, t.cols);

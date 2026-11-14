@@ -7,6 +7,7 @@ Requires completed, uninstrumented benchmarks with at least two warm runs, the
 same host/runtime/settings/weights identity, and identical generated token IDs.
 Manifest-only weight identity is explicitly distinguished from measured hashes.
 Speedups use warm medians; individual runs and cold-first timing remain separate.
+With --require-improvement, prefill, decode and total latency must all improve.
 """
 from __future__ import annotations
 
@@ -173,14 +174,32 @@ def main(argv=None):
     parser.add_argument("--before", required=True, type=Path)
     parser.add_argument("--after", required=True, type=Path)
     parser.add_argument("--output", type=Path, help="also write comparison JSON to this file")
+    parser.add_argument("--require-improvement", action="store_true",
+                        help="fail unless warm-median prefill, decode and total latency all improve")
     args = parser.parse_args(argv)
     try:
         before = json.loads(args.before.read_text(encoding="utf-8"))
         after = json.loads(args.after.read_text(encoding="utf-8"))
         report = compare(before, after)
         code = 0
+        if args.require_improvement:
+            checks = {name: {"speedup": report["metrics"][name]["speedup"],
+                             "passed": report["metrics"][name]["speedup"] > 1.0}
+                      for name in ("prefill_ms", "gen_ms", "total_ms")}
+            passed = all(check["passed"] for check in checks.values())
+            report["performance_gate"] = {
+                "required": True, "status": "passed" if passed else "failed",
+                "criterion": "every warm-median latency speedup must be strictly greater than 1",
+                "metrics": checks,
+            }
+            code = 0 if passed else 1
     except (OSError, ValueError, TypeError, KeyError) as exc:
         report = {"schema_version": 1, "status": "rejected", "error": str(exc)}
+        if args.require_improvement:
+            report["performance_gate"] = {
+                "required": True, "status": "not_evaluated",
+                "reason": "comparison conditions were not satisfied",
+            }
         code = 1
     report["inputs"] = {"before": str(args.before.resolve()), "after": str(args.after.resolve())}
     payload = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n"

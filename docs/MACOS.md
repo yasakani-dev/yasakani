@@ -120,7 +120,8 @@ To measure generation on the same machine before and after a change:
 build/venv/bin/python macos/benchmark.py --model-dir /path/to/model \
   --library build/bin/libyskn_metal.dylib --output build/after.json --runs 2
 build/venv/bin/python macos/compare_benchmarks.py \
-  --before build/before.json --after build/after.json --output build/comparison.json
+  --before build/before.json --after build/after.json --output build/comparison.json \
+  --require-improvement
 ```
 
 Use an unchanged baseline checkout/library for `before.json`; `PYTHONPATH` can
@@ -130,10 +131,32 @@ requests, resets state each time and does not cache prompts. `--hash-weights`
 verifies the actual weights; otherwise the manifest checksum is only a recorded
 expectation. `--profile` adds instrumentation and is excluded from speed claims.
 The comparison rejects mismatched settings, outputs or incomplete measurements.
+With `--require-improvement`, it also fails if warm-median prefill, decode or
+total latency does not improve, even when another metric becomes faster.
 Decode throughput counts only tokens generated after the first token, which is
 produced by prefill.
 
-## Performance update (2026-11-14–15)
+## Decode regression fixed (2026-11-15)
+
+Sharing one Metal buffer for the compressed model removes the many per-tensor
+buffer views while retaining the same kernels and arithmetic. Files above the
+device's maximum buffer length retain the previous mapping path.
+
+On the same M2 Max / 32 GiB and released 27B speed model, three warm requests
+per case gave these medians against the previous PR version (`f342895`):
+
+| Output length | Previous decode | Updated decode | Previous total | Updated total |
+|---|---:|---:|---:|---:|
+| 16 tokens | 1.846 token/s | 2.476 token/s | 13.527 s | 10.637 s |
+| 64 tokens | 2.184 token/s | 2.474 token/s | 37.395 s | 30.074 s |
+
+Sustained decoding improved by **34%** and **13%**, respectively. Prefill also
+improved, and every generated token ID matched across implementations and all
+repetitions. Both cases pass the new prefill/decode/total improvement gate.
+See [raw results, checksums, commands and limitations](../bench/20261115/macos-decode/README.md).
+The previous regression measurements below remain as history.
+
+## First optimization (superseded; 2026-11-14–15)
 
 On an M2 Max / 32 GiB using the released 27B speed model, three warm requests
 with fresh state gave the following medians:
