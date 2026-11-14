@@ -5,10 +5,30 @@ This is an **unofficial** fork of YASAKANI that adds an experimental build for t
 The upstream code is licensed under Apache-2.0; see `LICENSE` and `NOTICE` (unchanged).
 Based on upstream commit `91a5178`.
 
-## Status: unverified
+## Status: runs on one RTX 3090, lightly tested, not tuned
 
-The sm_86 build compiles and links. **It has not been run on a GPU**: no load, no inference, no
-accuracy or speed check has been done on an RTX 3090. Treat any output as untested.
+Checked on 2026-11-14 on one PC (RTX 3090 24 GB, driver 621.01, Windows 11, CUDA Toolkit 13.5, MSVC 19.51) with the
+fastest model (`yasakani-dev/Qwen3.8-27B-YASAKANI-speed`, revision `cd78f90d`), one run of each command:
+
+| Check | Result |
+|---|---|
+| `yasakani verify` | all 12 files match |
+| `yasakani selfcheck --max-ctx 32768` | 3 of 3 pass: the token ids are the same as the reference made on an RTX 5090 (3, 160 and 32 tokens) |
+| `quickstart/lookahead_check.py` (context 262,144, greedy, 768 tokens) | the text is the same with and without look-ahead in all 4 tasks |
+| GPU memory | context 32,768: about 14.6 GiB for the engine; context 262,144: it loads, with 3.8 GB (of 25.8 GB) left free |
+
+Speed, tokens per second (the upstream figures for the RTX 5090 are from docs/TECHNOLOGY.md, table 1.3):
+
+| | no look-ahead | prose | thinking | code | CSV to JSON |
+|---|---|---|---|---|---|
+| RTX 3090, this build | 47 | 90 | 105 | 137 | 393 |
+| RTX 5090, upstream | 126 | 279 | 298 | about 420 | 1,264 |
+
+One pass takes 21.4 ms without look-ahead (7.9 ms on the 5090). Nothing was tuned for this card: the worker
+counts, splits and grids are the upstream values for the 5090, and PDL is off.
+
+Not checked: the quality model, repeated runs, long prompts, long generations, the server, tool calls, other
+8.x cards, accuracy against the original model. This is one PC and one run of each command.
 
 ## Build
 
@@ -55,5 +75,15 @@ Not changed: tuning values (workers, splits, grids), messages that mention sm_12
 
 非公式のフォークです。RTX 3090 (sm_86) 向けに `-DYSKN_CUDA_ARCH=86` でビルドできるようにしました。
 sm_90 以上の命令 2 種類 (PDL の griddepcontrol と L2 の一括先読み) を 8.6 では外し、実行時にも切っています。
-加えて、ロード中の CUDA の失敗を黙って進めずに例外にしました。ビルドが通ることだけを確かめており、
-3090 の実機での動作・精度・速度は未検証です。
+加えて、ロード中の CUDA の失敗を黙って進めずに例外にしました。RTX 3090 の実機 1 台で、最速モデルの
+selfcheck (5090 で作られた基準と 3 本ともトークン列が一致) と、先読みあり/なしの一致 (4 課題) まで確かめています。
+速度は調整前で、先読みなし 47 tok/s、先読みあり 90〜393 tok/s です。品質モデル・長い生成・サーバーは未確認です。
+
+使い方 (quickstart は 5090 以外で止まるので使いません):
+
+```
+cmake -S . -B build86 -G Ninja -DCMAKE_BUILD_TYPE=Release -DYSKN_CUDA_ARCH=86
+cmake --build build86
+set PYTHONPATH=<このフォルダ>\python
+python -X utf8 -m yasakani chat --model-dir <モデルのフォルダ> --dll build86\yskn.dll --max-ctx 32768
+```
