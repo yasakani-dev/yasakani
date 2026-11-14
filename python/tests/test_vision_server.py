@@ -40,7 +40,7 @@ class VisionServerTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.t = t = Path(tmp.name)
         (t / "llama").mkdir()
-        for f in ("llama.dll", "mtmd.dll", "ggml.dll", "ggml-base.dll"):
+        for f in map(_mtmd.lib_name, ("llama", "mtmd", "ggml", "ggml-base")):
             (t / "llama" / f).write_bytes(b"x")
         for f in ("mmproj.gguf", "text.gguf"):
             (t / f).write_bytes(b"GGUF")

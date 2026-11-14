@@ -138,7 +138,13 @@ class ToolRequestTests(unittest.TestCase):
         self.assertIsNone(parse_chat_request({"messages": USER, "tools": TOOLS, "tool_choice": "none"}, cfg).tools)
         self.assertIsNotNone(parse_chat_request({"messages": USER, "tools": TOOLS, "tool_choice": "auto"}, cfg).tools)
         self.assertIsNone(parse_chat_request({"messages": USER}, cfg).tools)
-        for extra in ({"tool_choice": "required"}, {"tool_choice": {"type": "function", "function": {"name": "get_weather"}}},
+        named = {"type": "function", "function": {"name": "get_weather"}}
+        self.assertEqual(len(parse_chat_request({"messages": USER, "tools": TOOLS, "tool_choice": "required"}, cfg).tools), 2)
+        p = parse_chat_request({"messages": USER, "tools": TOOLS, "tool_choice": named}, cfg)
+        self.assertEqual([t["function"]["name"] for t in p.tools], ["get_weather"])
+        for extra in ({"tool_choice": "required", "tools": []}, {"tool_choice": {"type": "function", "function": {"name": "nope"}}},
+                      {"tool_choice": "always"}, {"tool_choice": {"type": "function", "function": {}}},
+                      {"tool_choice": {"type": "function", "function": {"name": ""}}},
                       {"functions": [{"name": "f"}]}, {"function_call": "auto"}, {"thinking_budget": -1}):
             with self.assertRaises(RequestError):
                 parse_chat_request(dict({"messages": USER, "tools": TOOLS}, **extra), cfg)
@@ -248,8 +254,8 @@ class ToolRunTests(unittest.TestCase):
         choice = json.loads(raw)["choices"][0]
         self.assertEqual((choice["finish_reason"], choice["message"]["content"]), ("stop", CALL))
 
-    def test_server_refuses_a_forced_tool_choice(self):
-        for extra, word in (({"tool_choice": "required"}, "tool_choice"), ({"functions": [{"name": "f"}]}, "functions")):
+    def test_server_refuses_an_unknown_tool_choice(self):
+        for extra, word in (({"tool_choice": "always"}, "tool_choice"), ({"functions": [{"name": "f"}]}, "functions")):
             status, raw = self.post(dict({"messages": USER, "tools": TOOLS}, **extra))
             self.assertEqual(status, 400, raw)
             self.assertIn(word, json.loads(raw)["error"]["message"])

@@ -3,7 +3,7 @@
 A local LLM engine for **Windows** and **one NVIDIA RTX 5090**, built for one model: **Qwen3.8-27B**. Open source, Apache License 2.0.
 日本語は [README.ja.md](README.ja.md)。
 
-> **Version 0.1.2 (November 14, 2026).** New in this version: the server can take images, optionally (Windows only; contributed in [#4](https://github.com/yasakani-dev/yasakani/pull/4); see [What you need](#what-you-need)). Since 0.1.1 it accepts requests with `tools` (tool / function calling), so coding agents and other tool-using apps can connect to it. Engine: [release page](https://github.com/yasakani-dev/yasakani/releases/tag/v0.1.2). Models on Hugging Face: [quality model](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-quality) and [fastest model](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-speed).
+> **Version 0.1.2 (November 14, 2026).** New in this version: the server can take images, optionally (contributed in [#4](https://github.com/yasakani-dev/yasakani/pull/4); see [What you need](#what-you-need)). Since 0.1.1 it accepts requests with `tools` (tool / function calling), so coding agents and other tool-using apps can connect to it. Engine: [release page](https://github.com/yasakani-dev/yasakani/releases/tag/v0.1.2). Models on Hugging Face: [quality model](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-quality) and [fastest model](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-speed).
 >
 > **Support the development:** crowdfunding on CAMPFIRE for backers living in Japan, until December 16, 2026 - https://camp-fire.jp/projects/992233/view (outside Japan: see [Support](#support))
 
@@ -167,16 +167,16 @@ Not supported in this release: macOS, AMD GPUs, other NVIDIA GPUs (the RTX 4090,
 this release), other models. Support for more GPUs is the purpose of the crowdfunding campaign; see [Support](#support).
 
 **Linux:** the engine can be built from source (contributed in [#3](https://github.com/yasakani-dev/yasakani/pull/3), which lists the commands; we checked it on WSL2 /
-Ubuntu 24.04 with an RTX 5090). There is no prebuilt Linux release or launcher yet: that is one of the crowdfunding goals.
+Ubuntu 24.04 with an RTX 5090; the steps are in [BUILDING.md](BUILDING.md#linux)). There is no prebuilt Linux release or launcher yet: that is one of the crowdfunding goals.
 
-**Images (optional, Windows only):** since 0.1.2 the server can also take images (a community contribution, [#4](https://github.com/yasakani-dev/yasakani/pull/4)). This needs
-files that are not part of the release: the image encoder `mmproj-Qwen3.8-27B-BF16.gguf` (0.93 GB), the CPU build of llama.cpp b10488,
+**Images (optional):** since 0.1.2 the server can also take images (a community contribution, [#4](https://github.com/yasakani-dev/yasakani/pull/4)). This needs
+files that are not part of the release: the image encoder `mmproj-Qwen3.8-27B-BF16.gguf` (0.93 GB), the libraries of llama.cpp b10488 (on Windows the CPU build of that release, on Linux built from source),
 a Qwen3.8-27B GGUF file (only its settings and vocabulary are read, but the file is large: about 17 to 19 GB for Q4_K_M) and Pillow.
 Each image is encoded on the CPU, after it is downsized to at most 1,024 image tokens (about one million pixels). On our PC (AMD Ryzen 9 9950X3D2, 16 cores,
 16 threads) that took about 15 s for a large image and 1.2 s for a 512 × 512 one; while an image is encoded, the server answers
 no other request. We checked that it works on our RTX 5090 with the quality model and a few
 simple test images; we have not measured how well the model understands images. Set-up and limits: [python/README.md](python/README.md#image-input-optional).
-The quickstart menu and the harness do not use images.
+The quickstart menu and the harness do not use images. On Linux the llama.cpp libraries are built from source instead ([BUILDING.md](BUILDING.md#image-input-on-linux)).
 
 Close other programs that use a lot of GPU memory (games, other LLM servers) before you start. When the memory runs out there is no error:
 generation just becomes several times slower (a warning is printed at start in that case).
@@ -263,7 +263,7 @@ part contributes, and the source files that go with each.
 
 ## Limits
 
-* Windows 11 + RTX 5090 + Qwen3.8-27B only (Linux: build from source). One request at a time. Images only through the optional image input of the server (Windows only, new in 0.1.2; [python/README.md](python/README.md#image-input-optional)); no `n` above 1, no `logprobs`. Tool / function calling: `tools` with `tool_choice` `auto` or `none` (new in 0.1.1; a forced `tool_choice` is not supported). It is new and has been tested far less than plain chat.
+* Windows 11 + RTX 5090 + Qwen3.8-27B only (Linux: build from source). One request at a time. Images only through the optional image input of the server (new in 0.1.2; [python/README.md](python/README.md#image-input-optional)); no `n` above 1, no `logprobs`. Tool / function calling: `tools` with `tool_choice` `auto` or `none` (new in 0.1.1; `required` or a named function is accepted but not enforced). It is new and has been tested far less than plain chat.
 * The release files are not code-signed, so Windows may warn about them (see [SECURITY.md](SECURITY.md)).
 * The answers are not identical to the original model's (see Quality).
 

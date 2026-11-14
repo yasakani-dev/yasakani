@@ -193,7 +193,7 @@ class ProcessorCase(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.t = t = Path(tmp.name)
         (t / "llama").mkdir()
-        for f in ("llama.dll", "mtmd.dll", "ggml.dll", "ggml-base.dll"):
+        for f in map(_mtmd.lib_name, ("llama", "mtmd", "ggml", "ggml-base")):
             (t / "llama" / f).write_bytes(b"not a library: " + f.encode())
         (t / "mmproj.gguf").write_bytes(b"GGUF placeholder")
         (t / "text.gguf").write_bytes(b"GGUF placeholder")
@@ -400,8 +400,17 @@ class LibraryTests(unittest.TestCase):
                 _mtmd._LOG_CALLBACK(level, text, None)                    # through the C callback, as llama.cpp calls it
         self.assertEqual(err.getvalue(), "warning\nwarning, continued\nerror\n")
 
+    def test_llama_dir_check_outside_windows(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(_mtmd, "_WINDOWS", False):
+            d = Path(d)
+            with self.assertRaises(FileNotFoundError):
+                _mtmd.check_llama_dir(d)                                 # empty folder
+            for stem in ("llama", "mtmd", "ggml", "ggml-base"):
+                (d / _mtmd.lib_name(stem)).write_bytes(b"built from source")
+            _mtmd.check_llama_dir(d)                                     # present: accepted without a checksum
+
     def test_llama_dir_check(self):
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(_mtmd, "_WINDOWS", True):
             d = Path(d)
             with self.assertRaises(FileNotFoundError):
                 _mtmd.check_llama_dir(d)                                 # empty folder
@@ -425,8 +434,8 @@ class StartupCheckTests(ProcessorCase):
     def win(self):
         return mock.patch.object(vision.sys, "platform", "win32")
 
-    def test_windows_only(self):
-        with mock.patch.object(vision.sys, "platform", "linux"):
+    def test_windows_and_linux_only(self):
+        with mock.patch.object(vision.sys, "platform", "darwin"):
             with self.assertRaises(RuntimeError) as cm:
                 self.processor().check()
         self.assertIn("Windows", str(cm.exception))
@@ -442,8 +451,10 @@ class StartupCheckTests(ProcessorCase):
             (self.t / "mmproj.gguf").unlink()
             with self.assertRaises(FileNotFoundError):
                 self.processor().check()
-        with self.win():
+        with self.win(), mock.patch.object(_mtmd, "_WINDOWS", True):
             (self.t / "mmproj.gguf").write_bytes(b"GGUF placeholder")
+            for f in _mtmd.B10488_CPU_X64:
+                (self.t / "llama" / f).write_bytes(b"not a library: " + f.encode())
             with self.assertRaises(RuntimeError):
                 self.processor().check()                                 # placeholder libraries: not the b10488 CPU build
 
@@ -549,6 +560,21 @@ class OptionTests(ProcessorCase):
         self.prepare(self.processor(cache=self.t / "cache", max_image_tokens=512), [uri])    # another limit: encoded again
         self.assertEqual(len(FakeEncoder.encoded), 2)
         self.assertEqual(len(list((self.t / "cache").glob("*.npz"))), 2)
+
+    def test_cache_key_holds_the_projector_device(self):
+        uri = png_uri((9, 4))
+        self.prepare(self.processor(cache=self.t / "cache"), [uri])
+        with mock.patch.object(_mtmd, "use_gpu", return_value=True):
+            self.prepare(self.processor(cache=self.t / "cache"), [uri])                     # projector on the GPU: encoded again
+        self.assertEqual(len(FakeEncoder.encoded), 2)
+
+    def test_gpu_projector_is_opt_in_and_not_for_windows(self):
+        for windows, value, want in ((False, None, False), (False, "0", False), (False, "1", True), (True, "1", False)):
+            env = {} if value is None else {"YASAKANI_VISION_GPU": value}
+            with mock.patch.object(_mtmd, "_WINDOWS", windows), mock.patch.dict(os.environ, env):
+                if value is None:
+                    os.environ.pop("YASAKANI_VISION_GPU", None)
+                self.assertEqual(_mtmd.use_gpu(), want)
 
     def test_memory_cache_keeps_a_chat_with_large_images(self):
         FakeEncoder.GRID[:] = [48, 64]                                   # 3072 tokens = 30 MiB of features per image

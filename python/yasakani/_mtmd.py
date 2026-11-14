@@ -7,8 +7,10 @@ llama.cpp, for its settings and vocabulary only: the model is opened with ``no_a
 Qwen3.8-27B GGUF works.  The images are encoded on the CPU: on the GPU the features differ slightly, and in the image test of the
 contributor of this code (pull request #4) the score fell (87.8 on the CPU against 79.6 and 81.6 in two GPU runs).
 
-Only the CPU build ``llama-b10488-bin-win-cpu-x64.zip`` is accepted: the structures below are declared for exactly this build, so
-its libraries are compared by SHA-256 before any of them is loaded.
+On Windows only the CPU build ``llama-b10488-bin-win-cpu-x64.zip`` is accepted: the structures below are declared for exactly this
+build, so its libraries are compared by SHA-256 before any of them is loaded.  On Linux there is no release to compare with: the
+folder holds the shared libraries of the same release built from source (``libmtmd.so`` and the others, see BUILDING.md), and
+YASAKANI_VISION_GPU=1 can move the projector to the GPU there (see ``use_gpu``).
 """
 from __future__ import annotations
 
@@ -67,11 +69,37 @@ def _bind(lib, name, args, result):
     return fn
 
 
+_WINDOWS = sys.platform == "win32"
+
+
+def lib_name(stem: str) -> str:
+    """File name of a llama.cpp library: ``llama.dll`` on Windows, ``libllama.so`` elsewhere."""
+    return stem + ".dll" if _WINDOWS else "lib" + stem + ".so"
+
+
+def use_gpu() -> bool:
+    """YASAKANI_VISION_GPU=1 runs the projector on the GPU, with flash attention switched off.  Linux only (the llama.cpp folder
+    must then hold a build with a GPU backend); on Windows only the CPU build is accepted, so the variable is ignored.  Measured on an RTX 5090 with llama.cpp b10488 built for CUDA, against the features of the CPU: with flash
+    attention the relative error was 3% at 1,024 image tokens and 10% at 4,096 (single tokens down to a cosine of 0.72); without
+    it 0.7% (cosine at least 0.998), at 0.15 s per 1,024-token image instead of 7 s.  Without flash attention the GPU memory of an
+    encode grows with the square of the image tokens: about 4 GiB at 2,048 and 17 GiB at 4,096.  Off by default."""
+    return not _WINDOWS and os.environ.get("YASAKANI_VISION_GPU") == "1"
+
+
 def check_llama_dir(llama_dir) -> None:
-    """The folder must hold the libraries of LLAMA_ZIP (compared by SHA-256) and no GPU backend of ggml."""
+    """Windows: the folder must hold the libraries of LLAMA_ZIP (compared by SHA-256) and no GPU backend of ggml.
+
+    Outside Windows there is no release to compare with: the folder holds the libraries of the same release (b10488) built from
+    source, so only their presence is checked here; the structure layout is still checked when the encoder opens.  GPU backends
+    of ggml are allowed there (YASAKANI_VISION_GPU uses them, see ``use_gpu``)."""
     d = Path(llama_dir)
     if not d.is_dir():
         raise FileNotFoundError("vision: the llama.cpp folder %s does not exist" % d)
+    if not _WINDOWS:
+        for stem in ("llama", "mtmd", "ggml", "ggml-base"):
+            if not (d / lib_name(stem)).is_file():
+                raise FileNotFoundError("vision: missing %s (build llama.cpp b10488 with shared libraries)" % (d / lib_name(stem)))
+        return
     for name, want in B10488_CPU_X64.items():
         p = d / name
         if not p.is_file():
@@ -85,15 +113,17 @@ def check_llama_dir(llama_dir) -> None:
 
 
 def _load_libraries(llama_dir: Path):
-    """llama.dll and mtmd.dll of the folder, with the CPU backend of ggml loaded.  Returns (llama, mtmd, add_dll_directory handle).
+    """llama.dll and mtmd.dll of the folder (libllama.so and libmtmd.so on Linux), with the backends of ggml that the folder holds
+    loaded.  Returns (llama, mtmd, add_dll_directory handle).
     The folder must be an absolute path: os.add_dll_directory refuses a relative one (WinError 87)."""
-    dll_dir = os.add_dll_directory(str(llama_dir))
-    llama = C.CDLL(str(llama_dir / "llama.dll"))
-    mtmd = C.CDLL(str(llama_dir / "mtmd.dll"))
-    ggml = C.CDLL(str(llama_dir / "ggml.dll"))
-    # ggml_backend_load_all_from_path loads the backends with a plain LoadLibrary: without the folder on PATH their
+    dll_dir = os.add_dll_directory(str(llama_dir)) if _WINDOWS else None
+    llama = C.CDLL(str(llama_dir / lib_name("llama")))
+    mtmd = C.CDLL(str(llama_dir / lib_name("mtmd")))
+    ggml = C.CDLL(str(llama_dir / lib_name("ggml")))
+    # Windows: ggml_backend_load_all_from_path loads the backends with a plain LoadLibrary: without the folder on PATH their
     # dependencies are not found and the backends are skipped without an error.  The backends and everything they import are
     # loaded during this call (none of these libraries delay-loads another), so PATH is restored right after it.
+    # Linux: PATH plays no part (the libraries find each other through their RUNPATH), and the folder may hold GPU backends.
     old = os.environ.get("PATH")
     os.environ["PATH"] = str(llama_dir) + os.pathsep + (old or "")
     try:
@@ -210,8 +240,10 @@ class MtmdEncoder:
             raise RuntimeError("vision: the text model has %d input dimensions, expected %d (Qwen3.8-27B)" % (hidden, self.HIDDEN))
         cp = self.f["mtmd_context_params_default"]()
         if (cp.n_threads, cp.image_min_tokens, cp.image_max_tokens, cp.batch_max_tokens) != (4, -1, -1, 1024):
-            raise RuntimeError("vision: mtmd.dll is not the expected llama.cpp release (b10488): structure layout differs")
-        cp.use_gpu, cp.warmup, cp.print_timings, cp.n_threads = False, False, False, threads
+            raise RuntimeError("vision: the mtmd library is not the expected llama.cpp release (b10488): structure layout differs")
+        cp.use_gpu, cp.warmup, cp.print_timings, cp.n_threads = use_gpu(), False, False, threads
+        if cp.use_gpu:
+            cp.flash_attn_type = 0                           # LLAMA_FLASH_ATTN_TYPE_DISABLED, see use_gpu()
         if max_image_tokens is not None:                     # the projector then shrinks a larger image (keeping its aspect ratio)
             cp.image_max_tokens = int(max_image_tokens)
         self.ctx = self.f["mtmd_init_from_file"](str(mmproj).encode(), self.model, cp)

@@ -6,7 +6,7 @@ This package is the part you talk to: a local **OpenAI-compatible server**, a **
 whether your files and your installation are the reference ones. The engine itself is the DLL; the package loads it, applies the
 default settings the published numbers were measured with, handles the chat template and the tokenizer, and streams the answer.
 
-Status: version `0.1.2`. Text, and optionally still images (new in 0.1.2, Windows only, see [Image input](#image-input-optional)). One request is generated at a time. Tool calling is new in 0.1.1.
+Status: version `0.1.2`. Text, and optionally still images (new in 0.1.2, see [Image input](#image-input-optional)). One request is generated at a time. Tool calling is new in 0.1.1.
 
 ## What you need
 
@@ -86,9 +86,11 @@ Supported request fields: `messages` (text, and images only with the optional im
 `auto` or `none`, `max_tokens` / `max_completion_tokens`, `temperature` (0-2; 0 is greedy), `top_p`, `top_k` (at most 20),
 `min_p`, `seed`, `stop` (up to 4 strings), `stream` with `stream_options.include_usage`, `reasoning_effort` (`low`, `medium`, `high`, `xhigh`),
 `chat_template_kwargs` (for example `{"enable_thinking": false}`), `ignore_eos`, `loop_guard`. The defaults are the model's own:
-temperature 1.0, top_p 0.95, top_k 20. Not supported (answered with 400): images when the server runs without the image input options, the old `functions` / `function_call` fields, a forced `tool_choice`, `n` other than 1, `logprobs`.
+temperature 1.0, top_p 0.95, top_k 20. Not supported (answered with 400): images when the server runs without the image input options, the old `functions` / `function_call` fields, `n` other than 1, `logprobs`.
 
-Tool calling (new in 0.1.1): send `tools` (functions) with `tool_choice` `"auto"` (the default) or `"none"`. The model's own chat template
+Tool calling (new in 0.1.1): send `tools` (functions) with `tool_choice` `"auto"` (the default) or `"none"`. `"required"` and a named
+function are accepted too, but not enforced: the engine has no constrained decoding, so the request runs as `"auto"` (with only the named
+function offered, when one is named) and the model is left to make the call. The model's own chat template
 describes the tools to the model. The calls it writes come back as `message.tool_calls`, and `finish_reason` is `tool_calls`; in a stream each
 finished call arrives as one chunk with the whole arguments. Send the results back as messages with the role `tool`. An input that does
 not fit into the context is answered with 400 and the error code `context_length_exceeded` before any text is sent. Also accepted:
@@ -113,10 +115,13 @@ print(r.choices[0].message.tool_calls)
   `usage.loop_guard`. Pass `"loop_guard": false` to turn it off.
 * Input, thinking and answer together are limited to the context length (262,144 tokens by default; `--max-ctx` lowers it and the memory it needs).
 * Asking again with the earlier conversation in front of a new question does not recompute the earlier turns (`usage.prompt_tokens_details.cached_tokens`).
+* Next to `usage`, the answer (and the last chunk of a stream asked for with `include_usage`) carries `timings`, the engine's own timing in the
+  layout of llama.cpp's server: `prompt_n`, `prompt_ms`, `prompt_per_second`, `predicted_n`, `predicted_ms`, `predicted_per_second`, `cache_n`.
+  Tools that read the speed of a llama.cpp server from this object work unchanged.
 
 ### Image input (optional)
 
-Image input works on **Windows only**. The engine library already has the entry for image features (`yskn_set_visual`); the server feeds it
+Image input works on Windows and, with llama.cpp built from source, on Linux (see [Linux](#image-input-on-linux) below). The engine library already has the entry for image features (`yskn_set_visual`); the server feeds it
 when it is started with three more files. Without them the server is text only, as before: a request with an image is answered with 400 at
 once, without waiting for a running generation.
 
@@ -169,6 +174,16 @@ server, so delete the folder when you no longer want it.
   which is not published: **87.8** with the quality model, against 89.8 for the original BF16 model in llama.cpp. With the projector on the GPU
   their score fell to 79.6 and 81.6 in two runs, which is why the projector runs on the CPU here. We have not measured image quality ourselves; we checked that it works on an
   RTX 5090 with the quality model and a few simple test images.
+* <a id="image-input-on-linux"></a>**Linux.** There is no llama.cpp release to compare with, so `--llama-dir` is a folder with the shared libraries of
+  llama.cpp b10488 built from source (`libllama.so`, `libmtmd.so`, `libggml.so`, `libggml-base.so` and the backends; the commands are in
+  [BUILDING.md](../BUILDING.md#image-input-on-linux)). Only their presence is checked at start, not a checksum; the structure layout is
+  still checked when the encoder opens. By default the projector runs on the CPU, as on Windows. With the environment variable
+  `YASAKANI_VISION_GPU=1` and a CUDA build of llama.cpp it runs on the GPU **with flash attention switched off**. Measured by the
+  contributor of the Linux port on an RTX 5090, against the features of the CPU: with flash attention the relative error was 3% at 1,024 image
+  tokens and 10% at 4,096; without it 0.6 to 0.7%, at 0.15 s per 1,024-token image and 0.44 s per 2,048-token image instead of 7 s and 20 s
+  on the CPU (14 threads). Without flash attention the GPU memory of an encode grows with the square of the image tokens: about 4 GiB at
+  2,048, and at 4,096 (about 17 GiB) it did not fit next to the model. The image test above has not been repeated in this mode, so it is off
+  by default. The variable is ignored on Windows.
 * Image tokens get Qwen's three-axis positions (time, row, column); the text after an image continues from the largest of them.
 * Requests without images are handled as before: the same prompt tokens and the same answers. After a request with an image the engine
   starts the next prompt from the beginning (no reuse of the earlier turns).
