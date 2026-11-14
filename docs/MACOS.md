@@ -136,6 +136,39 @@ total latency does not improve, even when another metric becomes faster.
 Decode throughput counts only tokens generated after the first token, which is
 produced by prefill.
 
+## Further decode optimization (2026-11-15)
+
+Single-input 6/8-bit matrix kernels now cache the value table in threadgroup
+memory and use constant-address input reads. Multi-input prefill keeps its
+existing kernels, and devices that cannot use the new scalar kernels retain
+the previous fast path. Grouped projections reuse their rotated input only
+when their rotation parameters match. The NumPy sigmoid also avoids computing
+both division branches.
+
+Against the frozen `143dd06` version on M2 Max / 32 GiB, three warm requests
+per case gave these medians:
+
+| Output length | Previous decode | Updated decode | Decode speedup | Previous total | Updated total |
+|---|---:|---:|---:|---:|---:|
+| 16 tokens | 2.472 token/s | 3.978 token/s | 1.609× | 10.631 s | 8.081 s |
+| 64 tokens | 2.503 token/s | 3.270 token/s | 1.307× | 29.959 s | 23.947 s |
+
+Prefill improved from 4.633 to 4.308 s and from 4.783 to 4.681 s, respectively.
+All generated token IDs matched, and both primary comparisons passed the strict
+prefill/decode/total improvement gate. The baseline was measured before the
+exploratory variants, with normal desktop activity enabled.
+
+An additional reverse-order 64-token check confirmed faster decode
+(2.406 → 3.270 token/s) and lower total latency, but prefill was 1.27% slower
+(4.622 → 4.681 s), so its strict all-metric gate **failed**. Prefill ranges
+overlap; these measurements do not establish a stable prefill speedup.
+
+A separate diagnostic matched all eight full-logits bit hashes and the final
+recurrent/KV state hash after a 27-token prompt and seven decoded inputs.
+This is a bounded correctness check, not a CUDA-parity or general-quality claim.
+See the [second-stage report, all gate outcomes and reproduction steps](../bench/20261115/macos-decode-v2/README.md).
+The earlier measurements below remain as history.
+
 ## Decode regression fixed (2026-11-15)
 
 Sharing one Metal buffer for the compressed model removes the many per-tensor

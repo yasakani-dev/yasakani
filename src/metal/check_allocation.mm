@@ -21,11 +21,15 @@ static id<MTLDevice> allocation_test_device() {
 @property NSUInteger calls;
 @property NSUInteger failAt;
 @property NSUInteger forcedMaxBufferLength;
+@property NSUInteger forcedThreadgroupMemoryLength;
 @end
 @implementation FailingDevice
 - (id)forwardingTargetForSelector:(SEL)selector { return self.realDevice; }
 - (NSUInteger)maxBufferLength {
     return self.forcedMaxBufferLength ? self.forcedMaxBufferLength : self.realDevice.maxBufferLength;
+}
+- (NSUInteger)maxThreadgroupMemoryLength {
+    return self.forcedThreadgroupMemoryLength ? self.forcedThreadgroupMemoryLength : self.realDevice.maxThreadgroupMemoryLength;
 }
 - (id<MTLBuffer>)newBufferWithBytesNoCopy:(void*)pointer length:(NSUInteger)length
                                 options:(MTLResourceOptions)options
@@ -77,10 +81,12 @@ int main(int argc, char** argv) {
             shared.reset();
 
             failing.forcedMaxBufferLength = forced_limit;
+            failing.forcedThreadgroupMemoryLength = 1;
             failing.calls = 0; failing.failAt = 2;
             std::unique_ptr<Model> fallback(static_cast<Model*>(yskn_metal_open(argv[1])));
             require(fallback && !fallback->shared_map && failing.calls == 0,
                     "device buffer limit did not select lazy per-region fallback");
+            require(!fallback->tg6 && !fallback->tg8, "limited threadgroup memory did not select original fast kernels");
             Model& model = *fallback;
             bool rejected = false;
             try { model.get("tiny.body6"); } catch (const std::runtime_error&) { rejected = true; }

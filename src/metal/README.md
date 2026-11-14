@@ -7,6 +7,10 @@ not by the CUDA ABI. An Apple Silicon Mac with macOS 13 or later is required.
 The kernels read the compressed trellis stream directly. Input and output H512
 transforms run on the CPU; the matrix products and compressed row decoding run on
 Metal. The aligned 6/8-bit warp path reads packed words and half-precision value pairs directly; other valid layouts retain the byte-addressed decoder.
+For single-token projections, 128 threads cooperatively cache the 16 KiB value
+table in threadgroup memory before using the same accumulation order. Batched
+projections keep their original kernels. Devices that cannot create or support
+the cached pipeline retain the original fast scalar path.
 The model file is privately memory-mapped and exposed through page-aligned
 Metal buffers without expanding or copying the complete weights. When the whole
 file fits the device's `maxBufferLength`, all tensors share one buffer. A
@@ -42,9 +46,11 @@ matrix calls; numerical agreement is tested against the independent reader.
 
 `yskn_metal_linear_multi` applies one input to one, two, or three matrices
 with matching column counts and returns their logical outputs concatenated.
-It validates every shape and reserves disjoint input/partial/output ranges,
-encodes all projections into one command buffer, and waits once. Each matrix
-retains its own input/output rotation, including different signs and padded
+It validates every shape and reserves disjoint partial/output ranges, then
+encodes all projections into one command buffer and waits once. Matrices with
+identical input rotations share the prepared input range; different rotations
+keep separate input ranges. Each matrix retains its own input/output rotation,
+including different signs and padded
 physical rows. This reduces submission waits for Q/K/V and gate/up projections
 without changing their mathematical operations.
 

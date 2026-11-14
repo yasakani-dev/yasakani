@@ -7,10 +7,11 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
-from yasakani.macos_model import Model, delta_step, grouped_attention, rotary
+from yasakani.macos_model import Model, delta_step, grouped_attention, rotary, sigmoid
 from yasakani.yskn_format import Container, FormatError, NumpyOps, checked, fwht512, rotated_rows, vector
 
 
@@ -263,6 +264,36 @@ class ModelTests(unittest.TestCase):
         again = np.array([model.forward(t) for t in tokens])
         np.testing.assert_array_equal(actual, again)
         np.testing.assert_array_equal(model.state_hash(), digest)
+
+    def test_shared_sigmoid_division_preserves_float32_bits_and_model_state(self):
+        # Preserve the former two-division expression as a bitwise regression
+        # oracle: reducing arithmetic must not change GDN gates or recurrence.
+        def two_branch_sigmoid(x):
+            x = np.asarray(x, dtype=np.float32)
+            e = np.exp(-np.abs(x))
+            return np.where(x >= 0, 1 / (1 + e), e / (1 + e))
+
+        values = np.concatenate((np.random.default_rng(91).normal(0, 20, 4096).astype(np.float32),
+                                 np.array([0., -0., np.inf, -np.inf, 80., -80., 100., -100.], np.float32)))
+        for value in (values, values[::2], values.astype(np.float64),
+                      np.array([-.5, 0., .5], np.float16), np.array(-3., np.float32)):
+            before = value.copy()
+            actual = sigmoid(value)
+            self.assertEqual(actual.dtype, np.float32)
+            np.testing.assert_array_equal(actual.view(np.uint32), two_branch_sigmoid(value).view(np.uint32))
+            np.testing.assert_array_equal(value, before)
+
+        baseline, candidate = Model(self.ops.path, 24, self.ops), Model(self.ops.path, 24, self.ops)
+        tokens = [3, 1, 5, 2, 4, 6, 0, 7] * 2
+        expected, hashes = [], []
+        with patch("yasakani.macos_model.sigmoid", two_branch_sigmoid):
+            for token in tokens:
+                expected.append(baseline.forward(token))
+                hashes.append(baseline.state_hash())
+        for token, logits, state_hash in zip(tokens, expected, hashes):
+            actual = candidate.forward(token)
+            np.testing.assert_array_equal(actual.view(np.uint32), logits.view(np.uint32))
+            np.testing.assert_array_equal(candidate.state_hash(), state_hash)
 
     def test_prefill_without_logits_commits_identical_state(self):
         full = Model(self.ops.path, 8, self.ops)

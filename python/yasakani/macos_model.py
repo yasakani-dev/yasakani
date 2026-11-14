@@ -26,7 +26,7 @@ def sigmoid(x):
     x = np.asarray(x, dtype=np.float32)
     # exp(-abs(x)) is bounded even for large negative gates.
     e = np.exp(-np.abs(x))
-    return np.where(x >= 0, 1 / (1 + e), e / (1 + e))
+    return np.where(x >= 0, 1, e) / (1 + e)
 
 
 def silu(x):

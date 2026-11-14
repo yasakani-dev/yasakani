@@ -1,0 +1,21 @@
+{
+  "status": "passed",
+  "verified_at": "2026-11-14T16:24:05.830337+00:00",
+  "performed_after_timed_runs": true,
+  "sha256_actual": "3ba17a76871a2b5e86fb1d01ab677e6b35ff5ccc27d4f03ad941501e3319d1ca",
+  "size_bytes": 10311344128,
+  "mtime_ns": 1794665162086162913,
+  "unchanged_during_hash": true,
+  "matching_reports": [
+    "count16-before.json",
+    "count16-after.json",
+    "count64-before.json",
+    "count64-after.json",
+    "confirm-before64.json",
+    "exact-before.json",
+    "exact-after.json",
+    "cache-only-after16.json",
+    "cache-only-after64.json"
+  ],
+  "note": "The timed reports record manifest expectations. This separate complete-file SHA-256 check verifies the same size/mtime file after all measurements; it is outside every timer."
+}

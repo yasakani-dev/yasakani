@@ -97,6 +97,7 @@ struct Model {
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> mv = nil, mv6 = nil, mv8 = nil, reduce = nil, row = nil;
     id<MTLComputePipelineState> batch6[3] = {}, batch8[3] = {};
+    id<MTLComputePipelineState> tg6 = nil, tg8 = nil;
     id<MTLBuffer> input = nil, partial = nil, output = nil, shared_map = nil;
     std::unordered_map<std::string, Tensor> tensors;
     uint64_t embedding_offset = 0, embedding_count = 0;
@@ -211,6 +212,17 @@ struct Model {
         batch6[0] = pipeline(@"compressed_mv6_b2"); batch6[1] = pipeline(@"compressed_mv6_b4"); batch6[2] = pipeline(@"compressed_mv6_b8");
         batch8[0] = pipeline(@"compressed_mv8_b2"); batch8[1] = pipeline(@"compressed_mv8_b4"); batch8[2] = pipeline(@"compressed_mv8_b8");
         reduce = pipeline(@"reduce_mv"); row = pipeline(@"compressed_row");
+        // Keep the original fast kernels when this device cannot support the LUT cache.
+        auto cached_pipeline = [&](NSString* name) -> id<MTLComputePipelineState> {
+            id<MTLFunction> fn = [library newFunctionWithName:name];
+            if (!fn) return nil;
+            NSError* optional_error = nil;
+            id<MTLComputePipelineState> p = [device newComputePipelineStateWithFunction:fn error:&optional_error];
+            if (!p || p.maxTotalThreadsPerThreadgroup < 128 ||
+                p.staticThreadgroupMemoryLength > device.maxThreadgroupMemoryLength) return nil;
+            return p;
+        };
+        tg6 = cached_pipeline(@"compressed_tg6"); tg8 = cached_pipeline(@"compressed_tg8");
         if (!queue) throw std::runtime_error("Metal command queue creation failed");
     }
     Tensor& get(const char* name) {
@@ -258,7 +270,13 @@ struct Model {
     void dispatch(id<MTLComputeCommandEncoder> e, id<MTLComputePipelineState> p, size_t count) {
         [e setComputePipelineState:p];
         NSUInteger width = std::min(NSUInteger(128), p.maxTotalThreadsPerThreadgroup);
-        [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+        if (p == tg6 || p == tg8) {
+            // Padding lanes must participate in the cooperative LUT load and barrier.
+            [e dispatchThreadgroups:MTLSizeMake((count + 127) / 128, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        } else {
+            [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+        }
         [e endEncoding];
     }
     void wait(id<MTLCommandBuffer> cmd) {
@@ -276,7 +294,7 @@ struct Model {
         [e setBuffer:partial offset:partial_offset atIndex:4]; [e setBytes:&p length:sizeof(p) atIndex:5];
         id<MTLComputePipelineState> kernel = mv;
         if (fast_tensor(t)) {
-            if (p.batch == 1) kernel = t.bits == 6 ? mv6 : mv8;
+            if (p.batch == 1) kernel = t.bits == 6 ? (tg6 ? tg6 : mv6) : (tg8 ? tg8 : mv8);
             else {
                 int tile = p.batch <= 2 ? 0 : (p.batch <= 4 ? 1 : 2);
                 kernel = t.bits == 6 ? batch6[tile] : batch8[tile];
@@ -334,6 +352,7 @@ struct Model {
             Tensor* tensor = nullptr;
             Params parameters{};
             size_t input_offset = 0, partial_offset = 0, output_offset = 0, result_offset = 0;
+            bool prepare_input = true;
         };
         std::array<Projection, 3> projections;
         size_t input_bytes = 0, partial_bytes = 0, output_bytes = 0;
@@ -345,7 +364,7 @@ struct Model {
             total += elements * sizeof(float);
             return offset;
         };
-        // Validate every projection and reserve disjoint ranges before encoding or
+        // Validate every projection and reserve scratch ranges before encoding or
         // submitting any GPU work. A later invalid name/shape cannot partly run.
         for (int i = 0; i < count; ++i) {
             Tensor& t = get(names[i]);
@@ -357,7 +376,18 @@ struct Model {
                 throw std::runtime_error("linear_multi scratch exceeds shader indexing range");
             Projection& projection = projections[i];
             projection.tensor = &t; projection.parameters = p;
-            projection.input_offset = reserve(input_bytes, t.cols);
+            // Equal rotations of the same input are bit-identical, so reuse an
+            // earlier prepared input range. Keep independent ranges otherwise.
+            for (int previous = 0; previous < i; ++previous) {
+                const Tensor& other = *projections[previous].tensor;
+                if (other.cols == t.cols && other.in.seed == t.in.seed &&
+                    other.in.offset == t.in.offset && other.in.splitmix == t.in.splitmix) {
+                    projection.input_offset = projections[previous].input_offset;
+                    projection.prepare_input = false;
+                    break;
+                }
+            }
+            if (projection.prepare_input) projection.input_offset = reserve(input_bytes, t.cols);
             projection.partial_offset = reserve(partial_bytes, partial_elements);
             projection.output_offset = reserve(output_bytes, t.physical_rows);
             projection.result_offset = size_t(logical_rows);
@@ -370,6 +400,7 @@ struct Model {
         for (int i = 0; i < count; ++i) {
             const auto& projection = projections[i];
             const Tensor& t = *projection.tensor;
+            if (!projection.prepare_input) continue;
             float* in = reinterpret_cast<float*>(static_cast<uint8_t*>(input.contents) + projection.input_offset);
             // Rotations may have different signs even when the input is shared.
             for (int j = 0; j < n; ++j) in[j] = x[j] * t.in_signs[j];

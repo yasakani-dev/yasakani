@@ -152,6 +152,32 @@ def main():
             count += 1
         finally:
             lib.yskn_metal_close(h)
+        # Scalar LUT-cache groups include padded lanes. Exercise parts 2/6/8,
+        # physical row tails, logical padding, and unchanged batched operations.
+        for bits in (6, 8):
+            for physical_rows, cols in ((16, 512), (16, 1536), (17, 8192)):
+                edge = dict(container.tensors[f"tiny.body{bits}"], name="cache_edge", role="head",
+                            rows=physical_rows - 3, physical_rows=physical_rows, cols=cols, rot_out=None,
+                            stream_bytes=physical_rows * (cols // 256) * 16 * bits)
+                write_header(dict(original_header, tensors=[edge]))
+                h = lib.yskn_metal_open(str(fixture_out).encode())
+                assert h, lib.yskn_metal_last_error().decode()
+                try:
+                    c = reference.Container(str(fixture_out))
+                    matrix = reference.decode(c, reference.checked(c.tensors["cache_edge"]))
+                    inputs = rng.standard_normal((3, cols)).astype(np.float32)
+                    single = np.empty(edge["rows"], np.float32)
+                    assert lib.yskn_metal_linear(h, b"cache_edge", inputs[0].ctypes.data, cols,
+                                                 single.ctypes.data, single.size) == 0
+                    np.testing.assert_allclose(single, matrix @ inputs[0], atol=3e-4, rtol=2e-4)
+                    actual = np.empty((3, edge["rows"]), np.float32)
+                    assert lib.yskn_metal_linear_batch(h, b"cache_edge", inputs.ctypes.data, 3, cols,
+                                                       actual.ctypes.data, edge["rows"]) == 0
+                    np.testing.assert_allclose(actual, inputs @ matrix.T, atol=3e-4, rtol=2e-4)
+                    np.testing.assert_array_equal(single, actual[0])
+                    count += 2
+                finally:
+                    lib.yskn_metal_close(h)
         emb = dict(container.tensors["tiny.embed"])
         head = dict(original_header)
         head["tensors"] = [dict(emb, name=name) for name in ("embed_tokens", "embed_tokens.res", "embed_tokens.res2")]
