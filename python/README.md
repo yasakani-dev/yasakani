@@ -6,7 +6,7 @@ This package is the part you talk to: a local **OpenAI-compatible server**, a **
 whether your files and your installation are the reference ones. The engine itself is the DLL; the package loads it, applies the
 default settings the published numbers were measured with, handles the chat template and the tokenizer, and streams the answer.
 
-Status: version `0.1.1`. Text only. One request is generated at a time. Tool calling is new in 0.1.1.
+Status: version `0.1.2`. Text, and optionally still images (new in 0.1.2, Windows only, see [Image input](#image-input-optional)). One request is generated at a time. Tool calling is new in 0.1.1.
 
 ## What you need
 
@@ -82,11 +82,11 @@ curl http://127.0.0.1:8765/v1/chat/completions -H "Content-Type: application/jso
   -d "{\"messages\":[{\"role\":\"user\",\"content\":\"Hello!\"}],\"chat_template_kwargs\":{\"enable_thinking\":false}}"
 ```
 
-Supported request fields: `messages` (text only; the roles `system`, `developer`, `user`, `assistant` and `tool`), `tools` with `tool_choice`
+Supported request fields: `messages` (text, and images only with the optional image input below; the roles `system`, `developer`, `user`, `assistant` and `tool`), `tools` with `tool_choice`
 `auto` or `none`, `max_tokens` / `max_completion_tokens`, `temperature` (0-2; 0 is greedy), `top_p`, `top_k` (at most 20),
 `min_p`, `seed`, `stop` (up to 4 strings), `stream` with `stream_options.include_usage`, `reasoning_effort` (`low`, `medium`, `high`, `xhigh`),
 `chat_template_kwargs` (for example `{"enable_thinking": false}`), `ignore_eos`, `loop_guard`. The defaults are the model's own:
-temperature 1.0, top_p 0.95, top_k 20. Not supported (answered with 400): images, the old `functions` / `function_call` fields, a forced `tool_choice`, `n` other than 1, `logprobs`.
+temperature 1.0, top_p 0.95, top_k 20. Not supported (answered with 400): images when the server runs without the image input options, the old `functions` / `function_call` fields, a forced `tool_choice`, `n` other than 1, `logprobs`.
 
 Tool calling (new in 0.1.1): send `tools` (functions) with `tool_choice` `"auto"` (the default) or `"none"`. The model's own chat template
 describes the tools to the model. The calls it writes come back as `message.tool_calls`, and `finish_reason` is `tool_calls`; in a stream each
@@ -116,29 +116,62 @@ print(r.choices[0].message.tool_calls)
 
 ### Image input (optional)
 
-The engine library already has the entry for image features (`yskn_set_visual`); the server feeds it when it is started with three more files.
-Without them the server is text only, exactly as before, and a request with an image is answered with 400.
+Image input works on **Windows only**. The engine library already has the entry for image features (`yskn_set_visual`); the server feeds it
+when it is started with three more files. Without them the server is text only, as before: a request with an image is answered with 400 at
+once, without waiting for a running generation.
 
 | | |
 |---|---|
-| `--mmproj` | the projector of Qwen3.8-27B: `mmproj-Qwen3.8-27B-BF16.gguf` from [ggml-org/Qwen3.8-27B-GGUF](https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF) (931,145,888 bytes, sha256 `de2a4986…f53fe8`) |
-| `--llama-dir` | the folder of the llama.cpp **b10488** release for Windows (`llama.dll`, `mtmd.dll`, `ggml*.dll`); its multimodal library turns the image into features |
-| `--vision-model` | any Qwen3.8-27B GGUF (for example `Qwen3.8-27B-Q4_K_M.gguf` of the same repository). Only its settings and vocabulary are read, never its weights |
+| `--mmproj` | the projector of Qwen3.8-27B: `mmproj-Qwen3.8-27B-BF16.gguf` from [ggml-org/Qwen3.8-27B-GGUF](https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF) (931,145,888 bytes, sha256 `de2a49866988ea272c43dc2a43ee2662c25725a717ca5b9059ea420a97f53fe8`) |
+| `--llama-dir` | a folder with the unpacked `llama-b10488-bin-win-cpu-x64.zip` of the [llama.cpp release b10488](https://github.com/ggml-org/llama.cpp/releases/tag/b10488) (18,490,962 bytes, sha256 `6c938f6d79aac96cb90fda673aade20cff9b1b6c1e97de04f4d5d60bca107082`); its multimodal library turns the image into features. Only this CPU build is accepted: at start the server compares its `llama.dll`, `mtmd.dll`, `ggml.dll` and `ggml-base.dll` by SHA-256 and refuses a folder with GPU backends (`ggml-cuda.dll` and the like) |
+| `--vision-model` | a Qwen3.8-27B GGUF. Only its settings and vocabulary are read, never its weights. We tested `Qwen3.8-27B-Q4_K_M.gguf` of [bartowski/Qwen3.8-27B-GGUF](https://huggingface.co/bartowski/Qwen3.8-27B-GGUF) (17,442,399,968 bytes); other GGUF files of this model should work the same way, but we have not tried them |
+| Pillow | install the package with `pip install ".[vision]"` instead of `pip install .`, or add Pillow to the Python that runs `yasakani` with `pip install Pillow` (in a quick-start folder: `venv\Scripts\python -m pip install Pillow`) |
 
 ```bat
-pip install .[vision]
+pip install ".[vision]"
 yasakani serve --model-dir D:\models\qwen38-quality --dll D:\yasakani\yskn.dll ^
   --mmproj D:\gguf\mmproj-Qwen3.8-27B-BF16.gguf --llama-dir D:\llama-b10488 --vision-model D:\gguf\Qwen3.8-27B-Q4_K_M.gguf
 ```
 
-Send the image as an OpenAI `image_url` part with a `data:image/...;base64,` URI, in a user message (up to 16 images, 24 MiB and 40 million pixels each).
-Local file paths are accepted only with `--vision-allow-local-files`; remote URLs never. `--vision-cache FOLDER` keeps the features of images seen before.
+These options are checked at start, before the model loads; a missing file, the projector and the GGUF given the wrong way round, another
+llama.cpp build or a missing Pillow stops the server with an error message. Relative paths are taken from the folder the server is started in.
 
-* The image is encoded on the CPU (a few seconds; 2.6 s for our test image with 8 threads); generation then runs on the GPU as usual.
-  On the GPU the features came out slightly different and the image score of our test fell (87.8 on the CPU, 79.6 and 81.6 in two GPU runs).
-* Our test of image understanding (5 levels, 49 questions) gave **87.8** with the quality model, against 89.8 for the original BF16 model in llama.cpp.
+Send the image as an OpenAI `image_url` part with a `data:image/...;base64,` URI, in a user message. Limits:
+
+* at most 16 images per request. The whole request body is at most 32 MiB and base64 makes the data a third larger, so the images of one
+  request can be about 24 MiB together;
+* each image at most 40 million pixels, and its longer side at most 200 times its shorter side;
+* each image is downsized to at most **1,024 image tokens** (about one million pixels), keeping its shape: a 1920 × 1080 screenshot
+  becomes 1,008 image tokens and a 4032 × 3024 phone photo 972 (at full size they would take 2,040 and 4,015). Downsizing loses detail,
+  so small text in a full-screen screenshot can become hard to read; crop the part you need, or raise the limit.
+  `--vision-max-image-tokens N` sets it, from 64 to 4,096 (the projector's own limit: images up to about 4 million pixels keep their size).
+  Below 256 a very long, thin image can stay a little above the limit (113 image tokens at 64);
+* at most 8,192 image tokens per request, 8 times the per-image limit (`--vision-max-request-image-tokens N` changes it). The images
+  of earlier turns count too, because a client sends the whole conversation again with every turn.
+
+An image outside these limits, or one that cannot be decoded, is answered with 400 before it is encoded. When the images make the input longer than
+the context, the answer is 400 with the error code `context_length_exceeded`, as for long text. `detail` is accepted and ignored.
+`--vision-allow-local-files DIR` also accepts local file paths (and `file:` URLs) of files inside the folder DIR; remote URLs are never fetched.
+`--vision-cache FOLDER` keeps the features of images seen before, one file per image: it holds information about every image sent to the
+server, so delete the folder when you no longer want it.
+
+* The image is encoded on the CPU; generation then runs on the GPU as usual. The encode time grows with the square of the image tokens.
+  On our PC (AMD Ryzen 9 9950X3D2, 16 cores) with the default of one thread per physical core (16 threads): 1.2 s for a 512 × 512 image
+  (256 image tokens), 12 s for 1280 × 720 (920), 12 to 15 s for any image downsized to the default limit (1920 × 1080, 2048 × 2048,
+  4032 × 3024). At full size the same encoder took 51 s for a 1920 × 1080 screenshot with 16 threads and 5 1/2 minutes for a
+  2048 × 2048 image with 8 threads. `--vision-threads N` sets the number of threads: with 32 (two per core) the same 1920 × 1080
+  image took 10.9 s instead of 13.5 s, with the same features.
+* **While an image is encoded, the server answers no other request**, and the client gets nothing back yet, not even the start of a
+  stream: a request with eight large images waits about 2 minutes (8 × 14 s) for its first token. Give the client a long enough timeout.
+  An image seen before is not encoded again: the server keeps the features of up to 512 MiB of images in memory (about 50 images at
+  the default limit), and `--vision-cache FOLDER` also keeps them on disk.
+* Image understanding was measured by the contributor of this feature (pull request #4) with their own test of 5 levels and 49 questions,
+  which is not published: **87.8** with the quality model, against 89.8 for the original BF16 model in llama.cpp. With the projector on the GPU
+  their score fell to 79.6 and 81.6 in two runs, which is why the projector runs on the CPU here. We have not measured image quality ourselves; we checked that it works on an
+  RTX 5090 with the quality model and a few simple test images.
 * Image tokens get Qwen's three-axis positions (time, row, column); the text after an image continues from the largest of them.
-* Without image input nothing changes: the same three greedy questions gave the same tokens with and without these changes.
+* Requests without images are handled as before: the same prompt tokens and the same answers. After a request with an image the engine
+  starts the next prompt from the beginning (no reuse of the earlier turns).
 
 ### Safety of the server
 

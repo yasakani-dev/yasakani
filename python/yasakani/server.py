@@ -80,7 +80,8 @@ def _num(body, key, default, lo=None, hi=None, kind=float):
     return v
 
 
-def parse_chat_request(body: dict, cfg: ServerConfig) -> ChatParams:
+def parse_chat_request(body: dict, cfg: ServerConfig, images: bool = False) -> ChatParams:
+    """``images``: image input is configured.  Without it an image part is refused here, before the request waits for the GPU."""
     if not isinstance(body, dict):
         raise RequestError("the request body must be a JSON object")
     for key in ("functions", "function_call"):
@@ -99,7 +100,7 @@ def parse_chat_request(body: dict, cfg: ServerConfig) -> ChatParams:
     rf = body.get("response_format")
     if isinstance(rf, dict) and rf.get("type") not in (None, "text"):
         raise RequestError("response_format %r is not supported" % rf.get("type"))
-    messages = clean_messages(body.get("messages"))
+    messages = clean_messages(body.get("messages"), images=images)
     mt = body.get("max_completion_tokens", body.get("max_tokens"))
     max_tokens = cfg.default_max_tokens if mt is None else _num({"v": mt}, "v", None, 1, None, int)
     if cfg.max_tokens_cap:
@@ -271,7 +272,7 @@ def make_handler(state: ApiState):
                 return self._error(413, "request body too large or length missing", "invalid_request_error", close=True)
             try:
                 body = json.loads(self.rfile.read(n) or b"{}")
-                params = parse_chat_request(body, cfg)
+                params = parse_chat_request(body, cfg, images=getattr(runner, "vision", None) is not None)
             except json.JSONDecodeError:
                 return self._error(400, "the request body is not valid JSON")
             except RequestError as ex:
@@ -291,11 +292,16 @@ def make_handler(state: ApiState):
                 self.wfile.write(b"data: " + json.dumps(o, ensure_ascii=False).encode("utf-8") + b"\n\n")
                 self.wfile.flush()
 
+            # One request at a time.  With image input, prepare_checked also reads and encodes the images on the CPU, inside this
+            # lock: while an image is encoded (about 15 s at the default limit of 1,024 image tokens on a 16-core CPU) no other
+            # request is served and nothing is sent to this client yet.  Moving the encode out of the lock is a later change.
             with state.gen_lock:
                 try:
                     prepared = runner.prepare_checked(params)        # before any header: a request that cannot be served gets a plain 400
                 except RequestError as ex:
                     return self._error(400, str(ex), err_code=getattr(ex, "code", None))
+                except Exception as ex:                          # noqa: BLE001 - e.g. the image encoder failed: answer, do not drop
+                    return self._error(500, str(ex)[:500] or type(ex).__name__, "server_error")
                 try:
                     if stream:
                         self.send_response(200)

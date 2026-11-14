@@ -35,7 +35,19 @@ What it does:
   `frame-ancestors 'none'` and `nosniff`.
 * The Python package makes **no outgoing network connections** (it only listens; the tokenizer is read from the local model folder) and runs one external program: `nvidia-smi`, in
   `yasakani info` and `yasakani bench`. It does not execute code the model writes. It does not write prompts or answers to disk or to a log. It writes a file only
-  when you run `yasakani selfcheck --write`.
+  when you run `yasakani selfcheck --write`, or with `--vision-cache FOLDER` of the optional image input (see below).
+* The optional image input (since 0.1.2) is off unless you start the server with `--mmproj`, `--llama-dir` and `--vision-model`. Then
+  the package also loads the libraries of llama.cpp b10488 (CPU build) from the folder you name: it compares `llama.dll`, `mtmd.dll`,
+  `ggml.dll` and `ggml-base.dll` with their SHA-256 first and refuses a folder with GPU backends; the other `ggml-*` libraries of that
+  folder (llama.cpp loads them itself) and `libomp140.x86_64.dll` (the OpenMP runtime that the CPU backend imports) are loaded too and
+  are not compared. These libraries are not part of YASAKANI and were not checked like `yskn.dll`; one of them, `ggml-rpc.dll`, imports
+  the Windows networking library, and the package never asks it to connect anywhere. To load them, the package adds the folder to the
+  DLL search path of the server process when the first image arrives (`os.add_dll_directory`), and puts it on `PATH` only while
+  llama.cpp loads its backends. The folder stays on the DLL search path until the image encoder is closed, which is when the server
+  stops: a library that the process loads by name in that time can also be found there. Use a folder that holds only the unpacked
+  llama.cpp release.
+  Image URLs on the network are never fetched; local image files are read only with `--vision-allow-local-files DIR`, and only inside
+  DIR. `--vision-cache FOLDER` keeps the features of every image sent, one file per image.
 * The engine library (`yskn.dll`) imports no networking functions and starts no other program, and it opens the model files read-only (memory-mapped).
   This was checked on the import table of the release build (2026-11-10, `yskn.dll` sha256 starting `0f5d973b`: it imports only the Windows
   kernel library and the Visual C++ / C runtime) and in its source. The one file it can write is a debugging log of the draft-and-check
@@ -48,7 +60,8 @@ What it does not do:
 
 * **No TLS.** It speaks plain HTTP. If it leaves your LAN, put it behind a VPN or a TLS reverse proxy.
 * **One key, no users, no rate limits, no quotas.** Anyone who has the key (or can reach a local-only server from this PC) can use the GPU.
-* **One request at a time.** A long request makes the others wait, so any client that can reach the server can keep it busy.
+* **One request at a time.** A long request makes the others wait, so any client that can reach the server can keep it busy. With the
+  image input this includes encoding the images on the CPU (about 15 s for a large image at the default limit on a 16-core CPU).
 * Do not expose it directly to the internet.
 
 ## Model files

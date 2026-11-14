@@ -216,9 +216,12 @@ How the distribution of each engine was obtained:
 
 The programs written for the last five rows of this list reach into other people's software (they change a copy of it, build a part
 that is not shipped, call its library or its internal modules directly, or attach to its process) and are not included; nor is the
-scoring script of YASAKANI's own rows, which drives the research build. Not included either: the twenty transcripts, the
+scoring script of YASAKANI's own rows, which drives the research build. Not included in this folder either: the twenty transcripts, the
 reference file (10.2 GB; it holds the token ids of the transcripts) and the per-position files of the runs (they hold the token ids
-too). The table can therefore not be measured again from this folder alone.
+too). Since November 14, 2026, [`tools/quality/`](../tools/quality/) has the twenty transcripts (as the windows that were scored),
+a program that makes the reference again from the original model, and a program that scores a released model with the released
+engine. The reference file of this table itself is not published; the one made again differs from it by a KL divergence below
+0.000001 (see tools/quality/README.md).
 
 Checks that were made, with their numbers in the score files:
 
@@ -500,9 +503,10 @@ YASAKANI fast 12:40 to 12:51; MegaCapybara 14:23 to 14:32; video runs 14:47 to 1
 
 ### The quality table (November 8)
 
-The table cannot be measured again from this folder alone, because the text and the reference file are not published. The scripts run as
-they are with a reference file of your own in the format of llama.cpp's perplexity tool (`llama-perplexity -m <model> -f <text>
---kl-divergence-base <file>` writes one; `kld_base.py` describes the format and can write one from logits):
+The text and a program that makes the reference are in [`tools/quality/`](../tools/quality/) (since November 14, 2026; the reference
+file of the table itself is not published). The scripts below run as they are with a reference file in the format of llama.cpp's
+perplexity tool: `tools/quality/make_reference.py` writes one from the original model, `llama-perplexity -m <model> -f <text>
+--kl-divergence-base <file>` writes one too, and `kld_base.py` describes the format and can write one from logits:
 
 1. llama.cpp: `python 20261108/quality/scripts/llama_kld.py --llama-perplexity <exe> --base-file <file> --gguf <name>=<gguf>`.
 2. SGLang or vLLM: start the server as in `20261108/quality/launch/`, then `api_topk_dump.py --api sglang|vllm --base http://127.0.0.1:30000
@@ -577,7 +581,8 @@ measures your own PC with shorter tests.
 * One measurement per configuration, at contexts of up to 2,048 tokens.
 * Sizes are file sizes and hold different things (a vision part, a helper model, auxiliary layers), so this is not a comparison of
   compression at equal size. The two size bands compare files that are near each other in size, not equal.
-* Not measurable again from this folder alone: the text and the reference file are not published.
+* The text and a program that makes the reference again are in [`tools/quality/`](../tools/quality/) (since November 14, 2026); the
+  reference file of the table itself is not published.
 
 ### The earlier comparisons (20261101/, 20261103/)
 

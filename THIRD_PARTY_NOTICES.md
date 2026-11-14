@@ -80,6 +80,21 @@ tokenizer from the local model folder only and never downloads anything.
 The first version in a row is that of the PC where the release candidate was tested (2026-10-31). Where there is a second one, it is
 what `pip` picked in a fresh virtual environment on 2026-11-12 (jinja2 was 3.1.6 again); the self-check passed there for both models.
 
+### Optional: image input (since 0.1.2)
+
+Needed only if you start the server with `--mmproj`, `--llama-dir` and `--vision-model` (see `python/README.md`). None of these files
+is in the release; you download them yourself.
+
+| What | Why | License | Tested with |
+|---|---|---|---|
+| llama.cpp, CPU build for Windows x64 (`llama-b10488-bin-win-cpu-x64.zip`, <https://github.com/ggml-org/llama.cpp/releases/tag/b10488>) | its multimodal library (`mtmd.dll`, with `llama.dll` and the `ggml` libraries) turns an image into features | MIT | b10488 |
+| `mmproj-Qwen3.8-27B-BF16.gguf` (<https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF>) | the image encoder of Qwen3.8-27B in the GGUF format | made from Qwen3.8-27B (Apache-2.0); see the model page | the file with SHA-256 `de2a49866988ea272c43dc2a43ee2662c25725a717ca5b9059ea420a97f53fe8` |
+| a Qwen3.8-27B GGUF file | settings and vocabulary for llama.cpp; its weights are not read | made from Qwen3.8-27B (Apache-2.0); see the page you download it from | `Qwen3.8-27B-Q4_K_M.gguf` of <https://huggingface.co/bartowski/Qwen3.8-27B-GGUF> (17,442,399,968 bytes); other files not tried |
+| Pillow | reads the image (`pip install ".[vision]"`) | MIT-CMU | 13.0.0 |
+
+`python/yasakani/_mtmd.py` declares, with Python's ctypes, the structures and functions of the llama.cpp b10488 headers (`llama.h`,
+`mtmd.h`) that it calls; no llama.cpp source file or binary is part of the release.
+
 ## Published work this builds on (no code taken from it unless listed above)
 
 * Jian Chen, Yesheng Liang, Zhijian Liu. *DFlash: Block Diffusion for Flash Speculative Decoding.* arXiv:2602.06036, February 2026.

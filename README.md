@@ -3,7 +3,7 @@
 A local LLM engine for **Windows** and **one NVIDIA RTX 5090**, built for one model: **Qwen3.8-27B**. Open source, Apache License 2.0.
 日本語は [README.ja.md](README.ja.md)。
 
-> **Version 0.1.1 (November 14, 2026).** New in this version: the server accepts requests with `tools` (tool / function calling), so coding agents and other tool-using apps can connect to it; version 0.1.0 refused them. Engine: [release page](https://github.com/yasakani-dev/yasakani/releases/tag/v0.1.1). Models on Hugging Face: [quality model](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-quality) and [fastest model](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-speed).
+> **Version 0.1.2 (November 14, 2026).** New in this version: the server can take images, optionally (Windows only; contributed in [#4](https://github.com/yasakani-dev/yasakani/pull/4); see [What you need](#what-you-need)). Since 0.1.1 it accepts requests with `tools` (tool / function calling), so coding agents and other tool-using apps can connect to it. Engine: [release page](https://github.com/yasakani-dev/yasakani/releases/tag/v0.1.2). Models on Hugging Face: [quality model](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-quality) and [fastest model](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-speed).
 >
 > **Support the development:** crowdfunding on CAMPFIRE for backers living in Japan, until December 16, 2026 - https://camp-fire.jp/projects/992233/view (outside Japan: see [Support](#support))
 
@@ -157,7 +157,7 @@ of the nvidia-smi values before and after loading).
 
 | | |
 |---|---|
-| GPU | NVIDIA **GeForce RTX 5090** (32 GB). The kernels are built for compute capability 12.0, which the whole RTX 50 series shares, but only the RTX 5090 has been tested, and the quickstart stops on any other card |
+| GPU | NVIDIA **GeForce RTX 5090** (32 GB). The kernels are built for compute capability 12.0, which the whole RTX 50 series shares, but only the RTX 5090 has been tested; on any other card the quickstart asks whether to continue (pressing Enter alone stops it) |
 | OS | **Windows 11**, 64-bit (the only version tested) |
 | Driver | a current NVIDIA driver (tested with 616.92) |
 | Software | Microsoft Visual C++ 2015-2022 x64 runtime, Python 3.10 or newer |
@@ -169,17 +169,26 @@ this release), other models. Support for more GPUs is the purpose of the crowdfu
 **Linux:** the engine can be built from source (contributed in [#3](https://github.com/yasakani-dev/yasakani/pull/3), which lists the commands; we checked it on WSL2 /
 Ubuntu 24.04 with an RTX 5090). There is no prebuilt Linux release or launcher yet: that is one of the crowdfunding goals.
 
+**Images (optional, Windows only):** since 0.1.2 the server can also take images (a community contribution, [#4](https://github.com/yasakani-dev/yasakani/pull/4)). This needs
+files that are not part of the release: the image encoder `mmproj-Qwen3.8-27B-BF16.gguf` (0.93 GB), the CPU build of llama.cpp b10488,
+a Qwen3.8-27B GGUF file (only its settings and vocabulary are read, but the file is large: about 17 to 19 GB for Q4_K_M) and Pillow.
+Each image is encoded on the CPU, after it is downsized to at most 1,024 image tokens (about one million pixels). On our PC (AMD Ryzen 9 9950X3D2, 16 cores,
+16 threads) that took about 15 s for a large image and 1.2 s for a 512 × 512 one; while an image is encoded, the server answers
+no other request. We checked that it works on our RTX 5090 with the quality model and a few
+simple test images; we have not measured how well the model understands images. Set-up and limits: [python/README.md](python/README.md#image-input-optional).
+The quickstart menu and the harness do not use images.
+
 Close other programs that use a lot of GPU memory (games, other LLM servers) before you start. When the memory runs out there is no error:
 generation just becomes several times slower (a warning is printed at start in that case).
 
 ## Quick start
 
-**The quickest way:** unpack `yasakani-quickstart-0.1.1.zip` from the [release page](https://github.com/yasakani-dev/yasakani/releases/tag/v0.1.1) to a plain path such as
+**The quickest way:** unpack `yasakani-quickstart-0.1.2.zip` from the [release page](https://github.com/yasakani-dev/yasakani/releases/tag/v0.1.2) to a plain path such as
 `C:\yasakani` and double-click `START.cmd`. It downloads the engine and one model and runs the checks; then you can measure the speed,
 compare look-ahead on and off (the numbers of the technical notes, on your own PC), chat in your browser, or start the server. You only answer its questions with a number (Python 3.10 or newer is needed). What it does is in
 [quickstart/](quickstart/). To install by hand:
 
-1. Download the engine zip (`yskn.dll` and the Python package) from the [release page](https://github.com/yasakani-dev/yasakani/releases/tag/v0.1.1) and one model folder from
+1. Download the engine zip (`yskn.dll` and the Python package) from the [release page](https://github.com/yasakani-dev/yasakani/releases/tag/v0.1.2) and one model folder from
    Hugging Face ([quality](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-quality) or [fastest](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-speed)). Compare the SHA-256 checksums with the ones on the release page.
 
 ```bat
@@ -220,7 +229,7 @@ To build `yskn.dll` yourself, see [BUILDING.md](BUILDING.md); common questions a
 
 ## Use it as an agent
 
-`yasakani-harness-0.1.0.zip` on the [release page](https://github.com/yasakani-dev/yasakani/releases/tag/v0.1.1) opens an agent screen in your browser, run by the model
+`yasakani-harness-0.1.0.zip` on the [release page](https://github.com/yasakani-dev/yasakani/releases/tag/v0.1.2) opens an agent screen in your browser, run by the model
 on your PC: the model reads and writes files in a work folder and runs commands (you choose on the screen whether it may change files).
 Run the quickstart above first; then unpack the harness zip into the quickstart folder or next to it and double-click `START_HARNESS.cmd`.
 
@@ -228,7 +237,7 @@ Run the quickstart above first; then unpack the harness zip into the quickstart 
   unchanged. It is installed from npm on first use (about 730 MB; Node.js is fetched too if the PC has none). YASAKANI adds a settings file
   and a Japanese language pack. YASAKANI is not affiliated with DeepSeek, and this combination is not an official product.
 * The harness zip is the one of 0.1.0, unchanged. It starts the server with the copy of the Python package that comes with it (0.2.0.dev0);
-  the tool-calling code of that copy is the code that is in the standard package since 0.1.1.
+  the tool-calling code of that copy is the code that is in the standard package since 0.1.1. It does not have the image input of 0.1.2.
 * A new session starts with the model's longest thinking setting. One reply may take up to 98,304 tokens; a thinking longer than 49,152
   tokens is closed there and the model goes on to the answer. With both models installed, the screen can switch between them.
 * Everything is kept inside the harness folder. A DeepSeek Harness you already use is not touched.
@@ -254,7 +263,7 @@ part contributes, and the source files that go with each.
 
 ## Limits
 
-* Windows 11 + RTX 5090 + Qwen3.8-27B only (Linux: build from source). One request at a time. Images only through the optional image input of the server ([python/README.md](python/README.md#image-input-optional)); no `n` above 1, no `logprobs`. Tool / function calling: `tools` with `tool_choice` `auto` or `none` (new in 0.1.1; a forced `tool_choice` is not supported). It is new and has been tested far less than plain chat.
+* Windows 11 + RTX 5090 + Qwen3.8-27B only (Linux: build from source). One request at a time. Images only through the optional image input of the server (Windows only, new in 0.1.2; [python/README.md](python/README.md#image-input-optional)); no `n` above 1, no `logprobs`. Tool / function calling: `tools` with `tool_choice` `auto` or `none` (new in 0.1.1; a forced `tool_choice` is not supported). It is new and has been tested far less than plain chat.
 * The release files are not code-signed, so Windows may warn about them (see [SECURITY.md](SECURITY.md)).
 * The answers are not identical to the original model's (see Quality).
 

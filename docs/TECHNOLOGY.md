@@ -3,7 +3,7 @@
 Technical notes by the author, written as a map for people who read the source code in this repository.
 日本語: [TECHNOLOGY.ja.md](TECHNOLOGY.ja.md)
 
-* Scope: versions 0.1.0 and 0.1.1 (the engine library is the same in both). Windows 11, one NVIDIA GeForce RTX 5090, Qwen3.8-27B.
+* Scope: versions 0.1.0 to 0.1.2 (the engine library is the same in all three). Windows 11, one NVIDIA GeForce RTX 5090, Qwen3.8-27B.
 * Unless noted otherwise, the numbers here were measured on 12 November 2026 on the author's computer with the public `yskn.dll` and the
   fastest model (context 16,384, temperature 0, 768 tokens each, four tasks). Comparisons with other engines, and their conditions, are in
   [MEASUREMENTS.md](MEASUREMENTS.md).
@@ -108,7 +108,9 @@ we got when we ran it again. This is how it works.
 3. **Choose the path through the trellis.** Viterbi (dynamic programming) picks the sequence of codes with the smallest error.
 4. **Feed the error back.** The error made by rounding is taken up by the weights that have not been rounded yet. This is done in the
    direction of the inputs (columns) and in the direction of the outputs (rows).
-5. Converting the 64 layers and 400 matrices takes about 75 minutes on one RTX 5090.
+5. On one RTX 5090 the 64 layers (the statistics and the rounding of the 400 matrices) took about 75 minutes with one bit width per
+   matrix, as the quality model has them (November 7, 2026, with the research scripts). The program in `tools/convert/` rounds every
+   matrix at both bit widths, from which both model files are assembled; that took 1 hour 55 minutes (November 14, 2026, see its README).
 
 The calibration text is 96 windows of WikiText and 96 windows of **the model's own thinking transcripts**. Thinking text is included
 because this model spends most of its output on thinking. With the output-side statistics and the thinking text together, and with the

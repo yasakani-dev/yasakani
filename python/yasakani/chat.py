@@ -31,6 +31,12 @@ class ContextLengthError(RequestError):
     code = "context_length_exceeded"
 
 
+def context_length_error(n_tokens: int, max_ctx: int) -> ContextLengthError:
+    """The error for an input of ``n_tokens`` tokens (images included) that leaves no room for an answer."""
+    return ContextLengthError("the input is too long: %d tokens exceeds the model's maximum context length of %d tokens "
+                              "(input, thinking and answer together)" % (n_tokens, max_ctx))
+
+
 @dataclass
 class ChatParams:
     messages: List[dict]
@@ -95,11 +101,11 @@ class StopFilter:
         return out
 
 
-def _clean_content(c, i: int):
+def _clean_content(c, i: int, images: bool = False):
     if isinstance(c, list):
         parts = []
         for p in c:
-            if isinstance(p, dict) and p.get("type") == "image_url":
+            if images and isinstance(p, dict) and p.get("type") == "image_url":
                 value = p.get("image_url")
                 if not isinstance(value, dict) or not isinstance(value.get("url"), str) or not value["url"]:
                     raise RequestError("messages[%d]: image_url needs a nonempty url string" % i)
@@ -141,9 +147,10 @@ def _clean_tool_calls(calls, i: int) -> List[dict]:
     return out
 
 
-def clean_messages(messages) -> List[dict]:
+def clean_messages(messages, *, images: bool = False) -> List[dict]:
     """Validate OpenAI-style messages and return plain dicts.  ``developer`` is read as
-    ``system``; an assistant message may carry ``tool_calls`` and a ``tool`` message carries the result of one call."""
+    ``system``; an assistant message may carry ``tool_calls`` and a ``tool`` message carries the result of one call.
+    ``image_url`` parts are kept only with ``images`` (image input configured); otherwise they are refused as in 0.1.1."""
     if not isinstance(messages, list) or not messages:
         raise RequestError("messages must be a non-empty list")
     out = []
@@ -153,7 +160,7 @@ def clean_messages(messages) -> List[dict]:
             role = "system"
         if role not in ("system", "user", "assistant", "tool"):
             raise RequestError("messages[%d]: role must be system, user, assistant or tool" % i)
-        msg = {"role": role, "content": _clean_content(m.get("content"), i)}
+        msg = {"role": role, "content": _clean_content(m.get("content"), i, images)}
         if role != "user" and isinstance(msg["content"], list) and any(p["type"] == "image_url" for p in msg["content"]):
             raise RequestError("messages[%d]: images are supported only in user messages" % i)
         if role == "assistant":
@@ -231,10 +238,16 @@ class ChatRunner:
         if sources:
             if not self.engine.supports_visual:
                 raise RequestError("the engine library does not support image input (yskn_set_visual is missing)")
-            try:
-                prompt, visual = self.vision.prepare(prompt, sources, self.fmt, self.engine.max_ctx - CONTEXT_MARGIN)
-            except (ValueError, OSError, RuntimeError, ImportError) as ex:
-                raise RequestError("image input: %s" % ex) from ex
+            from .vision import error_text
+            try:                                            # reads and encodes the images: the caller holds the generation lock
+                prompt, visual = self.vision.prepare(prompt, sources, self.fmt, self.engine.max_ctx - CONTEXT_MARGIN,
+                                                     self.engine.max_ctx)
+            except RequestError:
+                raise                                       # a 400 as it is (ContextLengthError keeps its error code)
+            except ValueError as ex:                        # an image that cannot be used
+                raise RequestError("image input: %s" % error_text(ex)) from ex
+            except Exception as ex:                         # noqa: BLE001 - the image encoder failed: a 500, not a lost connection
+                raise YasakaniError("image input failed: %s" % error_text(ex)) from ex
             return PreparedVisual(prompt, in_reasoning, visual)
         return prompt, in_reasoning
 
@@ -245,8 +258,7 @@ class ChatRunner:
         prepared = self.prepare(p)
         prompt, in_reasoning = prepared
         if len(prompt) >= self.engine.max_ctx - CONTEXT_MARGIN:
-            raise ContextLengthError("the input is too long: %d tokens exceeds the model's maximum context length of %d tokens "
-                                     "(input, thinking and answer together)" % (len(prompt), self.engine.max_ctx))
+            raise context_length_error(len(prompt), self.engine.max_ctx)
         return prepared
 
     def run(self, p: ChatParams, emit: Callable[[str, str], None], prepared=None) -> Usage:
