@@ -99,6 +99,32 @@ def _add_engine_args(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--seed0", type=int, default=1, help="seed of the first request; every request without its own seed uses the next one")
 
 
+def _add_vision_args(sp: argparse.ArgumentParser) -> None:
+    g = sp.add_argument_group("image input (optional)")
+    g.add_argument("--mmproj", default=os.environ.get("YASAKANI_MMPROJ"),
+                   help="projector of Qwen3.8-27B (mmproj-Qwen3.8-27B-BF16.gguf); with --llama-dir and --vision-model it turns on image input")
+    g.add_argument("--llama-dir", default=os.environ.get("YASAKANI_LLAMA_DIR"),
+                   help="folder of the llama.cpp b10488 release for Windows (llama.dll, mtmd.dll, ggml*.dll)")
+    g.add_argument("--vision-model", default=os.environ.get("YASAKANI_VISION_MODEL"),
+                   help="any Qwen3.8-27B GGUF; only its settings and vocabulary are read, never its weights")
+    g.add_argument("--vision-cache", default=None, help="folder to keep image features in (default: none)")
+    g.add_argument("--vision-threads", type=int, default=8, help="CPU threads for encoding an image (default 8)")
+    g.add_argument("--vision-allow-local-files", action="store_true",
+                   help="also accept local file paths in image_url (default: only data:image URIs)")
+
+
+def _vision(args):
+    """VisionProcessor when all three of --mmproj, --llama-dir and --vision-model are given, else None (text only, as before)."""
+    given = [getattr(args, k, None) for k in ("mmproj", "llama_dir", "vision_model")]
+    if not any(given):
+        return None
+    if not all(given):
+        raise YasakaniError("image input needs all three of --mmproj, --llama-dir and --vision-model")
+    from .vision import VisionProcessor
+    return VisionProcessor(mmproj=args.mmproj, llama_dir=args.llama_dir, model=args.vision_model, cache=args.vision_cache,
+                           threads=args.vision_threads, allow_local_files=args.vision_allow_local_files)
+
+
 def _open_stack(args, *, warm: bool = True):
     """Model folder -> (pack, engine, formatter, runner).  The tokenizer is loaded first so a broken folder fails before the long load."""
     from .chat import ChatRunner
@@ -112,7 +138,7 @@ def _open_stack(args, *, warm: bool = True):
     try:
         if eng.removed_env:
             _say("note: ignored %d YSKN_* setting(s) from the environment: %s" % (len(eng.removed_env), ", ".join(sorted(eng.removed_env))))
-        runner = ChatRunner(eng, fmt, seed0=args.seed0)
+        runner = ChatRunner(eng, fmt, seed0=args.seed0, vision=_vision(args))
         if warm:
             runner.warmup()
     except BaseException:
@@ -216,7 +242,8 @@ def cmd_serve(args) -> int:
         pack, eng, fmt, runner = _open_stack(args, warm=not args.no_warmup)
         cfg.model_id = pack.model_id
         state.runner = runner
-        _say("ready: OpenAI-compatible API at %s/v1   (model id %r%s)" % (base, cfg.model_id, ", API key required" if cfg.api_key else ""))
+        _say("ready: OpenAI-compatible API at %s/v1   (model id %r%s%s)" % (base, cfg.model_id, ", API key required" if cfg.api_key else "",
+                                                                         ", image input on" if runner.vision is not None else ""))
         _say("stop with Ctrl+C")
         while True:
             time.sleep(0.5)
@@ -224,11 +251,14 @@ def cmd_serve(args) -> int:
         _say("stopping ...")
         return 0
     finally:
+        runner_ = state.runner
         state.runner = None
         httpd.shutdown()
         if eng is not None:
             eng.cancel()
             with state.gen_lock:
+                if runner_ is not None:
+                    runner_.close()
                 eng.close()
         httpd.server_close()
 
@@ -492,6 +522,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--default-max-tokens", type=int, default=32768, help="answer limit when a request does not give one")
     sp.add_argument("--max-tokens-cap", type=int, default=None, help="upper limit for any request")
     sp.add_argument("--no-warmup", action="store_true", help="skip the short warm-up run at start")
+    _add_vision_args(sp)
     sp.set_defaults(func=cmd_serve)
 
     sp = sub.add_parser("chat", help="talk to the model in the terminal")

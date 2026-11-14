@@ -11,7 +11,8 @@
   the model; the calls it writes come back as ``tool_calls`` (in a stream: one chunk per finished call, with the whole arguments).
 * ``thinking_budget`` (a request field; the default comes from the environment variable YASAKANI_THINKING_BUDGET, 0 = no limit):
   when the thinking has taken that many tokens it is closed and the model goes on to the answer.
-* Text only.  Not supported (answered with 400): images, the old ``functions`` / ``function_call`` fields, a forced
+* Optional still-image input through ``image_url`` (configure --mmproj, --llama-dir and --vision-model).
+  Not supported (answered with 400): the old ``functions`` / ``function_call`` fields, a forced
   ``tool_choice``, ``n`` > 1, ``logprobs``.
 """
 from __future__ import annotations

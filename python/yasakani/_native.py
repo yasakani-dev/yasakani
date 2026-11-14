@@ -88,6 +88,11 @@ class NativeLib:
             self.fn[name] = f
         if missing:
             raise YasakaniError("the engine library is missing exports: " + ", ".join(missing))
+        # Optional so text-only users can keep using older engine libraries.
+        f = getattr(self.dll, "yskn_set_visual", None)
+        if f is not None:
+            f.argtypes, f.restype = [P, P, P, I, P, I, I], I
+            self.fn["yskn_set_visual"] = f
 
     def last_error(self) -> str:
         m = self.fn["yskn_last_error"]()
