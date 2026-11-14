@@ -22,7 +22,9 @@ with MSVC 19.52, CMake 4.4.4, Ninja 1.13.2, Python 3.11.9) with the fastest mode
 | Sampling (temperature 1.0, top-p 0.95, top-k 20, seed 1234; 2 prompts, 256 tokens), look-ahead on and three kinds of off, 8 runs each | 64 of 64 runs gave the same tokens as the other runs of their prompt, across all four settings |
 | The same request repeated (greedy and sampled, look-ahead on and off, 8 runs each) | 64 of 64 identical within their group |
 | `bench/20261101/scripts/onoff_eq.py --quick` (30 runs) | all 15 greedy runs equal; 2 of 15 sampled runs differed from the other runs of their case from one position on (see "Run-to-run differences") |
-| Server with its default settings (sampling, thinking on), no thinking, a second turn, a stream dropped by the client, a 30,052-token prompt | all answered normally; the answers read correctly |
+| Long prompts (`bench/20261101/prompts`: `sglang_random_8k_1.txt`, 8,206 tokens, and `long.txt`, 41,261 tokens; context 65,536, greedy, 128 tokens) | look-ahead on, off and on again gave the same tokens for both prompts. This compares the build with itself, not with an RTX 5090 |
+| Server with its default settings (sampling, thinking on), no thinking, a second turn, a stream dropped by the client | all answered normally, and the three answers that were read are correct, well-formed Japanese |
+| Server, a 30,052-token prompt (one character repeated) | read without an error; the 16-token limit was reached while the model was still thinking, so no answer was checked |
 | GPU memory | context 32,768: nvidia-smi showed 15,907 MiB in use with the model loaded, against about 1,000 MiB before (about 14.6 GiB for the engine); context 262,144: it loads, and the loader reports 3.8 of 25.8 GB free |
 
 Speed, tokens per second, measured with `lookahead_check.py` at context 262,144 (the upstream figures for the RTX 5090
@@ -35,9 +37,12 @@ are from docs/TECHNOLOGY.md, table 1.3, measured at context 16,384):
 
 That is 0.31 to 0.37 times the RTX 5090. One pass takes 21.4 ms without look-ahead (7.9 ms on the 5090). Nothing was
 tuned for this card: the worker counts, splits and grids are the upstream values for the 5090, and PDL is off.
-Reading a 30,052-token prompt took about 34 s.
+Reading a prompt took 8.2 s for 8,206 tokens and about 49 s for 41,261 tokens.
 
-Not checked: the quality model, prompts longer than about 30,000 tokens, generations longer than 8,192 tokens, tool
+Compared with the RTX 5090 records: prompts up to about 4,800 tokens and answers up to 8,192 tokens. Beyond that the
+build was only compared with itself (look-ahead on against off), up to a 41,261-token prompt.
+
+Not checked: the quality model, prompts longer than about 41,000 tokens, generations longer than 8,192 tokens, tool
 calls, the terminal chat, other 8.x cards, accuracy against the original model.
 The `120` build of this fork has not been run on an RTX 50 series card: only its device code was compared with upstream.
 All of this is one PC, and most commands were run once.
@@ -46,8 +51,8 @@ All of this is one PC, and most commands were run once.
 
 Upstream documents that a repeated request now and then gives different tokens from one position on while other
 programs use the GPU, and that the cause is not known (docs/MEASUREMENTS.md, "Checks on this release"). The same was
-seen here: 2 of 158 runs in the checks above (both sampled, both while another program held about 2 GB of GPU memory).
-The repeated-request checks right after showed none in 128 runs. This fork does not fix or explain it.
+seen here: 2 of the 158 runs of the three repeat checks above (both sampled, both in the `onoff_eq.py` run, while
+another program held about 2 GB of GPU memory). The two repeated-request checks right after showed none in 128 runs. This fork does not fix or explain it.
 
 ## Build and run
 
@@ -110,7 +115,7 @@ Only two PTX instructions in the source need sm_90 or newer, and both are compil
 | `src/c_api.cpp` | `yskn_open` throws if the GPU's compute capability is below the build target. | Clear error instead of "no kernel image" later. |
 | `README.md`, `README.ja.md` | A note at the top that this is an unofficial fork. The rest is the upstream text, unchanged. | So that the fork is not taken for the official project. |
 | `.github/FUNDING.yml` | Removed. | The sponsor button of an unofficial fork should not stand in for the upstream project; to support YASAKANI, see the upstream repository. |
-| `.gitignore` | `/build*/` added. | The build folders of the steps above. |
+| `.gitignore` | `/build*/` and `/models/` added. | The build and model folders of the steps above. |
 
 With `YSKN_CUDA_ARCH=120` the sm_120 device code was checked to be the same as upstream: the PTX of all 23 `.cu` files
 matches the upstream tree except for internal symbol ids that depend on the source path. Host-side changes only alter
@@ -138,7 +143,8 @@ RTX 3090 の実機 1 台・最速モデルで確かめたこと:
 * selfcheck: 5090 で作られた基準と 3 本ともトークン列が一致
 * 先読みあり/なしの一致: 貪欲法 4 課題、温度つきは 64 回すべて一致
 * サーバー経由の長い入力 (約 4,800 トークン) と 8,192 トークンの生成: 5090 の記録とバイト単位で一致
-* 既定の設定 (温度つき・思考あり) のサーバーの応答、30,052 トークンの入力
+* もっと長い入力 (8,206 と 41,261 トークン): 先読みあり/なしが一致 (5090 との突き合わせではなく、このビルドどうしの比較)
+* 既定の設定 (温度つき・思考あり) のサーバーの応答: 正常で、読んだ 3 件は正しい日本語の答え
 
 速度は調整前で、5090 の 0.31〜0.37 倍 (先読みなし 47 tok/s、先読みあり 90〜393 tok/s) です。
 品質モデル・端末の chat・ツール呼び出しは未確認です。上流が記録している「たまに途中から出力が変わる」現象は
