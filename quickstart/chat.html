@@ -176,7 +176,7 @@ const t = (k, v) => String(L[k]).replace(/\{(\w)\}/g, (m, a) => (v && a in v ? v
 const fmt = n => Number(n).toLocaleString('en-US');
 const cfg = { lang: null, model: 'custom', repo: 'https://github.com/yasakani-dev/yasakani', support: 'https://camp-fire.jp/projects/992233/view' };
 
-const history = [];            // {role, content} sent to the server
+let history = [];              // {role, content} sent to the server
 let busy = null;               // AbortController while an answer is being written
 let ready = false;
 
@@ -312,6 +312,7 @@ async function send() {
   if (!text || busy || !ready) return;
   box.value = ''; grow();
   addTurn('me', text);
+  const conv = history;
   history.push({ role: 'user', content: text });
   const { turn, body } = addTurn('ai');
   const think = el('details', 'think'); const sum = el('summary'); const thinkText = el('div', 't');
@@ -367,7 +368,9 @@ async function send() {
   } catch (e) {
     if (e.name === 'AbortError') failed = L.stopped; else failed = e.shown ? e.message : L.err_net;
   }
-  clearInterval(painter); dirty = true; paint();
+  clearInterval(painter);
+  if (conv !== history) return;
+  dirty = true; paint();
   busy = null; setButton();
   const n = usage ? usage.completion_tokens : nThink + nAnswer;
   const secs = (tLast - tFirst) / 1000;
@@ -396,7 +399,7 @@ $('box').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
 });
 $('send').addEventListener('click', () => { if (busy) busy.abort(); else send(); });
-$('fresh').addEventListener('click', () => { if (busy) busy.abort(); history.length = 0; meterEnd(0); showEmpty(); $('box').focus(); });
+$('fresh').addEventListener('click', () => { if (busy) busy.abort(); busy = null; history = []; meterEnd(0); showEmpty(); setButton(); $('box').focus(); });
 
 async function poll() {
   let h = null;
