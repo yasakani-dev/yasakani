@@ -1,5 +1,12 @@
 # YASAKANI
 
+> **Unofficial fork.** This repository is an unofficial fork of [YASAKANI](https://github.com/yasakani-dev/yasakani) that adds an
+> experimental build for the RTX 3090 (sm_86). It is not affiliated with or endorsed by the YASAKANI authors. What this fork changes,
+> what was tested and how to build and run it: [FORK_RTX3090.md](FORK_RTX3090.md). Everything below is the upstream README as of
+> commit `91a5178`, unchanged: its version, release files, quickstart, crowdfunding and support sections belong to the official
+> project and are for the RTX 5090, and its statements about supported GPUs do not cover this fork. Please report problems with the
+> 3090 build here, not upstream.
+
 A local LLM engine for **Windows** and **one NVIDIA RTX 5090**, built for one model: **Qwen3.8-27B**. Open source, Apache License 2.0.
 日本語は [README.ja.md](README.ja.md)。
 

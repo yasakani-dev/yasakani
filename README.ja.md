@@ -1,5 +1,11 @@
 # YASAKANI（ヤサカニ）
 
+> **非公式のフォークです。** このリポジトリは [YASAKANI](https://github.com/yasakani-dev/yasakani) の非公式フォークで、RTX 3090 (sm_86) 向けの
+> 試験的なビルドを足したものです。YASAKANI の作者とは関係がなく、承認も受けていません。変更点、確かめた範囲、ビルドと実行の手順は
+> [FORK_RTX3090.md](FORK_RTX3090.md) にあります。以下は上流のコミット `91a5178` 時点の README をそのまま載せたものです。版・配布ファイル・
+> quickstart・クラウドファンディング・支援の記述は公式のプロジェクトのもので RTX 5090 用です。対応 GPU の記述はこのフォークには当てはまりません。
+> 3090 版の不具合は上流ではなく、こちらへ報告してください。
+
 **Windows** と **NVIDIA RTX 5090 1 枚**で、**Qwen3.8-27B** を速く動かすローカル AI エンジンです。オープンソース（Apache License 2.0）。
 English: [README.md](README.md)
 
