@@ -115,6 +115,9 @@ print(r.choices[0].message.tool_calls)
   `usage.loop_guard`. Pass `"loop_guard": false` to turn it off.
 * Input, thinking and answer together are limited to the context length (262,144 tokens by default; `--max-ctx` lowers it and the memory it needs).
 * Asking again with the earlier conversation in front of a new question does not recompute the earlier turns (`usage.prompt_tokens_details.cached_tokens`).
+* Next to `usage`, the answer (and the last chunk of a stream asked for with `include_usage`) carries `timings`, the engine's own timing in the
+  layout of llama.cpp's server: `prompt_n`, `prompt_ms`, `prompt_per_second`, `predicted_n`, `predicted_ms`, `predicted_per_second`, `cache_n`.
+  Tools that read the speed of a llama.cpp server from this object work unchanged.
 
 ### Image input (optional)
 

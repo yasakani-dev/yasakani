@@ -168,6 +168,15 @@ def usage_json(u: Usage) -> dict:
     return d
 
 
+def timings_json(u: Usage) -> dict:
+    """The engine's own timing of the request, in the layout of llama.cpp's ``timings`` object (read by benchmark tools)."""
+    prompt_n = max(u.prompt_tokens - u.cached_tokens, 0)
+    per_s = lambda n, ms: n * 1000.0 / ms if ms > 0 else 0.0   # noqa: E731
+    return dict(cache_n=u.cached_tokens, prompt_n=prompt_n, prompt_ms=u.prefill_ms, prompt_per_second=per_s(prompt_n, u.prefill_ms),
+                predicted_n=u.completion_tokens, predicted_ms=u.gen_ms, predicted_per_second=per_s(u.completion_tokens, u.gen_ms),
+                passes=u.passes, draft_n_accepted=max(u.completion_tokens - u.passes, 0))
+
+
 def make_handler(state: ApiState):
     cfg = state.cfg
 
@@ -299,11 +308,13 @@ def make_handler(state: ApiState):
             created = int(time.time())
             stream = bool(body.get("stream"))
 
-            def chunk(delta=None, finish=None, usage=None):
+            def chunk(delta=None, finish=None, usage=None, timings=None):
                 o = dict(id=cid, object="chat.completion.chunk", created=created, model=cfg.model_id,
                          choices=[] if usage else [dict(index=0, delta=delta or {}, finish_reason=finish)])
                 if usage:
                     o["usage"] = usage
+                if timings:
+                    o["timings"] = timings
                 self.wfile.write(b"data: " + json.dumps(o, ensure_ascii=False).encode("utf-8") + b"\n\n")
                 self.wfile.flush()
 
@@ -337,7 +348,7 @@ def make_handler(state: ApiState):
                         u = runner.run(params, emit, prepared)
                         chunk(delta={}, finish=u.finish)
                         if (body.get("stream_options") or {}).get("include_usage"):
-                            chunk(usage=usage_json(u))
+                            chunk(usage=usage_json(u), timings=timings_json(u))
                         self.wfile.write(b"data: [DONE]\n\n")
                         self.wfile.flush()
                         self.close_connection = True
@@ -352,7 +363,8 @@ def make_handler(state: ApiState):
                             if not msg["content"]:
                                 msg["content"] = None
                         self._json(200, dict(id=cid, object="chat.completion", created=created, model=cfg.model_id,
-                                             choices=[dict(index=0, message=msg, finish_reason=u.finish)], usage=usage_json(u)))
+                                             choices=[dict(index=0, message=msg, finish_reason=u.finish)], usage=usage_json(u),
+                                             timings=timings_json(u)))
                 except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     self.close_connection = True               # the client went away: the engine was already stopped
                 except Exception as ex:                          # noqa: BLE001
