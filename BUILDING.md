@@ -44,4 +44,5 @@ release page; that is expected. Check the model files with `yasakani verify`, an
 
 * `src/`: the engine (C++ and CUDA); `include/`: the C interface that the Python package binds to; `third_party/`: nlohmann/json (MIT).
 * The Python package is built and installed separately (`pip install .` in its folder).
-* The tool that converts a model into the YASAKANI file format is not part of this release.
+* `tools/convert/`: the program that made the released model files from the original weights (Qwen3.8-27B only). See
+  [tools/convert/README.md](tools/convert/README.md).

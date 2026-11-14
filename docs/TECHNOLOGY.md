@@ -308,6 +308,7 @@ time are expanded to int8 and reused (`src/q35_g6.cu`). A request that starts wi
 ## 10. What this release does not have, and limits
 
 * Only the RTX 5090, Windows 11 and Qwen3.8-27B are supported. The kernels are written for this card and the shape of this model.
-* There is no tool to convert another model to the YASAKANI format.
+* The converter ([`tools/convert/`](../tools/convert/)) knows the layers of Qwen3.8-27B only; another model needs changes to it and to
+  the engine.
 * One request is generated at a time.
 * The numbers here come from one computer. They change with the task, the context length and what else is using the GPU.

@@ -242,8 +242,8 @@ What it does, what was checked and what was not: [harness/HARNESS_README.txt](ha
 * A compressed key-value cache (KV5), which is what lets the full 262,144-token context fit next to the model on a 32 GB card.
 * One request is generated at a time.
 
-The source for all of this is in this repository. The tool that converts a model into the YASAKANI file format is **not** part of this
-release; the published models work as they are.
+The source for all of this is in this repository, and so is the program that made the two model files from the original weights
+([tools/convert/](tools/convert/); it handles Qwen3.8-27B only). The published models work as they are.
 
 **In detail:** [docs/TECHNOLOGY.md](docs/TECHNOLOGY.md) - technical notes by the author: the arithmetic behind the speed (bytes read
 against memory bandwidth), the weight format and how the codes are made, computing on the compressed form, look-ahead, KV5, what each
