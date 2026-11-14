@@ -34,6 +34,7 @@ __device__ __forceinline__ float kvx_sign(int d) {
 
 __device__ __forceinline__ float kvx_rotate(float x, float* buf, bool inverse) {
   const int tid=threadIdx.x, d=tid & 255;
+  __syncthreads();
   buf[tid]=inverse ? x : __fmul_rn(x,kvx_sign(d));
   __syncthreads();
   #pragma unroll
