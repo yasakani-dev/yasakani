@@ -12,8 +12,18 @@ static thread_local std::string g_err;
 struct yskn_engine { yskn::Engine* e; yskn::Engine35* q; std::atomic<int> cancel{0}; };   
 static yskn::Engine& E(yskn_engine* e) { if (!e->e) throw std::runtime_error("this API is not available for the qwen3_5 engine yet"); return *e->e; }
 #define YSKN_TRY(body) try { body; return 0; } catch (const std::exception& ex) { g_err = ex.what(); return -1; }
+// sm_86: refuse a GPU older than the build target (YSKN_CUDA_ARCH) instead of failing later with no kernel image.
+static void check_device_arch(int device) {
+  int mj = 0, mn = 0; cudaError_t e = cudaDeviceGetAttribute(&mj, cudaDevAttrComputeCapabilityMajor, device);
+  if (e == cudaSuccess) e = cudaDeviceGetAttribute(&mn, cudaDevAttrComputeCapabilityMinor, device);
+  if (e != cudaSuccess) throw std::runtime_error(std::string("yskn_open: cannot read the compute capability of GPU ") + std::to_string(device) + ": " + cudaGetErrorString(e));
+  const int cc = mj * 10 + mn;
+  if (cc < YSKN_CUDA_ARCH) throw std::runtime_error("yskn_open: this yskn.dll is built for sm_" + std::to_string(YSKN_CUDA_ARCH) + " (compute capability "
+      + std::to_string(YSKN_CUDA_ARCH / 10) + "." + std::to_string(YSKN_CUDA_ARCH % 10) + " or newer), but GPU " + std::to_string(device) + " is compute capability "
+      + std::to_string(mj) + "." + std::to_string(mn) + " (sm_" + std::to_string(cc) + "). Use a build with -DYSKN_CUDA_ARCH=" + std::to_string(cc) + " (see BUILDING.md).");
+}
 extern "C" yskn_engine* yskn_open(const char* path, int max_ctx, int device, int flags) {
-  try { cudaSetDevice(device); std::string arch; { yskn::Container c; c.open(path); arch = c.model.arch; }
+  try { cudaSetDevice(device); check_device_arch(device); std::string arch; { yskn::Container c; c.open(path); arch = c.model.arch; }
     if (arch == "qwen3_5") return new yskn_engine{nullptr, new yskn::Engine35(path, max_ctx, flags)};
     return new yskn_engine{new yskn::Engine(path, max_ctx, flags), nullptr}; } catch (const std::exception& ex) { g_err = ex.what(); return nullptr; }
 }

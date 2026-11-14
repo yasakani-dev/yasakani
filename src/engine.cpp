@@ -14,8 +14,24 @@ namespace yskn {
 
 
 thread_local int g_pdl_rows = 1;
+// sm_86: true when the current GPU is compute capability 9.0 or newer (PDL, cp.async.bulk). Read once.
+// If the query fails, keep the previous behaviour (true).
+// A build for a target below 9.0 (e.g. YSKN_CUDA_ARCH=86) has no griddepcontrol / cp.async.bulk in its device code,
+// so it always returns false, even when the DLL runs (via PTX JIT) on a 9.0+ GPU.
+bool sm90_features() {
+  static const bool v = [] {
+#if defined(YSKN_CUDA_ARCH) && YSKN_CUDA_ARCH < 90
+    return false;
+#else
+    int d = 0, mj = 0;
+    if (cudaGetDevice(&d) != cudaSuccess || cudaDeviceGetAttribute(&mj, cudaDevAttrComputeCapabilityMajor, d) != cudaSuccess) return true;
+    return mj >= 9;
+#endif
+  }();
+  return v;
+}
 bool pdl_enabled() {
-  static const bool on = [] { const char* e = std::getenv("YSKN_NO_PDL"); return !(e && e[0] == '1'); }();
+  static const bool on = [] { const char* e = std::getenv("YSKN_NO_PDL"); return !(e && e[0] == '1') && sm90_features(); }();
   static const int max_m = [] { const char* e = std::getenv("YSKN_PDL_MAX_M"); return e ? std::atoi(e) : 16; }();   
   return on && g_pdl_rows <= max_m;
 }
