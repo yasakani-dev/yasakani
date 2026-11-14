@@ -92,8 +92,8 @@ API key will do). If it does not connect:
   with `yasakani serve --host 0.0.0.0 --api-key YOUR_KEY` and give the app that key.
 * Apps that call the server straight from a web page: calls from other pages are refused, for safety.
 * Apps that depend on tool / function calling (coding agents, for example): supported since 0.1.1. The server takes `tools` with
-  `tool_choice` `auto` or `none` and returns the calls as `tool_calls`; a forced `tool_choice` and the old `functions` field are answered
-  with 400. Version 0.1.0 answered every request with `tools` with 400: if you use 0.1.0, put a newer quickstart (0.1.1 or later) into the same folder
+  `tool_choice` `auto` or `none` and returns the calls as `tool_calls`; `required` or a named function is accepted but not enforced
+  (the model is left to make the call), and the old `functions` field is answered with 400. Version 0.1.0 answered every request with `tools` with 400: if you use 0.1.0, put a newer quickstart (0.1.1 or later) into the same folder
   and run `START.cmd` again (the model is not downloaded again). Tool calling is new and has been tested far less than plain chat.
   An agent screen is in the harness (see "Use it as an agent" in the [README](../README.md)).
 

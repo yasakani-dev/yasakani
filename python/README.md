@@ -86,9 +86,11 @@ Supported request fields: `messages` (text, and images only with the optional im
 `auto` or `none`, `max_tokens` / `max_completion_tokens`, `temperature` (0-2; 0 is greedy), `top_p`, `top_k` (at most 20),
 `min_p`, `seed`, `stop` (up to 4 strings), `stream` with `stream_options.include_usage`, `reasoning_effort` (`low`, `medium`, `high`, `xhigh`),
 `chat_template_kwargs` (for example `{"enable_thinking": false}`), `ignore_eos`, `loop_guard`. The defaults are the model's own:
-temperature 1.0, top_p 0.95, top_k 20. Not supported (answered with 400): images when the server runs without the image input options, the old `functions` / `function_call` fields, a forced `tool_choice`, `n` other than 1, `logprobs`.
+temperature 1.0, top_p 0.95, top_k 20. Not supported (answered with 400): images when the server runs without the image input options, the old `functions` / `function_call` fields, `n` other than 1, `logprobs`.
 
-Tool calling (new in 0.1.1): send `tools` (functions) with `tool_choice` `"auto"` (the default) or `"none"`. The model's own chat template
+Tool calling (new in 0.1.1): send `tools` (functions) with `tool_choice` `"auto"` (the default) or `"none"`. `"required"` and a named
+function are accepted too, but not enforced: the engine has no constrained decoding, so the request runs as `"auto"` (with only the named
+function offered, when one is named) and the model is left to make the call. The model's own chat template
 describes the tools to the model. The calls it writes come back as `message.tool_calls`, and `finish_reason` is `tool_calls`; in a stream each
 finished call arrives as one chunk with the whole arguments. Send the results back as messages with the role `tool`. An input that does
 not fit into the context is answered with 400 and the error code `context_length_exceeded` before any text is sent. Also accepted:

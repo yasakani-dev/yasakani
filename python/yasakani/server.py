@@ -9,11 +9,13 @@
 * A stream carries one chunk per token (several chunks arrive together, about 64 times a second on Windows).
 * Tool calling: ``tools`` (functions) with ``tool_choice`` "auto" or "none".  The model's own chat template describes the tools to
   the model; the calls it writes come back as ``tool_calls`` (in a stream: one chunk per finished call, with the whole arguments).
+  ``tool_choice`` "required" or a named function is accepted but not enforced (no constrained decoding): it runs as "auto", with
+  only the named function offered when one is named.
 * ``thinking_budget`` (a request field; the default comes from the environment variable YASAKANI_THINKING_BUDGET, 0 = no limit):
   when the thinking has taken that many tokens it is closed and the model goes on to the answer.
 * Optional still-image input through ``image_url`` (configure --mmproj, --llama-dir and --vision-model).
-  Not supported (answered with 400): the old ``functions`` / ``function_call`` fields, a forced
-  ``tool_choice``, ``n`` > 1, ``logprobs``.
+  Not supported (answered with 400): the old ``functions`` / ``function_call`` fields,
+  ``n`` > 1, ``logprobs``.
 """
 from __future__ import annotations
 
@@ -89,10 +91,23 @@ def parse_chat_request(body: dict, cfg: ServerConfig, images: bool = False) -> C
             raise RequestError("%s is not supported; use tools" % key)
     tools = clean_tools(body.get("tools"))
     choice = body.get("tool_choice")
+    forced = None
+    if isinstance(choice, dict) and choice.get("type") == "function" and isinstance(choice.get("function"), dict):
+        forced = choice["function"].get("name")
+        if not isinstance(forced, str) or not forced:
+            raise RequestError("tool_choice of the type function needs function.name (a non-empty string)")
+        tools = [t for t in tools or [] if t["function"]["name"] == forced]
+        if not tools:
+            raise RequestError("tool_choice names a function that is not in tools: %s" % json.dumps(forced)[:80])
     if choice == "none":
         tools = None
+    elif choice == "required" or forced:
+        # The engine has no constrained decoding, so a call cannot be enforced: the request runs as "auto" (with only the
+        # named function offered, when one is named) and the model is left to make the call.
+        if not tools:
+            raise RequestError("tool_choice %s needs tools" % json.dumps(choice)[:80])
     elif choice not in (None, "auto"):
-        raise RequestError("tool_choice %s is not supported; use \"auto\" or \"none\"" % json.dumps(choice)[:80])
+        raise RequestError("tool_choice %s is not supported; use \"auto\", \"none\", \"required\" or a function" % json.dumps(choice)[:80])
     if body.get("logprobs"):
         raise RequestError("logprobs is not supported")
     if body.get("n") not in (None, 1):
