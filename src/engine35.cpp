@@ -113,6 +113,7 @@ template<class Upload> static void* shared35_buffer(const std::shared_ptr<Shared
 }
 
 extern thread_local int g_pdl_rows;                                   
+bool sm90_features();   // engine.cpp
 
 
 
@@ -366,6 +367,7 @@ Engine35::Engine35(const std::string& path, int max_ctx, int flags) : flags_(fla
   { const char* u = std::getenv("YSKN_L2PF"); if (u && u[0]) l2pf_ = std::atoi(u);
     const char* nm[3] = {"YSKN_L2PF_GU", "YSKN_L2PF_DN", "YSKN_L2PF_IN"};
     for (int i = 0; i < 3; ++i) { const char* v = std::getenv(nm[i]); if (v && v[0]) l2pf_mb_[i] = std::atof(v); } }
+  if (!sm90_features()) { l2pf_ = 0; l2pf2_mb_ = 0.0; }   // sm_86: cp.async.bulk.prefetch needs sm_90+ (YSKN_L2PF / YSKN_L2PF2)
   { const char* u = std::getenv("YSKN_Q35_PMATH"); if (u && u[0]) kz_ = std::atoi(u); }
   apply_kz();
   { const char* f = std::getenv("YSKN_Q35_FA"); if (f && f[0]) fa_ = std::atoi(f); const char* s = std::getenv("YSKN_Q35_FA_SPLITS"); if (s && std::atoi(s) > 0) fa_splits_ = std::min(32, std::atoi(s)); }
@@ -914,6 +916,7 @@ int Engine35::mtp_log_read(int32_t* ids, float* vals, int max_steps) {
 void Engine35::set_opt(int key, int value) {
   if (kv_fp16_ && key == 9 && value == 0) throw std::runtime_error("FP16 KV requires ATX attention");
   rp_launch(); cudaStreamSynchronize(st2_); replay_fence();           
+  if ((key == 25 || key == 27) && !sm90_features()) value = 0;   // sm_86: L2 bulk prefetch needs sm_90+
   if (key == 15) { opt_rp_async_ = value; return; }
   if (key == 26) { opt_rp_defer_ = value; return; }                   
   if (key == 27) { if (value != (int)l2pf2_mb_) drop_pass_graphs(); l2pf2_mb_ = value; return; }   
@@ -1663,6 +1666,9 @@ void Engine35::load_bdraft(const std::string& path) {
       const VectorDesc& v = C->vector(in); if (v.dtype != "i32" || v.n != bdr_.nsub) throw std::runtime_error("load_bdraft: " + in);
       bdr_.sub_ids = dz35<int>((size_t)bdr_.nsub * 4); cudaMemcpy(bdr_.sub_ids, C->at<int32_t>(v.off), (size_t)bdr_.nsub * 4, cudaMemcpyHostToDevice);
       const char* o = std::getenv("YSKN_BDR_SUB_ON"); bdr_.sub_on = (o && o[0]) ? std::atoi(o) : 1; } }
+  { // sm_86: report earlier load errors here, so the SHEAD fallback below cannot clear them
+    const cudaError_t e0 = cudaDeviceSynchronize(), e1 = cudaGetLastError();
+    if (e0 != cudaSuccess || e1 != cudaSuccess) throw std::runtime_error(std::string("load_bdraft (before SHEAD): ") + cudaGetErrorString(e0 != cudaSuccess ? e0 : e1)); }
   { 
     
     

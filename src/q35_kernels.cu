@@ -23,7 +23,11 @@ __device__ __forceinline__ void q35_l2pf(const Q35Pf& f, unsigned part, unsigned
     const unsigned long long a = (f.n[s] * part / np) & ~15ull, b = (f.n[s] * (part + 1) / np) & ~15ull;
     for (unsigned long long o = a; o < b; o += 65520ull) {
       const unsigned len = (unsigned)(b - o < 65520ull ? b - o : 65520ull);
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
       asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" :: "l"(static_cast<const char*>(f.p[s]) + o), "r"(len) : "memory");
+#else
+      (void)len;
+#endif
     }
   }
 }
@@ -1560,7 +1564,11 @@ __global__ void __launch_bounds__(32) q35_l2pf_kernel(Q35Pf f) {
     if (!f.p[s] || !f.n[s]) continue;
     for (unsigned long long o = (unsigned long long)blockIdx.x * 65536ull; o < f.n[s]; o += (unsigned long long)gridDim.x * 65536ull) {
       const unsigned len = (unsigned)((f.n[s] - o < 65536ull ? f.n[s] - o : 65536ull) & ~15ull);
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
       if (len) asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" :: "l"(static_cast<const char*>(f.p[s]) + o), "r"(len) : "memory");
+#else
+      (void)len;
+#endif
     }
   }
 }
