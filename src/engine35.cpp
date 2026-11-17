@@ -2,6 +2,7 @@
 // Copyright (c) 2026 the YASAKANI authors
 #include "engine35.hpp"
 #include <algorithm>
+#include <chrono>
 #include <map>
 #include <mutex>
 #include <filesystem>
@@ -225,16 +226,35 @@ Engine35::Engine35(const std::string& path, int max_ctx, int flags) : flags_(fla
     sh_tail_ = std::max(0, ienv("YSKN_SNAP_TAIL", 4096));
     sh_sparse_ = ienv("YSKN_SNAP_SPARSE", 65536); if (sh_sparse_ > 0 && sh_sparse_ % sh_step_) sh_sparse_ = ((sh_sparse_ + sh_step_ - 1) / sh_step_) * sh_step_;
     sh_min_ = std::max(0, ienv("YSKN_SNAP_MIN", 8192));
-    int dev = 0, major = 0; cudaGetDevice(&dev); cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
-    wide_ok_ = major >= 12 || ienv("YSKN_COPY_WIDE_ANYARCH", 0) != 0;   // wide copy passes were only measured on compute capability 12.x
+    int dev = 0; cudaGetDevice(&dev);
+    { cudaDeviceProp dp{}; if (cudaGetDeviceProperties(&dp, dev) == cudaSuccess) {
+        cc_ = dp.major * 10 + dp.minor; pci_[0] = dp.pciDomainID; pci_[1] = dp.pciBusID; pci_[2] = dp.pciDeviceID;
+        std::memcpy(uuid_, dp.uuid.bytes, 16); } }
+    // 0.1.7: the wide copy passes follow the code the GPU runs (the release build: sm_86, sm_89 or sm_120), not the GPU's compute
+    // capability alone, so that code built for 8.6 / 8.9 and compiled at load time on a newer GPU takes the 8.x decisions too.
+    gpu_code_arch(&code_arch_, &sass_arch_);
+#if defined(YSKN_TEST_EXPORTS)
+    { const int t = ienv("YSKN_TEST_CODE_ARCH", 0); if (t > 0) { code_arch_ = t; code_arch_test_ = 1; } }   // test builds only
+#endif
+    { const char* w = std::getenv("YSKN_WIDE"); if (w && w[0]) wide_pref_ = std::max(0, std::min(2, std::atoi(w))); }
+    // wide copy passes (17..64 rows): measured on compute capability 12.x (RTX 5090); 8.6 / 8.9 only when asked (YSKN_WIDE=1 or 2)
+    wide_ok_ = wide_pref_ > 0 || (wide_pref_ < 0 && (wide_native() || ienv("YSKN_COPY_WIDE_ANYARCH", 0) != 0));
     if (ienv("YSKN_COPY_WIDE_OFF", 0)) wide_ok_ = false;
-    xw_arch_ = major >= 12 ? 1 : 0;                                   // the exact-sum wide kernels were only checked on 12.x
+    // widths allowed at open: all on 12.x and with YSKN_WIDE=2; with YSKN_WIDE=1 on 8.x none until the caller opens them (set_opt 38)
+    wide_mask_ = !wide_ok_ ? 0 : ((wide_native() || wide_pref_ != 1) ? 7 : 0);
+    xw_arch_ = (wide_native() || wide_pref_ > 0) ? 1 : 0;              // the exact-sum wide GEMV (8.x: only when asked)
     xw_v32_ = ienv("YSKN_Q35_XW_V32", xw_v32_); xw_v64_ = ienv("YSKN_Q35_XW_V64", xw_v64_);
     xw_wpc_ = std::max(1, std::min(8, ienv("YSKN_Q35_XW_WPC", xw_wpc_))); xw_nws_ = std::max(0, std::min(64, ienv("YSKN_Q35_XW_NWS", xw_nws_)));
     xw_gamma_ = std::max(0, ienv("YSKN_Q35_XW_GAMMA", xw_gamma_));
     xw_head_ = ienv("YSKN_Q35_XW_HEAD", xw_head_) != 0;
     if (!xsm_ || xsm_part_) xw_arch_ = 0;                             // exact sums with atomic int64 partials only
-    xw_rows_ = (xw_arch_ && ienv("YSKN_Q35_XW", 1) != 0) ? 64 : 16; }
+    xw_env_ = ienv("YSKN_Q35_XW", 1) != 0;
+    // 8.x: passes of 17..64 rows (also the ends of prompt reads) use the exact-sum GEMV only while some width is open, so that with
+    // none open the engine computes exactly as 0.1.6 did there
+    xw_rows_ = (xw_arch_ && xw_env_ && (wide_native() || wide_mask_)) ? 64 : 16;
+    std::fprintf(stderr, "[wide] code sm_%d (machine code sm_%d%s), compute capability %d.%d: wide copy passes %s, widths 0x%x%s\n",
+                 code_arch_, sass_arch_, code_arch_test_ ? ", set by YSKN_TEST_CODE_ARCH" : "", cc_ / 10, cc_ % 10,
+                 wide_ok_ ? "allowed" : "off", wide_mask_, wide_pref_ < 0 ? "" : (wide_pref_ == 0 ? " (YSKN_WIDE=0)" : (wide_pref_ == 1 ? " (YSKN_WIDE=1)" : " (YSKN_WIDE=2)"))); }
   m_.c.open(path); m_.cfg = m_.c.model; const ModelDesc& c = m_.cfg;
   if (c.arch != "qwen3_5") throw std::runtime_error("Engine35: arch " + c.arch);
   if (c.hidden != Q35_H || c.heads != Q35_NH || c.kv_heads != Q35_KVH || c.head_dim != Q35_HD || c.ffn % 512)
@@ -1124,6 +1144,10 @@ void Engine35::set_opt(int key, int value) {
   else if (key == 35) { const int w = std::max(0, std::min(64, value)); if (w != xw_nws_) drop_pass_graphs(); xw_nws_ = w; }
   else if (key == 37) { const int g = std::max(0, value); if (g != xw_gamma_) drop_pass_graphs(); xw_gamma_ = g; }
   else if (key == 36) { if ((value != 0) != (xw_head_ != 0)) drop_pass_graphs(); xw_head_ = value != 0; }
+  else if (key == 38) { if (value < 0 || value > 7) throw std::runtime_error("set_opt 38: widths of copy passes must be 0..7 (bit 0 = 32 rows, 1 = 48, 2 = 64)");
+                        set_wide_mask(value); }
+  else if (key >= 39 && key <= 42) { if (value < 0 || value > 10000000) throw std::runtime_error("set_opt 39..42: the time of a copy cycle must be 0..10,000,000 us");
+                        wide_t_us_[key - 39] = value; }
   else if (key == 20) bdr_.cpl_pm = value;                            
   else if (key == 16) {                                                
     if (value != 2 && value != 3) throw std::runtime_error("set_opt: SMP version must be 2 or 3");
@@ -1802,9 +1826,11 @@ void Engine35::snap_load_slot(int i) {
 // Build the graphs of the wide copy passes (32 with the exact-sum GEMV, 48 and 64 rows, current sampling mode) and of the commit replays that recompute the conv
 // outputs (1..64 rows), so that the first wide pass of a request does not pay for the capture.  Nothing is run.
 void Engine35::prepare_wide(int max_rows) {
-  if (!wide_ok_ || mtp_.on || max_rows <= HM_) return;
+  if (!wide_ok_ || mtp_.on || max_rows <= HM_ || !wide_mask_) return;   // 0.1.7: only the widths that are open (set_opt 38)
+  max_rows = std::min(max_rows, (wide_mask_ & 4) ? 64 : ((wide_mask_ & 2) ? 48 : 32));
   replay_fence(); cudaStreamSynchronize(st_); cudaStreamSynchronize(st2_);
   for (int M : {32, 48, 64}) {
+    if (!(wide_mask_ & (M == 32 ? 1 : (M == 48 ? 2 : 4)))) continue;
     if (M > max_rows || M > kVerifyMax || (M == 32 && xw_rows_ < 32)) continue;   // 32-row copy passes only with the exact-sum GEMV
     const int key = M * 64 + HEAD_ALL * 4 + 2 + (opt_kconv_ ? (1 << 30) : 0) + (wk_pass(M, false, HEAD_ALL) ? (1 << 29) : 0) + (atx_ ? (1 << 28) : 0) + (smp_ ? (1 << 27) : 0);
     if (pgraph_.count(key)) continue;
@@ -1827,6 +1853,52 @@ void Engine35::prepare_wide(int max_rows) {
     }
   }
   const cudaError_t e = cudaGetLastError(); if (e != cudaSuccess) throw std::runtime_error(std::string("prepare_wide: ") + cudaGetErrorString(e));
+}
+// 0.1.7: open or close widths of copy passes. On 8.x the passes of 17..64 rows use the exact-sum GEMV only while a width is open.
+void Engine35::set_wide_mask(int mask) {
+  const int m = wide_ok_ ? (mask & 7) : 0;
+  if (!wide_native()) {
+    const int r = (xw_arch_ && xw_env_ && m) ? 64 : 16;
+    if (r != xw_rows_) { drop_pass_graphs(); xw_rows_ = r; }
+  }
+  if (!m && wide_mask_) {                                               // no wide copy pass will run: free the commit graphs that
+    for (auto it = rgraph_.begin(); it != rgraph_.end();)               // recompute the conv outputs (rebuilt if ever needed)
+      if (it->first < 1000) { cudaGraphExecDestroy(it->second); it = rgraph_.erase(it); } else ++it;
+  }
+  wide_mask_ = m;
+}
+void Engine35::time_cycle(const int32_t* ids, int M, int iters, float* ms) {
+  if (M < 2 || M > kVerifyMax || (M > HM_ && (!wide_ok_ || mtp_.on))) throw std::runtime_error("time_cycle: M must be 2..16 (2..64 where wide passes are allowed)");
+  if (iters < 1 || iters > 4096) throw std::runtime_error("time_cycle: iters must be 1..4096");
+  const int p0 = pos_;
+  if (p0 < 1 || p0 + M > max_ctx_) throw std::runtime_error("time_cycle: read a prompt first; the position plus M must fit the context");
+  using clk = std::chrono::steady_clock;
+  std::vector<int32_t> am((size_t)M), ti((size_t)M * 8);
+  std::vector<clk::time_point> t((size_t)iters + 1);
+  for (int i = 0; i < iters; ++i) {
+    t[(size_t)i] = clk::now();
+    verify(ids, M, 1, am.data(), ti.data(), nullptr);                   // as the copy loop: graph, all rows through the head, top-8
+    commit(M - 1);                                                      // all rows accepted (16 rows: the kept conv outputs)
+    if (bdr_.on) { if (M > HM_) bdraft_ctx(0, M, p0); else bdraft_step(M, p0, 0, 1); }   // the drafter reads the committed rows
+    pos_ = p0; launch_set_int(d_pos_, pos_, st_);                       // back to the same position for the next cycle
+  }
+  replay_fence(); cudaStreamSynchronize(st_);
+  t[(size_t)iters] = clk::now();
+  for (int i = 0; i < iters; ++i) ms[i] = (float)std::chrono::duration<double, std::milli>(t[(size_t)i + 1] - t[(size_t)i]).count();
+  const cudaError_t e = cudaGetLastError(); if (e != cudaSuccess) throw std::runtime_error(std::string("time_cycle: ") + cudaGetErrorString(e));
+}
+int Engine35::wide_state(int32_t* out, int n) const {
+  size_t fr = 0, tot = 0; cudaMemGetInfo(&fr, &tot);
+  int32_t v[32] = {};
+  v[0] = 1; v[1] = code_arch_; v[2] = cc_; v[3] = m_.sm_count; v[4] = wide_ok_ ? 1 : 0; v[5] = xw_arch_; v[6] = xw_rows_; v[7] = wide_mask();
+  v[8] = wide_pref_; v[9] = wide_native() ? 1 : 0;
+  for (int i = 0; i < 4; ++i) v[10 + i] = wide_t_us_[i];
+  v[14] = (int32_t)(fr >> 20); v[15] = (int32_t)(tot >> 20); v[16] = pci_[0]; v[17] = pci_[1]; v[18] = pci_[2];
+  for (int i = 0; i < 4; ++i) { uint32_t w = 0; for (int b = 0; b < 4; ++b) w = (w << 8) | uuid_[4 * i + b]; v[19 + i] = (int32_t)w; }
+  v[23] = code_arch_test_; v[24] = sass_arch_; v[25] = mtp_.on ? 1 : 0; v[26] = bdr_.on ? 1 : 0;
+  const int k = std::max(0, std::min(n, 27));
+  for (int i = 0; i < k; ++i) out[i] = v[i];
+  return k;
 }
 int Engine35::state_hash(uint64_t* out, int max_out) {
   replay_fence(); cudaStreamSynchronize(st_);

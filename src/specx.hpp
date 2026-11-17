@@ -84,6 +84,7 @@ struct SpecxStats {
   double ms_ctx = 0;                                     
   int64_t sh_lcp = 0, sh_slots = 0, sh_saved = 0; double ms_snap = 0;   // prompt snapshots
   int64_t copy_passes = 0, wide_passes = 0, copy_tok = 0, wide_tok = 0, max_rows = 0, cursor_hits = 0, wide_full = 0; double ms_index = 0;
+  int64_t wide_backoffs = 0; double t_copy[4] = {}; int wide_mask = 0;   // 0.1.7: back-offs, final times of copy cycles (ms), widths
   int sh_mode = 0; int64_t sh_start = 0;                 
 };
 
@@ -127,9 +128,13 @@ private:
   int last_src_ = -1, last_src_at_ = -1;   // where the last copy stopped (S_ index) and the frontier then
   int copy_lookup(int F, std::vector<int32_t>& chain, int gmax);
   int wide_need_ = 2, wide_run_ = 0;   // full 16-row copy passes needed before going wide, and the current run of them
-  double wst_tok_ = 0, wst_ms_ = 0;    // tokens and time of the current run of wide passes
-  double t16_ = 10.12, t32_ = 15.5, t48_ = 21.0, t64_ = 23.5;   // ms per copy pass by rows (initial values measured on the RTX 5090:
-                                                               // the exact-sum wide passes of 0.1.4, fastest model, 4K context)
+  double wst_tok_ = 0, wst_ms_ = 0;    // tokens and time of the wide passes since the last check
+  int wide_k_ = 0;                     // wide passes since the last check (0.1.7: checked every 4 passes, not only when a run ends)
+  double wpv_tok_ = 0, wpv_ms_ = 0;    // 0.1.7: the window checked last in the current run (it won), and its number of passes: a run
+  int wpv_k_ = 0;                      // that ends with fewer than 4 passes since then is judged together with it
+  double t16_ = 10.12, t32_ = 15.5, t48_ = 21.0, t64_ = 23.5;   // ms per copy pass by rows (built-in initial values measured on the RTX
+                                                               // 5090: the exact-sum wide passes of 0.1.4, fastest model, 4K context;
+                                                               // 0.1.7: the caller can give this GPU's own, set_opt 39..42)
   double row_us(int rows) const { return rows > 8 ? (c_.cost_row2_us > 0 ? c_.cost_row2_us : c_.cost_row_us) + c_.cost_row2_k * dk_ : c_.cost_row_us; }   
   double dk_ = 0;            
   double tok_val() const { return (c_.prmode && tok_us_ > 0) ? tok_us_ : c_.cost_tok_us + c_.cost_tok_k * dk_; }   

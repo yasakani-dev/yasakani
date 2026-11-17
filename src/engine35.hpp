@@ -150,6 +150,15 @@ public:
   bool wide_ok() const { return wide_ok_; }
   int xw_rows() const { return xw_rows_; }           // passes up to this many rows use the exact-sum GEMV (16 = none wider)
   void prepare_wide(int max_rows);                   // build the graphs of the wide passes and their commits (nothing runs)
+  // 0.1.7: which widths of copy passes may be used (bit 0 = 32 rows, 1 = 48, 2 = 64; set_opt 38) and the times of one copy cycle
+  // that the copy loop starts from (16, 32, 48 and 64 rows, microseconds, 0 = the RTX 5090's values; set_opt 39..42).
+  int wide_mask() const { return wide_ok_ ? wide_mask_ : 0; }
+  int wide_t_init_us(int i) const { return (i >= 0 && i < 4) ? wide_t_us_[i] : 0; }
+  // One copy cycle of M rows at the current position, as the copy loop runs it: the verify pass (graph, every row through the output
+  // layer, top-8), the commit of all M rows and the drafter's context of these rows; then the position goes back. ms[i] = wall time
+  // of cycle i. The values in the state are not kept meaningful: reset afterwards.
+  void time_cycle(const int32_t* ids, int M, int iters, float* ms);
+  int wide_state(int32_t* out, int n) const;         // see yskn_wide_state
   
   
   
@@ -410,6 +419,14 @@ private:
   void snap_free();
   int last_keep_ = 1;          // the last verify pass kept the conv outputs for the commit replay (rows <= 16)
   bool wide_ok_ = false;       // wide copy passes allowed on this GPU
+  // 0.1.7: the code the GPU runs (PTX version of a probe kernel, e.g. 86, 89, 120) decides the default; YSKN_WIDE overrides it
+  int code_arch_ = 0, sass_arch_ = 0, cc_ = 0, code_arch_test_ = 0; bool xw_env_ = true;
+  int wide_pref_ = -1;         // YSKN_WIDE: -1 not set (12.x on, 8.x off), 0 off, 1 on (8.x: closed until the caller opens widths), 2 all
+  int wide_mask_ = 0;          // widths of copy passes allowed (bit 0 = 32, 1 = 48, 2 = 64)
+  int wide_t_us_[4] = {};      // initial times of copy cycles of 16 / 32 / 48 / 64 rows (us; 0 = built-in)
+  int pci_[3] = {}; unsigned char uuid_[16] = {};
+  bool wide_native() const { return code_arch_ >= 120; }
+  void set_wide_mask(int mask);
   
   
   

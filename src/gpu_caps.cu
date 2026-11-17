@@ -47,4 +47,12 @@ void select_gpu(int device) {
 }
 
 bool gpu_sm90_features() { return g_sm90.load(std::memory_order_relaxed) == 1; }
+
+void gpu_code_arch(int* ptx, int* sass) {
+  cudaFuncAttributes fa{};
+  const cudaError_t e = cudaFuncGetAttributes(&fa, gpu_caps_probe_kernel);
+  if (e != cudaSuccess) { (void)cudaGetLastError(); throw std::runtime_error("gpu_code_arch: " + cuda_error(e)); }
+  if (ptx) *ptx = fa.ptxVersion;
+  if (sass) *sass = fa.binaryVersion;
+}
 }  // namespace yskn

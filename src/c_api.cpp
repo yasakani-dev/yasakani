@@ -7,6 +7,7 @@
 #include <chrono>
 #include "yskn_abi.h"
 #include <cuda_runtime.h>
+#include <cuda_runtime_api.h>   // CUDART_VERSION (yskn_build_info)
 #include <string>
 #include <atomic>
 #include <algorithm>
@@ -39,6 +40,12 @@ extern "C" int yskn_nll(yskn_engine* e, const int32_t* ids, int n, float* out) {
 extern "C" int yskn_logits(yskn_engine* e, float* out) { YSKN_TRY(if (e->q) e->q->logits(out); else e->e->logits(out)) }
 extern "C" int yskn_position(yskn_engine* e) { return e->q ? e->q->position() : e->e->position(); }
 extern "C" const char* yskn_last_error(void) { return g_err.c_str(); }
+// Which library this is: "cuda=13020;wide=1". cuda is the CUDA runtime version the library was built with (13020 = 13.2); wide=1: the
+// wide copy passes can be switched per GPU (YSKN_WIDE, set_opt 38..42, yskn_time_cycle, yskn_wide_state; 0.1.7). Libraries before it
+// have no yskn_build_info.
+#define YSKN_STR_(x) #x
+#define YSKN_STR(x) YSKN_STR_(x)
+extern "C" YSKN_API const char* yskn_build_info(void) { return "cuda=" YSKN_STR(CUDART_VERSION) ";wide=1"; }
 extern "C"  int yskn_debug_buffer(yskn_engine* e, int which, int M, uint16_t* out) { YSKN_TRY(E(e).debug_buffer(which, M, out)) }
 extern "C"  int yskn_debug_hidden(yskn_engine* e, const int32_t* ids, int n, int upto, int mode, float* out) { YSKN_TRY(if (e->q) e->q->debug_hidden(ids, n, upto, mode, out); else e->e->debug_hidden(ids, n, upto, mode, out)) }
 extern "C" int yskn_verify(yskn_engine* e, const int32_t* ids, int M, int use_graph, int32_t* out_argmax, int32_t* top_ids, float* top_vals) { YSKN_TRY(if (e->q) e->q->verify(ids, M, use_graph, out_argmax, top_ids, top_vals); else e->e->verify(ids, M, use_graph, out_argmax, top_ids, top_vals)) }
@@ -95,7 +102,9 @@ extern "C" int yskn_spec_generate(yskn_engine* e, const int32_t* prompt, int n_p
           o[43] = (double)s.copy_passes; o[44] = (double)s.wide_passes; o[45] = (double)s.copy_tok; o[46] = s.ms_index;
           o[47] = (double)s.max_rows; o[48] = (double)s.sh_lcp; o[49] = (double)s.sh_slots; o[50] = (double)s.sh_saved; o[51] = s.ms_snap;
           o[52] = (double)s.rows_hist[48]; o[53] = (double)s.rows_hist[64]; o[54] = (double)s.wide_tok; o[55] = (double)s.cursor_hits;
-          o[56] = (double)s.wide_full; o[57] = (double)s.rows_hist[32]; } }   
+          o[56] = (double)s.wide_full; o[57] = (double)s.rows_hist[32];
+          o[58] = (double)s.wide_backoffs; o[59] = s.t_copy[0]; o[60] = s.t_copy[1]; o[61] = s.t_copy[2]; o[62] = s.t_copy[3];   // 0.1.7
+          o[63] = (double)s.wide_mask; } }
     };
     if (e->q) { yskn::Specx35 y(*e->q, c, e->q->vocab()); run(y);
                 if (c.snap) { const auto& s = y.seq(); e->q->snap_note(s.data(), (int)s.size() - 1); } }   
@@ -114,6 +123,10 @@ extern "C" YSKN_API int yskn_set_visual(yskn_engine* e, const uint16_t* features
 
 
 extern "C" YSKN_API int yskn_prepare_wide(yskn_engine* e, int max_rows) { YSKN_TRY(if (!e->q) throw std::runtime_error("prepare_wide: qwen3_5 engine only"); e->q->prepare_wide(max_rows)) }
+extern "C" YSKN_API int yskn_time_cycle(yskn_engine* e, const int32_t* ids, int M, int iters, float* ms) {
+  YSKN_TRY(if (!e->q) throw std::runtime_error("time_cycle: qwen3_5 engine only"); e->q->time_cycle(ids, M, iters, ms)) }
+extern "C" YSKN_API int yskn_wide_state(yskn_engine* e, int32_t* out, int n, int* n_out) {
+  YSKN_TRY(if (!e->q) throw std::runtime_error("wide_state: qwen3_5 engine only"); *n_out = e->q->wide_state(out, n)) }
 extern "C" YSKN_API int yskn_snap_info(yskn_engine* e, int32_t* out4, int32_t* ids, int max_ids) { YSKN_TRY(
   if (!e->q) throw std::runtime_error("snap: qwen3_5 engine only");
   const auto& lv = e->q->snap_live(); out4[0] = e->q->position(); out4[1] = e->q->snap_pos(); out4[2] = e->q->snap_live_ok() ? 1 : 0;

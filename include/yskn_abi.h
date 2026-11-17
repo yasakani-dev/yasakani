@@ -61,8 +61,27 @@ YSKN_API int           yskn_spec_generate(yskn_engine* e, const int32_t* prompt,
 
 
 YSKN_API int           yskn_specx_load_static(const char* path);
-/* 0.1.4: build the graphs of the wide copy passes (up to max_rows rows) ahead of the first request; nothing runs. */
+/* 0.1.4: build the graphs of the wide copy passes (up to max_rows rows) ahead of the first request; nothing runs.
+   0.1.7: only the widths that are open (set_opt 38). */
 YSKN_API int           yskn_prepare_wide(yskn_engine* e, int max_rows);
+/* 0.1.7: wide copy passes per GPU.
+   - YSKN_WIDE (read when the model is opened): not set = by the code the GPU runs (sm_120: allowed, all widths open; sm_86 / sm_89:
+     off, as in 0.1.6), 0 = off, 1 = allowed (sm_86 / sm_89: no width open until set_opt 38 opens one), 2 = allowed, all widths open.
+   - set_opt 38: the widths of copy passes that may be used (bit 0 = 32 rows, bit 1 = 48, bit 2 = 64); 0 = none.
+     set_opt 39..42: the time of one copy cycle of 16 / 32 / 48 / 64 rows the copy loop starts from (us; 0 = the RTX 5090's values).
+   - yskn_time_cycle: run `iters` copy cycles of M rows (ids[0..M)) at the current position (verify pass with every row through the
+     output layer, commit of all M rows, the drafter reading them) and go back to the same position after each; ms[i] = wall time
+     of cycle i. Read a prompt first and reset afterwards.
+   - yskn_wide_state: out[0] layout (1), [1] code architecture (PTX version the GPU runs, e.g. 86, 89, 120), [2] compute capability
+     x10, [3] SMs, [4] wide passes allowed, [5] exact-sum wide GEMV possible, [6] rows up to which it is used, [7] open widths,
+     [8] YSKN_WIDE (-1 not set), [9] 1 for 12.x code, [10..13] set_opt 39..42, [14] free MiB, [15] total MiB, [16..18] PCI domain,
+     bus, device, [19..22] the GPU's UUID (16 bytes, big-endian words), [23] code architecture set by a test build, [24] machine-code
+     architecture, [25] built-in draft head loaded, [26] drafter loaded. *n_out = the number of values written (at most n). */
+YSKN_API int           yskn_time_cycle(yskn_engine* e, const int32_t* ids, int M, int iters, float* ms);
+YSKN_API int           yskn_wide_state(yskn_engine* e, int32_t* out, int n, int* n_out);
+/* "cuda=13020;wide=1": the CUDA version this library was built with, and wide=1 for 0.1.7's switches of the wide copy passes.
+   Libraries before 0.1.7 have no yskn_build_info. */
+YSKN_API const char*   yskn_build_info(void);
 
 
 YSKN_API int           yskn_set_opt(yskn_engine* e, int key, int value);

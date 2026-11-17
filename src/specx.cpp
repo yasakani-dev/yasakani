@@ -241,9 +241,16 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
   }
   dema_[0] = dema_[1] = 3.0; dpend_.clear(); dprobe_ = 0;
   bool wide_on = false;                                            // copy passes wider than 16 rows
-  if constexpr (std::is_same_v<Eng, Engine35>) wide_on = bdr && c_.copy_rows > 16 && e_.wide_ok() && !e_.has_draft();   // not with the built-in draft head loaded (16 rows)
+  int wmask = 0;                                                   // 0.1.7: the widths that may be used (bit 0 = 32, 1 = 48, 2 = 64)
+  if constexpr (std::is_same_v<Eng, Engine35>) {
+    wmask = e_.wide_mask();
+    wide_on = bdr && c_.copy_rows > 16 && e_.wide_ok() && !e_.has_draft() && wmask != 0;   // not with the built-in draft head loaded (16 rows)
+    double* t[4] = {&t16_, &t32_, &t48_, &t64_};                    // this GPU's times of copy cycles when the caller measured them
+    for (int i = 0; i < 4; ++i) if (e_.wide_t_init_us(i) > 0) *t[i] = e_.wide_t_init_us(i) / 1000.0;
+  }
+  stats.wide_mask = wide_on ? wmask : 0;
   if (c_.copy_index && bdr) ci_.reset((int)S_.size() + std::max(0, n_tokens) + 64);
-  cur_ = -1; last_src_ = -1; last_src_at_ = -1; wide_need_ = 2; wide_run_ = 0; wst_tok_ = 0; wst_ms_ = 0;
+  cur_ = -1; last_src_ = -1; last_src_at_ = -1; wide_need_ = 2; wide_run_ = 0; wst_tok_ = 0; wst_ms_ = 0; wide_k_ = 0; wpv_tok_ = 0; wpv_ms_ = 0; wpv_k_ = 0;
   bool xw32 = false;                                               // 32-row copy passes: only with the exact-sum wide GEMV (cheap)
   if constexpr (std::is_same_v<Eng, Engine35>) xw32 = e_.xw_rows() >= 32;
   // drafter context of the rows committed by the last pass (more than 16 after a wide pass)
@@ -338,7 +345,8 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
           if (wide_on && wide_run_ >= wide_need_ && exp_src >= 0) {   // a long run of fully accepted copy passes: copy W - 1 at once
             const int avail = F + 1 - exp_src;
             const int lim = std::min({avail, room, e_.max_ctx() - e_.position() - 1, c_.copy_rows - 1});
-            wideW = (lim >= 63 && c_.copy_rows >= 64) ? 64 : ((lim >= 47 && c_.copy_rows >= 48) ? 48 : ((lim >= 31 && c_.copy_rows >= 32 && xw32) ? 32 : 0));
+            wideW = (lim >= 63 && c_.copy_rows >= 64 && (wmask & 4)) ? 64
+                  : ((lim >= 47 && c_.copy_rows >= 48 && (wmask & 2)) ? 48 : ((lim >= 31 && c_.copy_rows >= 32 && xw32 && (wmask & 1)) ? 32 : 0));
           }
           if (wideW) { chain.assign(S_.begin() + exp_src, S_.begin() + exp_src + (wideW - 1)); src.assign(chain.size(), 0); }
           else { if ((int)c0.size() > c_.bdr_d0_len) c0.resize(c_.bdr_d0_len); take_d0(); }
@@ -535,12 +543,20 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
         const double t_pass = ms_since(t_iter);
         if (wideW) {
           double& tw = wideW == 64 ? t64_ : (wideW == 48 ? t48_ : t32_);
-          tw += (std::min(t_pass, 2.0 * tw) - tw) / 8.0;
+          const double tp = std::min(t_pass, 2.0 * tw);              // a stall (e.g. of the OS) counts as at most twice the usual time
+          tw += (tp - tw) / 8.0;
           stats.wide_passes++; stats.wide_tok += a + 1; if (full) stats.wide_full++;
-          wst_tok_ += a + 1; wst_ms_ += tw;
-          if (!full) {                                              // the run of wide passes ended: was it faster than 16 rows?
-            if (wst_tok_ * std::max(1.0, t16_) >= 16.0 * wst_ms_) wide_need_ = 2; else wide_need_ = std::min(16, wide_need_ * 2);
-            wst_tok_ = 0; wst_ms_ = 0; wide_run_ = 0;
+          wst_tok_ += a + 1; wst_ms_ += tp; ++wide_k_;               // 0.1.7: the measured time of each pass (was the running mean)
+          if (!full || wide_k_ >= 4) {                              // the run ended, or 4 more wide passes: were they faster than 16 rows?
+            // 0.1.7: checked inside a run too, not only at its end.  A run that ends with fewer than 4 wide passes since the last check
+            // is judged together with the window checked before it (so a partly accepted pass at the end of a copy is not judged alone)
+            const bool merge = !full && wide_k_ < 4 && wpv_k_ > 0;
+            const double tok = wst_tok_ + (merge ? wpv_tok_ : 0.0), ms = wst_ms_ + (merge ? wpv_ms_ : 0.0);
+            const bool won = tok * std::max(1.0, t16_) >= 16.0 * ms;
+            if (won) wide_need_ = 2; else { wide_need_ = std::min(16, wide_need_ * 2); stats.wide_backoffs++; }
+            if (full && won) { wpv_tok_ = wst_tok_; wpv_ms_ = wst_ms_; wpv_k_ = wide_k_; } else { wpv_tok_ = 0; wpv_ms_ = 0; wpv_k_ = 0; }
+            wst_tok_ = 0; wst_ms_ = 0; wide_k_ = 0;
+            if (!full || !won) wide_run_ = 0;                       // back to 16 rows (a slower run stops at once)
           }
         } else {
           if (M == 16) t16_ += (std::min(t_pass, 2.0 * t16_) - t16_) / 8.0;
@@ -574,6 +590,7 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
   }
   if constexpr (std::is_same_v<Eng, Engine35>) { if (bdr && dctx_n) { feed_ctx(dctx_n, dctx_pos); if (dctx_n) e_.bdraft_step(dctx_n, dctx_pos, 0, c_.use_graph); } }   
   stats.ms_total = ms_since(t_loop); stats.produced = std::min(produced, n_tokens); stats.eos = stop ? 1 : 0;
+  stats.t_copy[0] = t16_; stats.t_copy[1] = t32_; stats.t_copy[2] = t48_; stats.t_copy[3] = t64_;
   if (blk_mode) { static const bool lg = std::getenv("YSKN_BLK16_LOG") != nullptr;
     if (lg) std::fprintf(stderr, "[blk16] mode %d: passes %lld, BDR_J-row passes %lld, ema16 %.2f ema8 %.2f probe %d full8 %.2f\n", blk_mode, b16_all, b16_passes, b16_ema, b8_ema, b16_probe_cur, full8_ema); }
 }
