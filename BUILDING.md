@@ -15,7 +15,10 @@ Linux では CUDA Toolkit 13、GCC、CMake を入れ、下の「Linux (building 
 | Build tools | CMake (3.24 or newer is required) and Ninja |
 | Target | one DLL with machine code for compute capability 8.6 (`sm_86`, RTX 30 series), 8.9 (`sm_89`, RTX 40 series) and 12.0 (`sm_120`, RTX 50 series), plus PTX for `compute_120`. Tested on the RTX 5090 only |
 
-The `yskn.dll` on the release page is this build (SHA-256 `967de3ea4102c54972ea8d31f3286eaee466f2db1092d5ea5c26eec10fc6be8f`). It is the
+The `yskn.dll` of the test build v0.1.7-test1 is this build (SHA-256 `6bfb18a8da8f905bd22fdd300095d9d8629537a26777c4ba4b40772728c40c52`).
+It was made the same way from the build of 0.1.6 (`967de3ea…be8f`): the files with the host-code changes of 0.1.7 and the files that
+include `include/yskn_abi.h` were compiled again and linked. Its GPU code is that of 0.1.6 (compared with `cuobjdump`: the machine code
+of all three architectures and the PTX are the same). The `yskn.dll` of 0.1.6 is the
 build of 0.1.5 (`918560d6…3f7a`) with the change of 0.1.6 in `src/c_api.cpp` (every entry point selects the engine's GPU,
 [#20](https://github.com/yasakani-dev/yasakani/issues/20)) compiled into its build folder with the two commands below (the CUDA compiler was named
 explicitly with `-DCMAKE_CUDA_COMPILER`): one C++ file was compiled again and linked, the exported functions are the same, and the GPU

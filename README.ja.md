@@ -28,6 +28,8 @@ JSONL 編集は自作の課題です。60行の JSONL のうち1行だけ直し�
 
 速さの数字はすべて RTX 5090 で測った値です。ほかのカードでは遅くなります。速さと動作は保証しません。編集が速いのは、入力から写した多くのトークンを本体が1回の計算で確かめるからです。この計算を使うのは計算能力 12.x（RTX 50 シリーズ）だけで、測ったのは RTX 5090 だけです。RTX 30・40 が1回で確かめるのは16トークンまでなので、0.1.4 の編集の高速化は効きません。
 
+**試験版（プレリリース）：** [v0.1.7-test1](https://github.com/yasakani-dev/yasakani/releases/tag/v0.1.7-test1) では、RTX 30・40 と RTX 5090 以外の RTX 50 が、カードでの確かめのうえでこの広い計算を試して結果を報告できます。正式なリリースではありません。上のダウンロードは 0.1.6 のままです。RTX 30・40 は `--wide on` を付けない限り何も変わりません。[仕組みと報告のしかた](docs/FAQ.ja.md#test-build-017)
+
 Linux には寄稿者が検証したソースビルド手順があります。AMD と Mac は今後の対応目標です。[対象 GPU の型番と要件](docs/FAQ.ja.md#どの-gpuどの-os-で動く) · [Linux のビルド手順](BUILDING.md#linux-building-from-source)
 
 **GPU が複数のとき**：1つのプロセスが使う GPU は1枚です。`--device N` で、`yasakani info` と nvidia-smi が N 番とする GPU を選びます。0.1.5 では GPU が2枚の PC で `--device 1` が `graph instantiate failed` で止まることがありました（[#20](https://github.com/yasakani-dev/yasakani/issues/20)）。0.1.6 で直しを入れました。ただし GPU が2枚の PC ではまだ確かめていません。

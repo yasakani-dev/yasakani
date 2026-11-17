@@ -28,6 +28,8 @@ For everyday use, choose the **quality model**. Its predictions are the closest 
 
 All speed numbers in this repository were measured on the RTX 5090. Other cards are slower. We do not guarantee their speed or that they work. The edit numbers are high because one pass of the model checks many tokens copied from the input. The engine does this only on compute capability 12.x (RTX 50 series), and we measured it only on the RTX 5090. RTX 30 and 40 cards check at most 16 copied tokens per pass, so the 0.1.4 edit speedup does not apply to them.
 
+**Test build (pre-release):** [v0.1.7-test1](https://github.com/yasakani-dev/yasakani/releases/tag/v0.1.7-test1) lets RTX 30 / 40 cards and RTX 50 cards other than the RTX 5090 try these wide passes after a check on the card, and report the result. It is not the latest release: the download above stays 0.1.6. On RTX 30 / 40 nothing changes without `--wide on`. [How it works and how to report](docs/FAQ.md#test-build-017)
+
 Contributors have tested a Linux build from source. AMD and Mac are future targets. [GPU list and requirements](docs/FAQ.md#which-gpus-which-systems) · [Build on Linux](BUILDING.md#linux-building-from-source)
 
 **Several GPUs:** one process uses one GPU. `--device N` picks GPU N as `yasakani info` and nvidia-smi number them. With 0.1.5, `--device 1` on a PC with two GPUs could stop with `graph instantiate failed` ([#20](https://github.com/yasakani-dev/yasakani/issues/20)). 0.1.6 includes a fix. We have not yet tried it on a PC with two GPUs.

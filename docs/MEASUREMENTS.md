@@ -10,7 +10,7 @@ records themselves are in [`bench/`](../bench/).
 
 * The speed tables are the saved records of the quality model (12.37 GB), the fastest model (10.31 GB) and the eight other engines.
   YASAKANI's thinking-off rows were measured on November 15, 2026 with the `yskn.dll` of 0.1.4 (sha256
-  `bae77ae6e73369dee5d33490b1ff2093f88ab57c02efa06912db6246efffaa09`; 0.1.5 and 0.1.6 have the same GPU code) and its Python package; its thinking-on rows on November 8 with the
+  `bae77ae6e73369dee5d33490b1ff2093f88ab57c02efa06912db6246efffaa09`; 0.1.5, 0.1.6 and the 0.1.7 test build have the same GPU code) and its Python package; its thinking-on rows on November 8 with the
   `yskn.dll` built on November 7 (sha256 `0f5d973b791c8d66034d87bdfc7f2c018718dc0e851b9a6ee6dc1eb275150bbb`, the engine of 0.1.0 to 0.1.2).
   The thinking-on table was not measured again with 0.1.4.
 * The quality table evaluates the same two models with an FP16 key-value (KV) cache. That is not the KV condition of the speed tables, which

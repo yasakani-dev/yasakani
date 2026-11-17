@@ -243,6 +243,25 @@ to 0.1.3 one pass confirmed at most 16 tokens. 0.1.4 lets a copy go further:
   keep them; at confirmation the state is computed again from the inputs of the pass (`src/engine35.cpp`).
 * **Where.** Wide passes are used on compute capability 12.x (RTX 50 series) only; other GPUs copy with passes of up to 16 rows. Only the
   RTX 5090 has been measured.
+* **Per GPU (0.1.7, a test build).** What decides is the code the GPU runs (the PTX version of a probe kernel: sm_86, sm_89 or sm_120),
+  not its compute capability alone. On sm_86 / sm_89 the wide passes are off unless asked for (`--wide on`, engine setting `YSKN_WIDE=1`);
+  then no width is open until a check opens it. The check (`python/yasakani/widecheck.py`, once per GPU, driver, engine library, package
+  and model) reads about 2,400 tokens in passes of 17, 31, 32, 33, 47, 48, 63 and 64 rows and again in passes of 16, and requires the
+  same most likely ids and NLL bit for bit; then it times copy cycles (the pass, the commit of all rows, the drafter reading them) of 16
+  and of W rows in turn at a 4K context, and opens a width W when a cycle takes at most 0.8 × W / 16 times a 16-row one. On 12.x every
+  width stays open unless every round of the check is over that limit. The measured cycle times are also where the time-based back-off
+  starts (they were the RTX 5090's on every GPU before). When the correctness check finds a difference, no width is used, passes of 17
+  to 64 rows (such as the ends of prompt reads) go back to the 16-row sums also on 12.x, and `yasakani selfcheck` fails. The check reads
+  its text in pieces of at most 1,023 tokens, so that the engine does not set up the work area of long prompt reads (about 580 MiB).
+* **Time-based back-off (0.1.7).** During generation the copy loop (`src/specx.cpp`) adds up the measured time of each wide pass (at most
+  twice its running mean, so that a stall of the OS counts little; before: the running mean) and checks every 4 wide passes, also inside
+  a run of fully accepted ones (before: only when a run ended), whether the tokens of these passes per millisecond reach those of a fully
+  accepted 16-row pass. A run that ends with fewer than 4 wide passes since the last check is judged together with the 4 before it, so a
+  partly accepted pass at the end of a copy is not judged alone. If they do not reach it, the copy goes back to 16 rows at once and the
+  number of fully accepted 16-row passes needed before the next wide pass doubles (from 2 up to 16); if they do, it is 2 again. The
+  generated tokens do not depend on this (a wide pass gives the same choices as 16-row passes); the number of passes can. When the
+  engine goes back in at least 10 of every 100 wide passes, counted over at least 128 of them in one process, the package marks the kept
+  result of the check, and the next start checks again.
 
 The answers do not change: only tokens the main model chose are kept, and a pass of 17 to 64 rows gives bit for bit the same choices and
 values as passes of 16 rows (chapter 7). Thinking off, measured one after the other against 0.1.2: code edit 1.67 times (fastest model) and
@@ -392,8 +411,9 @@ settings are the `YSKN_SNAP_*` entries of `DEFAULT_ENV` in `python/yasakani/runt
 * AMD GPUs and Macs are not supported: the kernels are CUDA.
 * The converter ([`tools/convert/`](../tools/convert/)) knows the layers of Qwen3.8-27B only; another model needs changes to it and to
   the engine.
-* Wide copy passes (5.4) are used on compute capability 12.x only, and were measured on the RTX 5090 only. Their kernels have not run on
-  another RTX 50 card; there, `yasakani selfcheck` compares passes of 64 rows with passes of 16 ([python/README.md](../python/README.md#the-self-check)). Their answers were checked
+* Wide copy passes (5.4) are used by default on compute capability 12.x only, and were measured on the RTX 5090 only. The 0.1.7 test build
+  lets RTX 30 / 40 cards use them after a check on the card (`--wide on`, 5.4); their machine code for 8.6 / 8.9 has not run on such a card.
+  Their kernels have not run on another RTX 50 card; there, `yasakani selfcheck` compares passes of 64 rows with passes of 16 where wide passes are open, and fails when the check at start found that they compute differently ([python/README.md](../python/README.md#the-self-check)). Their answers were checked
   against single passes up to a context of 40,000 tokens, and in generations after a prompt of about 177,000 tokens. Their speed after a long
   prompt (more than about 40,000 tokens) has not been measured. A stop string is acted on after a pass, so up to 64 tokens (16 up to 0.1.3)
   can be generated past it; the text is cut at the stop string, but those tokens count in `usage.completion_tokens`.
