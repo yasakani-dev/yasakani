@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 the YASAKANI authors
-"""Command line:  ``python -m yasakani  info | serve | chat | bench | verify``  (``yasakani`` when installed with pip)."""
+"""Command line:  ``python -m yasakani  info | serve | chat | bench | selfcheck | verify | report``  (``yasakani`` when installed with
+pip)."""
 from __future__ import annotations
 
 import argparse
@@ -18,8 +19,9 @@ import time
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from . import __version__
+from . import __version__, BUILD_NOTE
 from . import gpu as gpus
+from . import widecheck
 from ._native import YasakaniError, find_library, library_loaded, pci_bus_order
 from .runtime import ModelPack, RuntimeProfile
 from .selfcheck import FORMAT as SELFCHECK_FORMAT
@@ -123,6 +125,16 @@ def _add_engine_args(sp: argparse.ArgumentParser) -> None:
                          "30,000 MiB, the longest that fits the free GPU memory)")
     sp.add_argument("--device", type=int, default=0, help="the GPU to use, numbered as in `yasakani info` and nvidia-smi (default 0)")
     sp.add_argument("--seed0", type=int, default=1, help="seed of the first request; every request without its own seed uses the next one")
+    _add_wide_args(sp)
+
+
+def _add_wide_args(sp: argparse.ArgumentParser) -> None:
+    g = sp.add_argument_group("wide copy passes (0.1.7 test build)")
+    g.add_argument("--wide", choices=widecheck.MODES, default=None,
+                   help="copy passes of up to 64 tokens: auto (default; RTX 50 on, a width this GPU finds slower left out; RTX 30 / 40 "
+                        "off as in 0.1.6), on (also RTX 30 / 40: only the widths a check on this GPU finds correct and faster), off, "
+                        "force (every width without the check).  Default: $YASAKANI_WIDE or auto")
+    g.add_argument("--wide-recheck", action="store_true", help="check the wide copy passes again even when a kept result fits")
 
 
 def _add_vision_args(sp: argparse.ArgumentParser) -> None:
@@ -191,15 +203,25 @@ def _open_stack(args, *, warm: bool = True):
     max_ctx = plan.max_ctx
     profile = RuntimeProfile.default(pack, plan.env) if plan.env else None
     device = _visible_gpu(det, args.device)      # 0.1.6: several GPUs: the engine sees only the chosen one, as its device 0
+    wide = widecheck.mode_of(getattr(args, "wide", None))         # 0.1.7: a wrong YASAKANI_WIDE fails here, before the long load
     _say("loading the model (%s of weights) ..." % _human(pack.weights.stat().st_size))
     t0 = time.time()
-    eng = Engine(pack, max_ctx=max_ctx, device=device, dll=args.dll, profile=profile)
+    eng = Engine(pack, max_ctx=max_ctx, device=device, dll=args.dll, profile=profile, wide=wide)
     try:
         if eng.removed_env:
             _say("note: ignored %d YSKN_* setting(s) from the environment: %s" % (len(eng.removed_env), ", ".join(sorted(eng.removed_env))))
+        kept = sorted(k for k in os.environ if k.startswith("YSKN_TEST_"))
+        if kept:
+            _say("note: kept %s from the environment (read only by an engine library built with the test exports)" % ", ".join(kept))
+        eng.wide_recheck = bool(getattr(args, "wide_recheck", False))
         runner = ChatRunner(eng, fmt, seed0=args.seed0, vision=vision)
         if warm:
-            runner.warmup()
+            runner.warmup(say=_say)
+        else:                                                    # --no-warmup: a kept result of the wide check, nothing measured
+            res = widecheck.setup(eng, None, check=False)
+            eng.wide_result = res
+            if res is not None and res.line:
+                _say(res.line)
     except BaseException:
         eng.close()
         raise
@@ -213,7 +235,7 @@ def _open_stack(args, *, warm: bool = True):
 # ---- info -------------------------------------------------------------------------------------------------------------------------
 def cmd_info(args) -> int:
     ok = True
-    print("yasakani", __version__)
+    print("yasakani", __version__, "(%s)" % BUILD_NOTE if BUILD_NOTE else "")
     print("python  ", platform.python_version(), platform.system(), platform.machine())
     for mod in ("numpy", "tokenizers", "jinja2"):
         try:
@@ -236,6 +258,8 @@ def cmd_info(args) -> int:
         print("         GPU %d: compute capability %s - %s" % (g.index, g.cc_text, gpus.describe(g)))
     if len(found) > 1:
         print("         " + gpus.numbering(gpus=found))
+    for line in _wide_info_lines(found):
+        print(line)
     d = getattr(args, "model_dir", None) or os.environ.get("YASAKANI_MODEL_DIR")
     if d:
         try:
@@ -253,6 +277,29 @@ def cmd_info(args) -> int:
     else:
         print("model    (give --model-dir to check the model folder)")
     return 0 if ok else 1
+
+
+def _wide_info_lines(found) -> List[str]:
+    """0.1.7: the setting of the wide copy passes and, per GPU, the latest kept result of the check (no paths)."""
+    try:
+        mode = widecheck.mode_of(None)
+    except YasakaniError as ex:
+        return ["wide     " + str(ex)]
+    out = ["wide     copy passes of up to 64 tokens: setting %s (YASAKANI_WIDE / --wide)" % mode]
+    entries = widecheck.Cache().load()
+    for g in found:
+        if not g.uuid:
+            continue
+        h = hashlib.sha256(g.uuid.lower().encode()).hexdigest()[:16]
+        e = next((e for e in entries if (e.get("fields") or {}).get("uuid_sha") == h), None)
+        if e is None:
+            continue
+        r = e["result"]
+        when = time.strftime("%Y-%m-%d", time.localtime(float(e.get("time", 0))))
+        out.append("         GPU %d: checked %s (driver %s, package %s): %s%s" % (
+            g.index, when, (e.get("fields") or {}).get("driver"), (e.get("fields") or {}).get("package"),
+            widecheck.widths_text(int(r.get("mask", 0))), " (%s)" % r.get("status") if r.get("status") != "measured" else ""))
+    return out
 
 
 # ---- verify -----------------------------------------------------------------------------------------------------------------------
@@ -639,8 +686,8 @@ def cmd_selfcheck(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="yasakani", description="Run Qwen3.8-27B locally on one NVIDIA RTX GPU with the YASAKANI engine "
                                                            "(tested on the RTX 5090 under Windows).")
-    ap.add_argument("--version", action="version", version="yasakani " + __version__)
-    sub = ap.add_subparsers(dest="cmd", required=True, metavar="{info,serve,chat,bench,selfcheck,verify}")
+    ap.add_argument("--version", action="version", version="yasakani " + __version__ + (" (%s)" % BUILD_NOTE if BUILD_NOTE else ""))
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="{info,serve,chat,bench,selfcheck,verify,report}")
 
     sp = sub.add_parser("info", help="check this computer, the engine library and (with --model-dir) a model folder")
     sp.add_argument("--model-dir")
@@ -701,7 +748,27 @@ def build_parser() -> argparse.ArgumentParser:
                          "an output limit of 32768 tokens for every task, so tok/s varies from run to run")
     sp.add_argument("--json", action="store_true", help="print the result as JSON")
     sp.set_defaults(func=cmd_bench)
+
+    sp = sub.add_parser("report", help="0.1.7 test build: check the wide copy passes on this GPU and print a report to paste on GitHub "
+                                       "(GPU, driver, versions, the check, the edit tasks with wide passes off / checked / all, the "
+                                       "self-check); about 1.5 minutes on the RTX 5090, longer on other cards")
+    sp.add_argument("--model-dir", help="folder with the model files (default: $YASAKANI_MODEL_DIR)")
+    sp.add_argument("--dll", help="path of yskn.dll (default: $YASAKANI_DLL, or the bin folder next to the package)")
+    sp.add_argument("--max-ctx", type=int, default=None, help="context length in tokens (default: as for serve)")
+    sp.add_argument("--device", type=int, default=0, help="the GPU to use, numbered as in `yasakani info` and nvidia-smi (default 0)")
+    sp.add_argument("--rounds", type=int, default=1, help="times each column of the edit table is run, in the order off, checked, all, "
+                                                         "all, checked, off (default 1: two runs per column)")
+    sp.add_argument("--no-bench", action="store_true", help="leave out the edit tasks (the check and the self-check only)")
+    sp.add_argument("--no-selfcheck", action="store_true", help="leave out the self-check")
+    sp.add_argument("--json", action="store_true", help="print the result as JSON instead of Markdown")
+    sp.add_argument("--out", metavar="FILE", help="also write the report to FILE")
+    sp.set_defaults(func=cmd_report, seed0=1, wide="on", wide_recheck=True)
     return ap
+
+
+def cmd_report(args) -> int:
+    from .report import run_report
+    return run_report(args)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

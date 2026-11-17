@@ -217,10 +217,19 @@ class ChatRunner:
             self._seed += 1
             return s
 
-    def warmup(self) -> None:
+    def warmup(self, say=None, check: bool = True) -> None:
+        """Short generations, then (0.1.7) the widths of the wide copy passes on this GPU (yasakani/widecheck.py); ``check=False``
+        uses a kept result only.  ``say`` gets the one-line summary of the wide passes."""
+        from . import widecheck
         plain = self.fmt.encode("warm-up")
         chat, _ = self.fmt.prompt([{"role": "user", "content": "warm-up"}])
-        self.engine.warmup([plain, chat], n_gen=32)
+        ids = None
+        if check and self.engine.supports_wide_check:
+            try:
+                ids = widecheck.check_ids(self.fmt)
+            except YasakaniError:
+                ids = None
+        self.engine.warmup([plain, chat], n_gen=32, wide_ids=ids, say=say)
 
     def prepare(self, p: ChatParams):
         from .vision import split_images, PreparedVisual

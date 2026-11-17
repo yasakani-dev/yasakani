@@ -19,8 +19,12 @@ from .runtime import (DEFAULT_SPEC, EOS_IDS, N_STATS, STAT_INDEX, STATE_FIELDS, 
 
 # engine option keys (yskn_set_opt)
 OPT_TEMPERATURE, OPT_TOP_P, OPT_TOP_K, OPT_SEED, OPT_SAMPLER, OPT_MIN_P = 10, 11, 12, 13, 16, 29
+OPT_WIDE_MASK, OPT_WIDE_T16 = 38, 39       # 0.1.7: widths of copy passes (bit 0 = 32 rows, 1 = 48, 2 = 64); 39..42 cycle times in us
 _NO_STOP = 0x7FFFFFFF                      # a stop id no token can have (ignore_eos)
 CONTEXT_MARGIN = 64                        # ids kept free at the end of the context
+READ_CHUNK = 1023                          # 0.1.7: Engine.read_prompt reads in pieces of at most this many ids (the engine sets up a
+                                           # large work area for one prompt read of 1,024 ids or more and keeps it)
+OPT_EXACT_WIDE = 31                        # passes of 17..64 rows with the exact-sum GEMV (0 = off; the engine's default is on where it can)
 
 
 @dataclass(frozen=True)
@@ -111,10 +115,19 @@ class Engine:
     """One model on one GPU.  Calls are serialized; ``cancel()`` may be called from any thread."""
 
     def __init__(self, pack: ModelPack, *, max_ctx: Optional[int] = None, device: int = 0, dll: Optional[str] = None,
-                 profile: Optional[RuntimeProfile] = None, lib: Optional[NativeLib] = None):
+                 profile: Optional[RuntimeProfile] = None, lib: Optional[NativeLib] = None, wide: Optional[str] = None):
+        from . import widecheck
         self.pack = pack
         self.max_ctx = int(max_ctx or pack.max_ctx)
         self.profile = profile or RuntimeProfile.default(pack)
+        # 0.1.7: wide copy passes (yasakani/widecheck.py): auto | on | off | force, from ``wide``, else YASAKANI_WIDE, else auto
+        self.wide_mode = widecheck.mode_of(wide)
+        for k, v in widecheck.engine_env(self.wide_mode).items():
+            self.profile.env.setdefault(k, v)
+        self.wide_recheck = False                 # measure again even when a kept result fits (--wide-recheck, yasakani report)
+        self.wide_result = None                   # what the check decided (widecheck.WideResult), after warmup()
+        self._wide_backoffs = 0                   # back-offs and wide passes of the copy loop in this process (widecheck.recheck_due)
+        self._wide_passes_seen = 0
         self.utf8_paths = _narrow_paths_as_utf8([pack.weights, pack.draft, pack.draft_head, pack.kv_profile])
         self.removed_env = self.profile.apply()
         if self.utf8_paths:
@@ -324,6 +337,11 @@ class Engine:
             raise box["exc"]                                       # type: ignore[misc]
         if box.get("rc") != 0:
             raise YasakaniError(str(box.get("err") or "engine call failed"))
+        if st[STAT_INDEX["wide_passes"]] > 0:                      # 0.1.7: how often the copy loop found wide passes slower than 16 rows
+            self._wide_passes_seen += int(st[STAT_INDEX["wide_passes"]])
+            self._wide_backoffs += int(st[STAT_INDEX["wide_backoffs"]])
+            from . import widecheck
+            widecheck.note_backoffs(self)
         produced = int(st[STAT_INDEX["produced"]])
         gen = min(produced + 1, len(out))
         ids = [int(x) for x in out[:gen]]
@@ -393,15 +411,96 @@ class Engine:
         return Forced(argmax=am, nll=nll, margin=mg)
 
     # ---- warm-up ---------------------------------------------------------------------------------------------------------------
-    def warmup(self, prompts: Sequence[Sequence[int]], n_gen: int = 32) -> None:
+    def warmup(self, prompts: Sequence[Sequence[int]], n_gen: int = 32, wide_ids: Optional[Sequence[int]] = None,
+               say: Optional[Callable[[str], None]] = None) -> None:
         """Run short generations so that the CUDA graphs and the prompt-snapshot buffer exist before the first real request.  Give one
-        plain prompt and one prompt that contains the chat start marker; the state is reset afterwards."""
+        plain prompt and one prompt that contains the chat start marker; the state is reset afterwards.  0.1.7: then decide the widths
+        of the wide copy passes on this GPU (yasakani/widecheck.py; ``wide_ids`` is the text the check reads, None = use a kept result
+        only) and build their graphs.  ``say`` gets the one-line summary."""
+        from . import widecheck
         self.set_sampling(Sampling(1.0, 0.95, 20, 0.0, 999, 3))
         for p in prompts:
             self.reset()
             self.generate(p, n_gen + 1)
         self.reset()
+        self.wide_result = widecheck.setup(self, wide_ids, check=wide_ids is not None)
         self.prepare_wide()
+        widecheck.after_prepare(self, self.wide_result)
+        if say is not None and self.wide_result is not None and self.wide_result.line:
+            say(self.wide_result.line)
+
+    # ---- wide copy passes (0.1.7) ---------------------------------------------------------------------------------------------
+    @property
+    def supports_wide_check(self) -> bool:
+        return all(k in self._f for k in ("yskn_time_cycle", "yskn_wide_state", "yskn_prefill", "yskn_verify_nll", "yskn_commit"))
+
+    def wide_state(self):
+        """What the engine says about its wide copy passes (widecheck.WideState), or None for engine libraries before 0.1.7."""
+        from .widecheck import WideState
+        f = self._f.get("yskn_wide_state")
+        if f is None:
+            return None
+        with self._lock:
+            self._need_open()
+            out = np.zeros(32, np.int32)
+            n = C.c_int(0)
+            self._check(f(self._e, out.ctypes.data, len(out), C.byref(n)))
+            return WideState.from_array(out[:n.value])
+
+    def set_wide(self, mask: int, times_us: Optional[Sequence[int]] = None) -> None:
+        """Open the widths of copy passes in ``mask`` (bit 0 = 32 rows, 1 = 48, 2 = 64) and close the others; ``times_us`` = the times
+        of copy cycles of 16 / 32 / 48 / 64 rows the copy loop starts from (0 = the built-in values of the RTX 5090)."""
+        with self._lock:
+            self._need_open()
+            f = self._f["yskn_set_opt"]
+            self._check(f(self._e, OPT_WIDE_MASK, int(mask) & 7))
+            if times_us is not None:
+                for i, t in enumerate(list(times_us)[:4]):
+                    self._check(f(self._e, OPT_WIDE_T16 + i, max(0, min(10000000, int(round(t))))))
+
+    def read_prompt(self, ids: Sequence[int]) -> int:
+        """Read ``ids`` from a fresh state (nothing generated); returns the predicted next id.  For the checks of widecheck.  Read in
+        pieces of at most READ_CHUNK ids, so that the engine does not set up (and keep) the work area of long prompt reads."""
+        a = np.ascontiguousarray(np.asarray(ids, dtype=np.int32))
+        first = C.c_int32(0)
+        with self._lock:
+            self._need_open()
+            self._check(self._f["yskn_reset"](self._e))
+            for k in range(0, len(a), READ_CHUNK):
+                b = np.ascontiguousarray(a[k:k + READ_CHUNK])
+                self._check(self._f["yskn_prefill"](self._e, b.ctypes.data, len(b), C.byref(first)))
+        return int(first.value)
+
+    def set_exact_wide(self, on: bool) -> None:
+        """Passes of 17..64 rows with the exact-sum GEMV (set_opt 31; on by default where the engine can).  Turned off when the check
+        finds that wide passes compute differently on this GPU."""
+        with self._lock:
+            self._need_open()
+            self._check(self._f["yskn_set_opt"](self._e, OPT_EXACT_WIDE, 1 if on else 0))
+
+    def time_cycles(self, ids: Sequence[int], n: int) -> np.ndarray:
+        """``n`` copy cycles of ``len(ids)`` rows at the current position (yskn_time_cycle): wall time of each, ms."""
+        a = np.ascontiguousarray(np.asarray(ids, dtype=np.int32))
+        out = np.zeros(int(n), np.float32)
+        with self._lock:
+            self._need_open()
+            self._check(self._f["yskn_time_cycle"](self._e, a.ctypes.data, len(a), int(n), out.ctypes.data))
+        return out
+
+    def verify_rows(self, ids: Sequence[int], targets: Sequence[int], commit: bool):
+        """One teacher-forced pass of ``len(ids)`` rows at the current position: (most likely ids, NLL of ``targets``); with
+        ``commit`` the rows are then accepted (the position moves on)."""
+        x = np.ascontiguousarray(np.asarray(ids, dtype=np.int32))
+        t = np.ascontiguousarray(np.asarray(targets, dtype=np.int32))
+        m = len(x)
+        a = np.empty(m, np.int32)
+        v = np.empty(m, np.float32)
+        with self._lock:
+            self._need_open()
+            self._check(self._f["yskn_verify_nll"](self._e, x.ctypes.data, t.ctypes.data, m, 1, a.ctypes.data, v.ctypes.data))
+            if commit:
+                self._check(self._f["yskn_commit"](self._e, m - 1))
+        return a, v
 
     def prepare_wide(self) -> None:
         """Build the graphs of the wide copy passes for greedy and for sampled generation (engine libraries of 0.1.4 or newer; nothing

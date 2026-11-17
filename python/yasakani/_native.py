@@ -119,6 +119,13 @@ class NativeLib:
         if f is not None:
             f.argtypes, f.restype = [P, I], I
             self.fn["yskn_prepare_wide"] = f
+        # 0.1.7: wide copy passes per GPU (yasakani/widecheck.py); older libraries have none of them
+        for name, sig in (("yskn_time_cycle", ([P, P, I, I, P], I)), ("yskn_wide_state", ([P, P, I, P], I)),
+                          ("yskn_build_info", ([], C.c_char_p))):
+            f = getattr(self.dll, name, None)
+            if f is not None:
+                f.argtypes, f.restype = sig
+                self.fn[name] = f
         # teacher forcing (the self-check on GPUs other than the RTX 5090; every released engine library has them)
         for name, sig in (("yskn_verify_nll", ([P, P, P, I, I, P, P], I)), ("yskn_verify", ([P, P, I, I, P, P, P], I)),
                           ("yskn_commit", ([P, I], I)), ("yskn_logits_rows", ([P, I, I, P], I))):
@@ -126,6 +133,14 @@ class NativeLib:
             if f is not None:
                 f.argtypes, f.restype = sig
                 self.fn[name] = f
+
+    def build_info(self) -> str:
+        """``cuda=13020;wide=1`` (0.1.7 and newer), "" for older libraries."""
+        f = self.fn.get("yskn_build_info")
+        if f is None:
+            return ""
+        m = f()
+        return m.decode("utf-8", "replace") if m else ""
 
     def last_error(self) -> str:
         m = self.fn["yskn_last_error"]()

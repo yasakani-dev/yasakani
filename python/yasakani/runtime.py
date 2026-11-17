@@ -49,6 +49,7 @@ DEFAULT_ENV: Dict[str, str] = {
     "YSKN_SNAP_MIN": "8192",
 }
 PATH_ENV = ("YSKN_BDR_SHEAD", "YSKN_TB_PROFILE")
+TEST_ENV_PREFIX = "YSKN_TEST_"     # read only by engine libraries built with the test exports; kept from the shell (RuntimeProfile.apply)
 
 # ---- speculation settings: the 46 integers of the generation call, in the order the engine reads them ----------------------------
 SPEC_FIELDS = ("gamma", "use_d0", "use_d1", "d0_nmin", "d0_nmax", "d0_priority_n", "extend", "d1_rejected", "auto_gamma", "use_graph",
@@ -75,7 +76,10 @@ N_STATS = 64
 STAT_INDEX = dict(passes=0, tokens=1, drafted_0=3, accepted_0=4, drafted_1=5, accepted_1=6, drafted_2=23, accepted_2=24,
                   produced=30, eos=31, snap_mode=41, cached_tokens=42, bdr_rounds=37, bdr_d0=38,
                   copy_passes=43, wide_passes=44, copy_tokens=45, index_ms=46, max_rows=47, common_prefix=48, snap_slots=49,
-                  snap_saved=50, snap_ms=51, passes_48=52, passes_64=53, wide_tokens=54, cursor_hits=55, wide_full=56)
+                  snap_saved=50, snap_ms=51, passes_48=52, passes_64=53, wide_tokens=54, cursor_hits=55, wide_full=56, passes_32=57,
+                  # 0.1.7 (0 with older engine libraries): times the copy loop decided that wide passes were slower than 16 rows, its
+                  # final times of copy cycles of 16 / 32 / 48 / 64 rows (ms) and the widths it could use (bit 0 = 32, 1 = 48, 2 = 64)
+                  wide_backoffs=58, t_copy_16=59, t_copy_32=60, t_copy_48=61, t_copy_64=62, wide_mask=63)
 
 
 def spec_array(spec: Dict[str, int]):
@@ -104,9 +108,10 @@ class RuntimeProfile:
 
     def apply(self, environ=None) -> List[str]:
         """Make the process environment exactly this profile: engine settings left over from the shell are removed first (a stale
-        setting would silently change the engine).  Returns the names that were removed."""
+        setting would silently change the engine).  Returns the names that were removed.  ``YSKN_TEST_*`` settings are kept: only an
+        engine library built with the test exports reads them (``YSKN_TEST_CODE_ARCH``, 0.1.7), the released library ignores them."""
         environ = os.environ if environ is None else environ
-        removed = [k for k in list(environ) if k.startswith("YSKN_") and k not in self.env]
+        removed = [k for k in list(environ) if k.startswith("YSKN_") and not k.startswith(TEST_ENV_PREFIX) and k not in self.env]
         for k in removed:
             environ.pop(k)
         environ.update(self.env)

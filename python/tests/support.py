@@ -21,17 +21,20 @@ from yasakani.runtime import ModelPack           # noqa: E402
 _BUILD = {}
 
 
-def stub_path() -> Path:
-    """Compile tests/stub/yskn_stub.c once per run."""
-    if "path" not in _BUILD:
+def stub_path(variant: str = "") -> Path:
+    """Compile tests/stub/yskn_stub.c once per run.  ``variant="wide"``: with the 0.1.7 exports of the wide copy passes (-DSTUB_WIDE),
+    in a library of its own, so that the tests of older behaviour still see a library without them."""
+    key = "path" + variant
+    if key not in _BUILD:
         cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
         if not cc or sys.platform == "win32":
             raise unittest.SkipTest("no C compiler for the stub library")
         d = Path(tempfile.mkdtemp(prefix="yskn_stub_"))
         out = d / "libyskn.so"
-        subprocess.run([cc, "-shared", "-fPIC", "-O1", "-pthread", str(HERE / "stub" / "yskn_stub.c"), "-o", str(out)], check=True)
-        _BUILD["path"] = out
-    return _BUILD["path"]
+        flags = ["-DSTUB_WIDE"] if variant == "wide" else []
+        subprocess.run([cc, "-shared", "-fPIC", "-O1", "-pthread"] + flags + [str(HERE / "stub" / "yskn_stub.c"), "-o", str(out)], check=True)
+        _BUILD[key] = out
+    return _BUILD[key]
 
 
 def tokenizer_dir():
@@ -52,8 +55,8 @@ def make_pack(tmp: Path, name: str = "ok") -> ModelPack:
 class Stub:
     """The stub library plus its test-only exports."""
 
-    def __init__(self):
-        self.lib = NativeLib(str(stub_path()))
+    def __init__(self, variant: str = ""):
+        self.lib = NativeLib(str(stub_path(variant)))
         d = self.lib.dll
         d.stub_push_script.argtypes = [C.c_void_p, C.c_int, C.c_int]
         d.stub_set_delay_us.argtypes = [C.c_int]

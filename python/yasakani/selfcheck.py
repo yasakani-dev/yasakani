@@ -27,7 +27,7 @@ reference files (made before this check existed), the package carries them (``_s
 
 Since 0.1.4 every GPU, the RTX 5090 included, also checks itself, without a reference (``consistency``): it generates the answer of a
 prompt that copies most of its input (greedy; on GPUs of compute capability 12.x such answers are checked in passes of up to 64
-positions), then reads prompt + answer again in passes of 16 positions, and every generated id must be the most likely id at its
+positions; 0.1.7 test build: on RTX 30 / 40 too with ``--wide on`` where the check of yasakani/widecheck.py opened them), then reads prompt + answer again in passes of 16 positions, and every generated id must be the most likely id at its
 position.  Where passes wider than 16 positions can be used, it also reads the text in passes of 64, and every prediction (most likely
 id and NLL, bit for bit) must be the same as with passes of 16.  The engine computes these passes with the same sums in the same
 order, so on a card that computes correctly both comparisons are exact; no tolerance is involved.
@@ -340,6 +340,16 @@ def consistency(eng, fmt) -> Consistency:
     res.compared = len(pred)
     res.mismatches = len(mism) + (len(ids) - len(pred))
     res.first_mismatch = mism[0] if mism else (len(pred) if res.mismatches else None)
+    wr = getattr(eng, "wide_result", None)
+    if wr is not None and getattr(wr, "status", "") == "mismatch":   # 0.1.7: the check at start found wide passes computing differently
+        res.problems.append("the check of the wide copy passes at start found that passes of more than %d positions do not give the same "
+                            "predictions as passes of %d on this GPU (%s); they are not used, but please report it on GitHub Issues"
+                            % (ROWS, ROWS, "kept result of an earlier check" if getattr(wr, "cache_hit", False) else "checked now"))
+        return res
+    st = eng.wide_state() if callable(getattr(eng, "wide_state", None)) else None
+    if st is not None and not (st.allowed and st.mask):         # 0.1.7: no wide copy pass is open on this GPU (--wide, widecheck)
+        res.notes.append("this GPU does not use passes of more than %d positions (no wide copy pass is open)" % ROWS)
+        return res
     try:
         f64 = eng.teacher_forced(seq, rows=WIDE_ROWS)
     except YasakaniError as ex:

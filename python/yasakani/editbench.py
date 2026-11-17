@@ -17,6 +17,8 @@ thinking columns of the README tables were measured otherwise and are not what `
   ignored; otherwise it must be the same text.
 * Wide copy passes (0.1.4: a pass that copies the input checks up to 64 tokens) are used on compute capability 12.x (RTX 50 series)
   only, and were measured on the RTX 5090 only.  The header says whether this GPU uses them; the ``wide`` column counts them.
+  0.1.7 (test build): with an engine library of 0.1.7 the header gives the widths the engine has open on this GPU (``--wide``,
+  yasakani/widecheck.py).
 """
 from __future__ import annotations
 
@@ -102,6 +104,15 @@ def wide_status(engine, gpu) -> Tuple[str, str]:
     rows = int(engine.spec.get("copy_rows", 16))
     if "yskn_prepare_wide" not in engine.lib.fn or rows <= 16:
         return "off", "wide copy passes: off (this engine library or setting copies with passes of up to 16 tokens)"
+    st = engine.wide_state() if callable(getattr(engine, "wide_state", None)) else None
+    if st is not None:                                           # 0.1.7: what the engine has open (yasakani/widecheck.py)
+        from .widecheck import widths_text
+        mask = st.mask if st.allowed else 0
+        if not mask:
+            return "off", ("wide copy passes: off (code %s, compute capability %s); this GPU copies with passes of up to 16 tokens"
+                           % (st.code_text, st.cc_text))
+        return "on", ("wide copy passes: on, %s (code %s, compute capability %s); measured on the RTX 5090 only, checked on this GPU "
+                      "by yasakani/widecheck.py unless --wide force" % (widths_text(mask), st.code_text, st.cc_text))
     cc = getattr(gpu, "compute_cap", None)
     if cc is None:
         return "unknown", ("wide copy passes: not known (nvidia-smi gave no compute capability); they are used on compute capability "
@@ -184,7 +195,10 @@ def run_task(runner, task: EditTask, think: bool, run: int) -> Dict[str, object]
                 seconds=round(secs, 3), tokens_per_s=round((n - 1) / secs, 1) if (n > 1 and secs > 0) else 0.0,
                 tokens_per_pass=round(n / max(1, r.passes), 2), passes=int(r.passes),
                 wide_passes=int(r.stats.get("wide_passes", 0)), finish=r.finish, max_tokens=limit, seed=s.seed if think else None,
-                same=same, diff_lines=diff_lines)
+                same=same, diff_lines=diff_lines, ids_sha256=hashlib.sha256(np.asarray(r.ids, "<i4").tobytes()).hexdigest(),
+                # 0.1.7 (0 with older engine libraries): back-offs of the copy loop and its final times of copy cycles (16..64 rows, ms)
+                wide_backoffs=int(r.stats.get("wide_backoffs", 0)),
+                t_copy=[round(float(r.stats.get("t_copy_%d" % k, 0.0)), 2) for k in (16, 32, 48, 64)])
 
 
 def needed_context(runner, task: EditTask, think: bool) -> int:

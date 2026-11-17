@@ -23,6 +23,8 @@ typedef struct yskn_engine {
     int32_t *snap; int nsnap;
     int opts[64];
     int tf_rows; int32_t tf_am[64]; float tf_mg[64];     /* the last teacher-forced pass */
+    int wallowed, wmask, wpref, warch;                  /* 0.1.7 wide copy passes (the STUB_WIDE build only) */
+    int xwoff;                                          /* set_opt 31 = 0: no exact-sum GEMV for 17..64 rows */
 } yskn_engine;
 
 static __thread char g_err[256];
@@ -32,6 +34,7 @@ static int g_qhead = 0, g_qtail = 0;
 static int g_delay_us = 0;
 static int g_calls = 0;
 static int g_last_n_prompt = 0;
+static int g_prefill_max = 0, g_prefill_calls = 0;     /* yskn_prefill: the longest read, and the reads (0.1.7) */
 static int32_t g_last_cfg[46];
 static int g_last_n_cfg = 0;
 
@@ -65,6 +68,15 @@ EXPORT yskn_engine *yskn_open(const char *path, int max_ctx, int device, int fla
     if (strstr(path, "fail")) { set_err("cudaMalloc failed: out of memory"); return 0; }
     yskn_engine *e = calloc(1, sizeof *e);
     e->max_ctx = max_ctx;
+#ifdef STUB_WIDE
+    {   /* as the engine: YSKN_WIDE not set = by the code architecture (STUB_WIDE_ARCH, default 86), 0 off, 1 on (8.x closed), 2 all */
+        const char *w = getenv("YSKN_WIDE"), *a = getenv("STUB_WIDE_ARCH");
+        e->warch = a && a[0] ? atoi(a) : 86; e->wpref = w && w[0] ? atoi(w) : -1;
+        int native = e->warch >= 120;
+        e->wallowed = e->wpref > 0 || (e->wpref < 0 && native);
+        e->wmask = !e->wallowed ? 0 : ((native || e->wpref != 1) ? 7 : 0);
+    }
+#endif
     return e;
 }
 EXPORT void yskn_close(yskn_engine *e) { if (e) { free(e->hist); free(e->snap); free(e); } }
@@ -72,12 +84,24 @@ EXPORT int yskn_reset(yskn_engine *e) { free(e->hist); e->hist = 0; e->nhist = 0
 EXPORT int yskn_position(yskn_engine *e) { return e->pos; }
 EXPORT const char *yskn_last_error(void) { return g_err; }
 EXPORT int yskn_cancel(yskn_engine *e) { atomic_store(&e->cancel, 1); return 0; }
-EXPORT int yskn_set_opt(yskn_engine *e, int key, int value) { e->opts[key & 63] = value; return 0; }
+EXPORT int yskn_set_opt(yskn_engine *e, int key, int value) {
+#ifdef STUB_WIDE
+    if (key == 38) { if (value < 0 || value > 7) { set_err("set_opt 38: widths of copy passes must be 0..7"); return 1; } e->wmask = e->wallowed ? value : 0; }
+#endif
+    if (key == 31) e->xwoff = value == 0;
+    e->opts[key & 63] = value; return 0;
+}
 EXPORT int yskn_load_bdraft(yskn_engine *e, const char *path) {
     if (strstr(path, "bad")) { set_err("bdraft: bad container"); return 1; }
     e->draft = 1; return 0;
 }
-EXPORT int yskn_prefill(yskn_engine *e, const int32_t *ids, int n, int32_t *first) { (void)ids; e->pos = n; *first = 1000; return 0; }
+EXPORT int yskn_prefill(yskn_engine *e, const int32_t *ids, int n, int32_t *first) {   /* as the engine: from the current position */
+    (void)ids;
+    if (n < 1 || e->pos + n > e->max_ctx) { set_err("prefill: context overflow"); return 1; }
+    e->pos += n; *first = 1000; g_prefill_calls++; if (n > g_prefill_max) g_prefill_max = n; return 0;
+}
+EXPORT int stub_prefill_max(void) { return g_prefill_max; }
+EXPORT int stub_prefill_calls(void) { return g_prefill_calls; }
 EXPORT int yskn_decode(yskn_engine *e, int32_t *out, int steps) { for (int i = 0; i < steps; i++) out[i] = 1000 + i; e->pos += steps; return 0; }
 EXPORT int yskn_logits(yskn_engine *e, float *out) { (void)e; (void)out; return 0; }
 EXPORT int yskn_nll(yskn_engine *e, const int32_t *ids, int n, float *out) { (void)e; (void)ids; for (int i = 0; i + 1 < n; i++) out[i] = 1.0f; return 0; }
@@ -97,7 +121,12 @@ EXPORT int yskn_state_hash(yskn_engine *e, uint64_t *out, int max_out, int *n_ou
 static double env_f(const char *k, double d) { const char *v = getenv(k); return v && v[0] ? atof(v) : d; }
 static int env_i(const char *k, int d) { const char *v = getenv(k); return v && v[0] ? atoi(v) : d; }
 static int tf_pass(yskn_engine *e, const int32_t *ids, const int32_t *targets, int M, int32_t *out_argmax, float *out_nll) {
-    if (M < 1 || M > (env_i("STUB_TF_WIDE", 0) ? 64 : 16)) { set_err("verify: M must be 1..16 (1..64 where wide passes are on)"); return 1; }
+#ifdef STUB_WIDE
+    const int wide_ok = e->wallowed;
+#else
+    const int wide_ok = 0;
+#endif
+    if (M < 1 || M > ((env_i("STUB_TF_WIDE", 0) || wide_ok) ? 64 : 16)) { set_err("verify: M must be 1..16 (1..64 where wide passes are on)"); return 1; }
     if (e->pos + M > e->max_ctx) { set_err("verify: context overflow"); return 1; }
     double shift = env_f("STUB_TF_NLL_SHIFT", 0.0) + (M > 16 ? env_f("STUB_TF_WIDE_NLL_SHIFT", 0.0) : 0.0);
     int flip = env_i("STUB_TF_FLIP_EVERY", 0), nan_at = env_i("STUB_TF_NAN", -1);
@@ -191,6 +220,9 @@ EXPORT int yskn_spec_generate(yskn_engine *e, const int32_t *prompt, int n_promp
     stats[0] = passes + 1; stats[1] = idx; stats[30] = idx - 1; stats[31] = hit; stats[41] = mode; stats[42] = cached;
     stats[44] = env_i("STUB_GEN_WIDE_PASSES", 0); stats[47] = env_i("STUB_GEN_MAX_ROWS", 0);   /* wide passes / widest pass (0.1.4) */
     stats[3] = dr[0]; stats[4] = ac[0]; stats[5] = dr[1]; stats[6] = ac[1]; stats[23] = dr[2]; stats[24] = ac[2];
+#ifdef STUB_WIDE
+    if (n_cfg >= 46) { stats[58] = env_i("STUB_GEN_BACKOFFS", 0); stats[63] = e->wmask; }
+#endif
     times_ms[0] = 0.01 * (n_prompt - cached); times_ms[1] = 0.1 * idx;
 
     /* the engine's state: prompt + all generated ids except the last one */
@@ -204,3 +236,39 @@ EXPORT int yskn_spec_generate(yskn_engine *e, const int32_t *prompt, int n_promp
     }
     return 0;
 }
+
+#ifdef STUB_WIDE
+/* ---- 0.1.7: wide copy passes per GPU (built with -DSTUB_WIDE only, so the tests of older behaviour see a library without them) ----
+   Knobs: STUB_WIDE_ARCH (code architecture, default 86), STUB_WIDE_T16 (ms of a 16-row cycle, default 11), STUB_WIDE_R32 / R48 / R64
+   (time of a W-row cycle / 16 rows, defaults 1.39 / 1.94 / 2.27, the RTX 5090's), STUB_WIDE_SMP (factor on W-row cycles while
+   sampling), STUB_WIDE_FREE (free MiB, default 4000), STUB_WIDE_JITTER (relative noise of the rounds: +x on every other call). */
+static int g_prepare_calls = 0, g_cycle_calls = 0;
+EXPORT int stub_prepare_calls(void) { return g_prepare_calls; }
+EXPORT int stub_wide_mask(yskn_engine *e) { return e->wmask; }
+EXPORT const char *yskn_build_info(void) { return "cuda=0;wide=1;stub=1"; }
+EXPORT int yskn_prepare_wide(yskn_engine *e, int max_rows) { (void)e; (void)max_rows; g_prepare_calls++; return 0; }
+EXPORT int yskn_time_cycle(yskn_engine *e, const int32_t *ids, int M, int iters, float *ms) {
+    (void)ids;
+    if (M < 2 || M > 64 || (M > 16 && !e->wallowed)) { set_err("time_cycle: M must be 2..16 (2..64 where wide passes are allowed)"); return 1; }
+    if (e->pos < 1 || e->pos + M > e->max_ctx) { set_err("time_cycle: read a prompt first"); return 1; }
+    double r = 1.0;
+    if (M > 16) {
+        const char *k = M <= 32 ? "STUB_WIDE_R32" : (M <= 48 ? "STUB_WIDE_R48" : "STUB_WIDE_R64");
+        r = env_f(k, M <= 32 ? 1.39 : (M <= 48 ? 1.94 : 2.27));
+        if (e->opts[10] > 0) r *= env_f("STUB_WIDE_SMP", 1.0);
+        if ((g_cycle_calls++ & 1) && env_f("STUB_WIDE_JITTER", 0.0) > 0) r *= 1.0 + env_f("STUB_WIDE_JITTER", 0.0);
+    }
+    for (int i = 0; i < iters; i++) ms[i] = (float)(env_f("STUB_WIDE_T16", 11.0) * r);
+    return 0;
+}
+EXPORT int yskn_wide_state(yskn_engine *e, int32_t *out, int n, int *n_out) {
+    int32_t v[27] = {0};
+    v[0] = 1; v[1] = e->warch; v[2] = e->warch >= 120 ? 120 : e->warch; v[3] = 82; v[4] = e->wallowed; v[5] = e->wallowed || e->warch >= 120;
+    v[6] = (!e->xwoff && (e->warch >= 120 || e->wmask)) ? 64 : 16; v[7] = e->wallowed ? e->wmask : 0; v[8] = e->wpref; v[9] = e->warch >= 120;
+    for (int i = 0; i < 4; i++) v[10 + i] = e->opts[39 + i];
+    v[14] = env_i("STUB_WIDE_FREE", 4000); v[15] = 24576; v[16] = 0; v[17] = 1; v[18] = 0;
+    v[19] = 0x12345678; v[20] = (int32_t)0x9abcdef0; v[21] = 0x0fedcba9; v[22] = (int32_t)0x87654321;
+    v[24] = e->warch; v[26] = e->draft;
+    int k = n < 27 ? n : 27; for (int i = 0; i < k; i++) out[i] = v[i]; *n_out = k; return 0;
+}
+#endif
