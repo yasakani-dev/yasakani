@@ -6,7 +6,7 @@ This package is the part you talk to: a local **OpenAI-compatible server**, a **
 whether your files and your installation are the reference ones. The engine itself is the DLL; the package loads it, applies the
 default settings the published numbers were measured with, handles the chat template and the tokenizer, and streams the answer.
 
-Status: version `0.1.6`. Text, and optionally still images (new in 0.1.2; on Linux only with llama.cpp built from source, see [Image input](#image-input-optional)). One request is generated at a time. Tool calling is new in 0.1.1. Since 0.1.3 the engine also runs on other RTX 30, 40 and 50 series cards, without tuning or tests (see [GPUs other than the RTX 5090](#gpus-other-than-the-rtx-5090)).
+Status: version `0.1.7.dev1`, test build 1 of 0.1.7 (a pre-release; the latest release is 0.1.6). Text, and optionally still images (new in 0.1.2; on Linux only with llama.cpp built from source, see [Image input](#image-input-optional)). One request is generated at a time. Tool calling is new in 0.1.1. Since 0.1.3 the engine also runs on other RTX 30, 40 and 50 series cards, without tuning or tests (see [GPUs other than the RTX 5090](#gpus-other-than-the-rtx-5090)).
 
 ## What you need
 
@@ -83,8 +83,9 @@ and whether wide copy passes are used, so that a pasted result says what it was 
 fit the context (`--max-ctx`; the long JSONL edit needs 18,640 tokens with thinking off and 39,448 with `--think`) is skipped, and the
 exit code is then 1.
 
-Wide copy passes (since 0.1.4: a pass that copies the input checks up to 64 tokens) are used on compute capability 12.x (RTX 50 series)
-only, and were measured on the RTX 5090 only; on other GPUs the copying uses passes of up to 16 tokens, and the header says so. With an
+Wide copy passes (since 0.1.4: a pass that copies the input checks up to 64 tokens) are used by default on compute capability 12.x (RTX 50
+series) only, and were measured on the RTX 5090 only. On other GPUs the copying uses passes of up to 16 tokens, unless `--wide on` is given
+and the check of this test build passes on that card; the header says which widths are open. With an
 engine library of 0.1.7 the header gives the widths the engine has open ([below](#wide-copy-passes-per-gpu-017-test-build)), and each row
 of `--json` also has the SHA-256 of the generated ids, the back-offs of the copy loop and its final times of copy cycles. The
 thinking-off tables were measured through the server's stream (2 runs per task), so these numbers are close to them, not the same. The
