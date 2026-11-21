@@ -42,9 +42,10 @@ LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
 
 class ServerConfig:
     def __init__(self, host="127.0.0.1", port=8765, api_key=None, model_id="qwen3.8-27b", default_max_tokens=32768,
-                 max_tokens_cap=None, default_thinking_budget=None):
+                 max_tokens_cap=None, default_thinking_budget=None, is_inkling2=False):
         self.host, self.port, self.api_key, self.model_id = host, int(port), api_key, model_id
         self.default_max_tokens, self.max_tokens_cap = int(default_max_tokens), max_tokens_cap
+        self.is_inkling2 = bool(is_inkling2)
         if default_thinking_budget is None:               # no command-line option yet: the starter of the harness sets the variable
             try:
                 default_thinking_budget = int(os.environ.get("YASAKANI_THINKING_BUDGET") or 0)
@@ -119,7 +120,7 @@ def parse_chat_request(body: dict, cfg: ServerConfig, images: bool = False) -> C
     rf = body.get("response_format")
     if isinstance(rf, dict) and rf.get("type") not in (None, "text"):
         raise RequestError("response_format %r is not supported" % rf.get("type"))
-    messages = clean_messages(body.get("messages"), images=images)
+    messages = clean_messages(body.get("messages"), images=images, tool_ids=cfg.is_inkling2)
     mt = body.get("max_completion_tokens", body.get("max_tokens"))
     max_tokens = cfg.default_max_tokens if mt is None else _num({"v": mt}, "v", None, 1, None, int)
     if cfg.max_tokens_cap:
@@ -139,9 +140,19 @@ def parse_chat_request(body: dict, cfg: ServerConfig, images: bool = False) -> C
         kw.setdefault("enable_thinking", body["enable_thinking"])
     eff = body.get("reasoning_effort")
     if eff is not None:
-        if eff not in REASONING_EFFORT_ALIASES:
-            raise RequestError("reasoning_effort must be one of low, medium, high, xhigh")
-        kw.setdefault("reasoning_effort", REASONING_EFFORT_ALIASES[eff])
+        if cfg.is_inkling2:
+            if isinstance(eff, str):
+                if eff.strip() not in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
+                    raise RequestError("reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max or a number in [0.0, 0.99]")
+                kw.setdefault("reasoning_effort", eff.strip())
+            elif isinstance(eff, (int, float)) and not isinstance(eff, bool) and 0.0 <= float(eff) <= 0.99:
+                kw.setdefault("reasoning_effort", float(eff))
+            else:
+                raise RequestError("reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max or a number in [0.0, 0.99]")
+        else:
+            if eff not in REASONING_EFFORT_ALIASES:
+                raise RequestError("reasoning_effort must be one of low, medium, high, xhigh")
+            kw.setdefault("reasoning_effort", REASONING_EFFORT_ALIASES[eff])
     tb = body.get("thinking_budget", kw.pop("thinking_budget", None))
     thinking_budget = cfg.default_thinking_budget if tb is None else _num({"thinking_budget": tb}, "thinking_budget", 0, 0, None, int)
     seed = body.get("seed")

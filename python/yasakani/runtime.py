@@ -98,6 +98,13 @@ class RuntimeProfile:
 
     @classmethod
     def default(cls, pack: "ModelPack", overrides: Optional[Dict[str, str]] = None) -> "RuntimeProfile":
+        if pack.is_inkling2:
+            env: Dict[str, str] = {}
+            for k, v in (overrides or {}).items():
+                if not k.startswith("YSKN_"):
+                    raise ValueError("engine settings start with YSKN_: " + k)
+                env[k] = str(v)
+            return cls(env)
         env = dict(DEFAULT_ENV)
         env["YSKN_BDR_SHEAD"] = str(pack.draft_head)
         env["YSKN_TB_PROFILE"] = str(pack.kv_profile)
@@ -124,20 +131,78 @@ class ModelPack:
     """A model folder: weights, drafter, drafter head, KV profile, tokenizer files (and ``yasakani.json`` listing them)."""
     root: Path
     weights: Path
-    draft: Path
-    draft_head: Path
-    kv_profile: Path
+    draft: Optional[Path] = None
+    draft_head: Optional[Path] = None
+    kv_profile: Optional[Path] = None
     max_ctx: int = 262144
     model_id: str = "qwen3.8-27b"
     sha256: Dict[str, str] = field(default_factory=dict)
+    arch: str = "qwen35"
+    vocab_size: int = VOCAB_SIZE
+    padded_vocab_size: int = VOCAB_SIZE
+    eos_ids: Tuple[int, ...] = EOS_IDS
 
     DEFAULT_FILES = dict(weights="qwen38_27b_e3x.yskn", draft="bdraft2_k8.yskn", draft_head="bdraft2_k8.shead", kv_profile="kvq_u5.bin")
+
+    @property
+    def is_inkling2(self) -> bool:
+        return self.arch == "inkling2_loop"
 
     @classmethod
     def load(cls, root) -> "ModelPack":
         root = Path(root)
         if not root.is_dir():
             raise YasakaniError("model folder not found: %s" % root)
+        cfg_file = root / "config.json"
+        if cfg_file.is_file():
+            try:
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError) as exc:
+                raise YasakaniError("cannot read config.json in %s: %s" % (root, exc)) from exc
+            tcfg = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else cfg
+            mt = cfg.get("model_type")
+            tmt = tcfg.get("model_type") if isinstance(tcfg, dict) else None
+            if mt == "inkling2_loop" or tmt == "inkling2_loop_text":
+                for need in ("tokenizer.json", "tokenizer_config.json"):
+                    if not (root / need).is_file():
+                        raise YasakaniError("model folder %s is missing %s" % (root, need))
+                st_files = sorted(
+                    p for p in root.glob("*.safetensors")
+                    if p.is_file() and p.name != "mtp.safetensors"
+                )
+                if not st_files:
+                    raise YasakaniError("model folder %s has no model .safetensors file" % root)
+                padded_v = int(tcfg.get("vocab_size", 201024))
+                vocab_v = int(tcfg.get("unpadded_vocab_size", padded_v))
+                max_pos = int(tcfg.get("max_position_embeddings", 131072))
+                eos_list: List[int] = []
+                gc_file = root / "generation_config.json"
+                raw_eos = cfg.get("eos_token_id")
+                if gc_file.is_file():
+                    try:
+                        gc = json.loads(gc_file.read_text(encoding="utf-8"))
+                        if "eos_token_id" in gc:
+                            raw_eos = gc["eos_token_id"]
+                    except (OSError, UnicodeDecodeError, ValueError):
+                        pass
+                if isinstance(raw_eos, int) and not isinstance(raw_eos, bool):
+                    eos_list.append(int(raw_eos))
+                elif isinstance(raw_eos, list):
+                    eos_list.extend(int(x) for x in raw_eos if isinstance(x, int) and not isinstance(x, bool))
+                if not eos_list:
+                    eos_list = [200006, 199999]
+                elif 199999 not in eos_list:
+                    eos_list.append(199999)
+                return cls(
+                    root=root,
+                    weights=st_files[0],
+                    max_ctx=min(max_pos, 131072),
+                    model_id=root.name or "inkling2-mini",
+                    arch="inkling2_loop",
+                    vocab_size=vocab_v,
+                    padded_vocab_size=padded_v,
+                    eos_ids=tuple(eos_list),
+                )
         files = dict(cls.DEFAULT_FILES)
         meta = {}
         mf = root / "yasakani.json"

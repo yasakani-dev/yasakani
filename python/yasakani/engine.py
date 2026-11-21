@@ -227,7 +227,7 @@ class Engine:
         self.wide_result = None                   # what the check decided (widecheck.WideResult), after warmup()
         self._wide_backoffs = 0                   # back-offs and wide passes of the copy loop in this process (widecheck.recheck_due)
         self._wide_passes_seen = 0
-        self.utf8_paths = _narrow_paths_as_utf8([pack.weights, pack.draft, pack.draft_head, pack.kv_profile])
+        self.utf8_paths = _narrow_paths_as_utf8([p for p in (pack.weights, pack.draft, pack.draft_head, pack.kv_profile) if p is not None])
         self.removed_env = self.profile.apply()
         if self.utf8_paths:
             _put_narrow_env_utf8({k: v for k, v in self.profile.env.items() if k in ("YSKN_BDR_SHEAD", "YSKN_TB_PROFILE")})
@@ -236,18 +236,20 @@ class Engine:
         self._lock = threading.RLock()
         self._cancelled = False
         self._busy = False
-        self._e = self._f["yskn_open"](str(pack.weights).encode("utf-8"), self.max_ctx, int(device), 0)
+        open_target = pack.root if pack.is_inkling2 else pack.weights
+        self._e = self._f["yskn_open"](str(open_target).encode("utf-8"), self.max_ctx, int(device), 0)
         if not self._e:
             msg = self.lib.last_error()
             hint = ""
             if "memory" in msg.lower():
                 hint = "  (not enough free GPU memory: close other programs that use the GPU, or lower --max-ctx)"
             raise YasakaniError("could not open the model: %s%s" % (msg or "unknown error", hint))
-        try:
-            self._check(self._f["yskn_load_bdraft"](self._e, str(pack.draft).encode("utf-8")))
-        except Exception:
-            self.close()
-            raise
+        if not pack.is_inkling2:
+            try:
+                self._check(self._f["yskn_load_bdraft"](self._e, str(pack.draft).encode("utf-8")))
+            except Exception:
+                self.close()
+                raise
         self.spec: Dict[str, int] = dict(DEFAULT_SPEC)
         self.sampling: Optional[Sampling] = None
         self.ms_slots = 0                                   # slots of the current multi-stream binding (ms_open)
@@ -700,6 +702,13 @@ class Engine:
         plain prompt and one prompt that contains the chat start marker; the state is reset afterwards.  0.1.7: then decide the widths
         of the wide copy passes on this GPU (yasakani/widecheck.py; ``wide_ids`` is the text the check reads, None = use a kept result
         only) and build their graphs.  ``say`` gets the one-line summary."""
+        if self.pack.is_inkling2:
+            self.set_sampling(Sampling(0.0, 1.0, 1, 0.0, 0, 3))
+            if prompts:
+                self.reset()
+                self.generate(prompts[0], 4)
+            self.reset()
+            return
         from . import widecheck
         self.set_sampling(Sampling(1.0, 0.95, 20, 0.0, 999, 3))
         for p in prompts:
@@ -715,6 +724,8 @@ class Engine:
     # ---- wide copy passes (0.1.7) ---------------------------------------------------------------------------------------------
     @property
     def supports_wide_check(self) -> bool:
+        if self.pack.is_inkling2:
+            return False
         return all(k in self._f for k in ("yskn_time_cycle", "yskn_wide_state", "yskn_prefill", "yskn_verify_nll", "yskn_commit"))
 
     def wide_state(self):

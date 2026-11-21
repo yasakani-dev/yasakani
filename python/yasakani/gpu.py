@@ -502,6 +502,8 @@ def plan_context(pack, det: Detected, reserve_mib: int = 0) -> ContextPlan:
     """The context for ``pack`` on the detected GPU.  Unchanged (None) on cards with FULL_CONTEXT_MIN_TOTAL_MIB or more, and when
     nvidia-smi gave no answer.  Raises YasakaniError when not even MIN_CONTEXT tokens fit.  ``reserve_mib`` (prefill_reserve_mib) is
     taken off the free memory before the context is chosen."""
+    if getattr(pack, "is_inkling2", False):
+        return ContextPlan(max_ctx=min(int(pack.max_ctx), 32768))
     plan = ContextPlan()
     g = det.worst()
     _small_card_env(plan, g)
@@ -549,6 +551,8 @@ def plan_given_context(pack, det: Detected, max_ctx: int, reserve_mib: int = 0) 
     context.  Without this the head is always loaded: the package names it in YSKN_BDR_SHEAD, and the engine loads a named head without
     the free-memory check it makes for one it finds by itself.  Unchanged on larger cards and when nvidia-smi gave no answer."""
     plan = ContextPlan(max_ctx=int(max_ctx))
+    if getattr(pack, "is_inkling2", False):
+        return plan
     g = det.worst()
     _small_card_env(plan, g)
     if g is None or g.total_mib is None or g.free_mib is None or g.total_mib >= FULL_CONTEXT_MIN_TOTAL_MIB:

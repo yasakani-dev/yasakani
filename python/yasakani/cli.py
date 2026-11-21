@@ -212,6 +212,9 @@ def _open_stack(args, *, warm: bool = True, parallel: int = 1):
     device = _visible_gpu(det, args.device)
     n, lib, plan = int(parallel or 1), None, None
     reserve = gpus.prefill_reserve_mib(prefill, det)     # --prefill new on a card under 30,000 MiB: room for its extra memory
+    if pack.is_inkling2 and n >= 2:
+        _say("note: --parallel %d is not supported for Inkling-2 yet: serving one request at a time" % n)
+        n = 1
     if n >= 2:                                   # several requests at once, if the engine library has the entries
         lib = NativeLib(args.dll)
         if not lib.supports_parallel:
@@ -238,9 +241,9 @@ def _open_stack(args, *, warm: bool = True, parallel: int = 1):
     if plan.edit_copy == "on":
         _say("edit copy: on")
     max_ctx = plan.max_ctx
-    profile = RuntimeProfile.default(pack, plan.env) if plan.env else None
+    profile = RuntimeProfile.default(pack, plan.env) if (plan.env or pack.is_inkling2) else None
     replaced = [k for k in plan.env if k in os.environ]     # set in the shell, but the plan's value is used: named with the removed ones
-    wide = widecheck.mode_of(getattr(args, "wide", None))         # 0.1.7: a wrong YASAKANI_WIDE fails here, before the long load
+    wide = "off" if pack.is_inkling2 else widecheck.mode_of(getattr(args, "wide", None))         # 0.1.7: a wrong YASAKANI_WIDE fails here, before the long load
     _say("loading the model (%s of weights) ..." % _human(pack.weights.stat().st_size))
     t0 = time.time()
     eng = Engine(pack, max_ctx=max_ctx, device=device, dll=args.dll, profile=profile, wide=wide, **({"lib": lib} if lib is not None else {}))
@@ -255,7 +258,7 @@ def _open_stack(args, *, warm: bool = True, parallel: int = 1):
         runner = ChatRunner(eng, fmt, seed0=args.seed0, vision=vision)
         if warm:
             runner.warmup(say=_say)
-        else:                                                    # --no-warmup: a kept result of the wide check, nothing measured
+        elif not pack.is_inkling2:                                 # --no-warmup: a kept result of the wide check, nothing measured
             res = widecheck.setup(eng, None, check=False)
             eng.wide_result = res
             if res is not None and res.line:
@@ -487,7 +490,8 @@ def cmd_info(args) -> int:
             pack = ModelPack.load(d)
             print("model    %s  (id %s, context up to %d tokens)" % (pack.root.name, pack.model_id, pack.max_ctx))
             for label, p in (("weights", pack.weights), ("draft", pack.draft), ("draft head", pack.draft_head), ("kv profile", pack.kv_profile)):
-                print("  %-10s %-26s %s" % (label, p.name, _human(p.stat().st_size)))
+                if p is not None:
+                    print("  %-10s %-26s %s" % (label, p.name, _human(p.stat().st_size)))
             print("  checksums  %s" % ("%d files listed in yasakani.json" % len(pack.sha256) if pack.sha256 else "none listed (yasakani.json missing)"))
             from .textio import ChatFormatter
             ChatFormatter(pack.root)
@@ -597,6 +601,7 @@ def cmd_serve(args) -> int:
         else:
             pack, eng, fmt, runner = _open_stack(args, warm=not args.no_warmup)
         cfg.model_id = pack.model_id
+        cfg.is_inkling2 = pack.is_inkling2
         state.runner = runner
         _say("ready: OpenAI-compatible API at %s/v1   (model id %r%s%s)" % (base, cfg.model_id, ", API key required" if cfg.api_key else "",
                                                                          ", image input on" if runner.vision is not None else ""))

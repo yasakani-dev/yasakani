@@ -15,7 +15,7 @@ from . import loopguard
 from ._native import YasakaniError
 from .engine import CONTEXT_MARGIN, Engine, GenResult, Sampling
 from .runtime import EOS_IDS
-from .textio import ChatFormatter, OutputStream, ToolCallFilter
+from .textio import ChatFormatter, Inkling2OutputStream, OutputStream, ToolCallFilter
 
 # defaults of the model (generation_config.json of Qwen3.8)
 DEFAULT_TEMPERATURE, DEFAULT_TOP_P, DEFAULT_TOP_K = 1.0, 0.95, 20
@@ -130,7 +130,7 @@ def _clean_content(c, i: int, images: bool = False):
     return c
 
 
-def _clean_tool_calls(calls, i: int) -> List[dict]:
+def _clean_tool_calls(calls, i: int, *, tool_ids: bool = False) -> List[dict]:
     """The tool calls of an assistant message, in the form the chat template reads: the arguments as an object."""
     if not isinstance(calls, list):
         raise RequestError("messages[%d]: tool_calls must be a list" % i)
@@ -149,11 +149,14 @@ def _clean_tool_calls(calls, i: int) -> List[dict]:
             args = {}
         if not isinstance(args, dict):
             raise RequestError("messages[%d].tool_calls[%d]: arguments must be a JSON object" % (i, k))
-        out.append({"type": "function", "function": {"name": f["name"], "arguments": args}})
+        item = {"type": "function", "function": {"name": f["name"], "arguments": args}}
+        if tool_ids and isinstance(c.get("id"), str) and c["id"]:
+            item["id"] = c["id"]
+        out.append(item)
     return out
 
 
-def clean_messages(messages, *, images: bool = False) -> List[dict]:
+def clean_messages(messages, *, images: bool = False, tool_ids: bool = False) -> List[dict]:
     """Validate OpenAI-style messages and return plain dicts.  ``developer`` is read as
     ``system``; an assistant message may carry ``tool_calls`` and a ``tool`` message carries the result of one call.
     ``image_url`` parts are kept only with ``images`` (image input configured); otherwise they are refused as in 0.1.1."""
@@ -170,10 +173,17 @@ def clean_messages(messages, *, images: bool = False) -> List[dict]:
         if role != "user" and isinstance(msg["content"], list) and any(p["type"] == "image_url" for p in msg["content"]):
             raise RequestError("messages[%d]: images are supported only in user messages" % i)
         if role == "assistant":
+            if tool_ids and isinstance(m.get("name"), str) and m["name"]:
+                msg["name"] = m["name"]
             if isinstance(m.get("reasoning_content"), str):
                 msg["reasoning_content"] = m["reasoning_content"]
             if m.get("tool_calls"):
-                msg["tool_calls"] = _clean_tool_calls(m["tool_calls"], i)
+                msg["tool_calls"] = _clean_tool_calls(m["tool_calls"], i, tool_ids=tool_ids)
+        elif role == "tool":
+            if tool_ids and isinstance(m.get("tool_call_id"), str) and m["tool_call_id"]:
+                msg["tool_call_id"] = m["tool_call_id"]
+            if tool_ids and isinstance(m.get("name"), str) and m["name"]:
+                msg["name"] = m["name"]
         out.append(msg)
     return out
 
@@ -224,9 +234,12 @@ class ChatRunner:
         self.vision = vision
         self._seed = int(seed0)
         self._seed_lock = threading.Lock()
-        self.bridge = fmt.encode(loopguard.BRIDGE)
-        if fmt.think_end not in self.bridge.tolist():
-            raise YasakaniError("tokenizer: </think> is not a single id in the loop-guard bridge")
+        if getattr(fmt, "is_inkling2", False):
+            self.bridge = np.zeros(0, np.int32)
+        else:
+            self.bridge = fmt.encode(loopguard.BRIDGE)
+            if fmt.think_end not in self.bridge.tolist():
+                raise YasakaniError("tokenizer: </think> is not a single id in the loop-guard bridge")
 
     def next_seed(self) -> int:
         with self._seed_lock:
@@ -315,11 +328,13 @@ class ChatRunner:
         max_new = max(1, int(p.max_tokens))
         seed = p.seed if p.seed is not None else self.next_seed()
         eng.set_sampling(Sampling(p.temperature, p.top_p, p.top_k, p.min_p, seed))
-        stops = None if p.ignore_eos else EOS_IDS
+        is_ink2 = bool(getattr(self.fmt, "is_inkling2", False))
+        eos_ids = getattr(getattr(eng, "pack", None), "eos_ids", EOS_IDS)
+        stops = None if p.ignore_eos else eos_ids
         usage = Usage(prompt_tokens=len(prompt))
         stopf = StopFilter(p.stop)
-        toolf = ToolCallFilter(p.tools) if p.tools else None
-        guard_on = p.loop_guard and not p.ignore_eos
+        toolf = ToolCallFilter(p.tools) if (p.tools and not is_ink2) else None
+        guard_on = p.loop_guard and not p.ignore_eos and not is_ink2
 
         def answer(text):
             if toolf is None:
@@ -330,7 +345,10 @@ class ChatRunner:
 
         def deliver(events):
             for kind, text in events:
-                if kind == "content":
+                if kind == "tool_call":
+                    emit("tool_call", text)
+                    usage.tool_calls += 1
+                elif kind == "content":
                     text = stopf.push(text)
                     if text:
                         answer(text)
@@ -340,10 +358,15 @@ class ChatRunner:
                 eng.cancel()
 
         # ---- stage 1: the request as asked ----------------------------------------------------------------------------
-        stream = OutputStream(self.fmt, in_reasoning)
-        budget = max(0, int(p.thinking_budget)) if (in_reasoning and not p.ignore_eos) else 0
-        watch = (loopguard.LoopWatch(self.fmt.think_end, self.fmt.digit_ids, in_reasoning, budget=budget, loops=guard_on)
-                 if (guard_on or budget) else None)
+        if is_ink2:
+            stream = Inkling2OutputStream(self.fmt, hidden_ids=eos_ids)
+            budget = 0
+            watch = None
+        else:
+            stream = OutputStream(self.fmt, in_reasoning)
+            budget = max(0, int(p.thinking_budget)) if (in_reasoning and not p.ignore_eos) else 0
+            watch = (loopguard.LoopWatch(self.fmt.think_end, self.fmt.digit_ids, in_reasoning, budget=budget, loops=guard_on)
+                     if (guard_on or budget) else None)
         state: Dict[str, object] = {"hit": None}
 
         def look(ids):
@@ -388,8 +411,11 @@ class ChatRunner:
             out_ids = out_ids[:hit.at]
         deliver(stream.feed(out_ids, final=True))      # feed the complete array once more, then flush
         n_out = len(out_ids)
-        reasoning_end = stream.think_end_at
-        usage.reasoning_tokens = (reasoning_end if reasoning_end is not None else (n_out if stream.in_reasoning else 0))
+        if is_ink2:
+            usage.reasoning_tokens = stream.reasoning_tokens
+        else:
+            reasoning_end = stream.think_end_at
+            usage.reasoning_tokens = (reasoning_end if reasoning_end is not None else (n_out if stream.in_reasoning else 0))
         if hit is not None:
             info = dict(where=hit.where, kind=hit.kind, period=hit.period, run=hit.run, at=hit.at, tokens_before=n_out)
             usage.loop_guard = info

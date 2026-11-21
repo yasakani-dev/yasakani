@@ -44,6 +44,18 @@ class ChatFormatter:
             template = {t.get("name"): t.get("template") for t in template}.get("default")
         if not isinstance(template, str) or not template.strip():
             raise YasakaniError("no chat template found in " + str(d))
+        self.arch = "qwen35"
+        self.is_inkling2 = False
+        cfg_file = d / "config.json"
+        if cfg_file.is_file():
+            mcfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+            tcfg = mcfg.get("text_config") if isinstance(mcfg.get("text_config"), dict) else mcfg
+            if mcfg.get("model_type") == "inkling2_loop" or (isinstance(tcfg, dict) and tcfg.get("model_type") == "inkling2_loop_text"):
+                self.arch = "inkling2_loop"
+                self.is_inkling2 = True
+        if self.is_inkling2:
+            template = template.replace("{%- generation -%}", "").replace("{%- endgeneration -%}", "")
+            template = template.replace("{% generation %}", "").replace("{% endgeneration %}", "")
         env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=[loopcontrols])
         env.filters["tojson"] = _tojson
         env.globals["raise_exception"] = _raise_exception
@@ -51,12 +63,26 @@ class ChatFormatter:
         self.template = env.from_string(template)
         self.bos_token = cfg.get("bos_token")
         self.eos_token = cfg.get("eos_token")
-        self.im_start = self.token_id("<|im_start|>")
-        self.im_end = self.token_id("<|im_end|>")
-        self.think_start = self.token_id("<think>")
-        self.think_end = self.token_id("</think>")
-        if self.im_start != IM_START or self.im_end != EOS_IDS[0]:
-            raise YasakaniError("this tokenizer does not match the engine (<|im_start|>=%s, <|im_end|>=%s)" % (self.im_start, self.im_end))
+        if self.is_inkling2:
+            self.im_start = self.token_id("<|message_user|>")
+            self.im_end = self.token_id("<|end_message|>")
+            self.think_start = self.token_id("<|content_thinking|>")
+            self.think_end = self.token_id("<|end_message|>")
+            self.msg_model = self.token_id("<|message_model|>")
+            self.content_text = self.token_id("<|content_text|>")
+            self.tool_call_open = self.token_id("<|content_invoke_tool_json|>")
+            self.model_end_sampling = self.token_id("<|content_model_end_sampling|>")
+        else:
+            self.im_start = self.token_id("<|im_start|>")
+            self.im_end = self.token_id("<|im_end|>")
+            self.think_start = self.token_id("<think>")
+            self.think_end = self.token_id("</think>")
+            self.msg_model = -1
+            self.content_text = -1
+            self.tool_call_open = -1
+            self.model_end_sampling = -1
+            if self.im_start != IM_START or self.im_end != EOS_IDS[0]:
+                raise YasakaniError("this tokenizer does not match the engine (<|im_start|>=%s, <|im_end|>=%s)" % (self.im_start, self.im_end))
         self.digit_ids = np.array([self.token_id(str(i)) for i in range(10)], np.int32)
 
     def token_id(self, token: str) -> int:
@@ -77,6 +103,13 @@ class ChatFormatter:
 
     def prompt(self, messages: Sequence[dict], **template_kwargs) -> Tuple[np.ndarray, bool]:
         """(prompt ids, starts inside the thinking block).  The model's template ends an open thinking block with ``<think>``."""
+        if self.is_inkling2:
+            kw = dict(template_kwargs)
+            en_think = kw.pop("enable_thinking", None)
+            if en_think is False and "reasoning_effort" not in kw:
+                kw["reasoning_effort"] = "none"
+            text = self.render(messages, add_generation_prompt=False, **kw)
+            return self.encode(text), False
         text = self.render(messages, add_generation_prompt=True, **template_kwargs)
         return self.encode(text), text.rstrip().endswith("<think>")
 
@@ -177,6 +210,157 @@ class OutputStream:
             tail = self._answer_text(self.answer.flush())
             if tail:
                 events.append(("content", tail))
+        return events
+
+
+class Inkling2OutputStream:
+    """Incremental parser for Inkling-2 structured message blocks (thinking, text, and JSON tool invocations)."""
+
+    def __init__(self, fmt: ChatFormatter, hidden_ids: Sequence[int] = (200006, 199999)):
+        self.fmt = fmt
+        self.hidden = frozenset(int(i) for i in hidden_ids)
+        self.reason = StreamDecoder(fmt.tok)
+        self.answer = StreamDecoder(fmt.tok)
+        self.tool = StreamDecoder(fmt.tok)
+        self.tool_parts: List[str] = []
+        self.hdr_ids: List[int] = []
+        self.state = "header"
+        self.seen = 0
+        self.reasoning_tokens = 0
+        self.in_reasoning = False
+        self.think_end_at: Optional[int] = None
+
+    def _emit_tool(self, events: List[Tuple[str, object]]) -> None:
+        tail = self.tool.flush()
+        if tail:
+            self.tool_parts.append(tail)
+        raw = "".join(self.tool_parts).strip()
+        self.tool_parts.clear()
+        if not raw:
+            return
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            events.append(("content", raw))
+            return
+        if not isinstance(obj, dict) or not isinstance(obj.get("name"), str) or not obj["name"]:
+            events.append(("content", raw))
+            return
+        args = obj.get("args", obj.get("arguments", {}))
+        if isinstance(args, str):
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except ValueError:
+                args = {"raw": args}
+        if not isinstance(args, dict):
+            args = {}
+        events.append(("tool_call", {"name": obj["name"], "arguments": args}))
+
+    def feed(self, ids: np.ndarray, final: bool = False) -> List[Tuple[str, object]]:
+        events: List[Tuple[str, object]] = []
+        new = [int(x) for x in ids[self.seen:]]
+        self.seen = len(ids)
+
+        def push_token(tok_id: int) -> None:
+            if self.state == "thinking":
+                self.reasoning_tokens += 1
+                piece = self.reason.push((tok_id,))
+                if piece:
+                    events.append(("reasoning", piece))
+            elif self.state == "text" or self.state == "idle":
+                piece = self.answer.push((tok_id,))
+                if piece:
+                    events.append(("content", piece))
+            elif self.state == "tool":
+                piece = self.tool.push((tok_id,))
+                if piece:
+                    self.tool_parts.append(piece)
+            elif self.state == "header":
+                self.hdr_ids.append(tok_id)
+
+        for t in new:
+            if t in self.hidden:
+                if self.state == "tool":
+                    self._emit_tool(events)
+                    self.state = "idle"
+                continue
+            if t == self.fmt.msg_model:
+                if self.state == "tool":
+                    self._emit_tool(events)
+                elif self.state == "thinking":
+                    tail = self.reason.flush()
+                    if tail:
+                        events.append(("reasoning", tail))
+                elif self.state in ("text", "idle"):
+                    tail = self.answer.flush()
+                    if tail:
+                        events.append(("content", tail))
+                elif self.state == "header" and self.hdr_ids:
+                    txt = self.fmt.decode(self.hdr_ids)
+                    if txt:
+                        events.append(("content", txt))
+                self.hdr_ids.clear()
+                self.state = "header"
+                self.in_reasoning = False
+                continue
+            if t == self.fmt.think_start:
+                self.hdr_ids.clear()
+                self.reason = StreamDecoder(self.fmt.tok)
+                self.state = "thinking"
+                self.in_reasoning = True
+                continue
+            if t == self.fmt.content_text:
+                self.hdr_ids.clear()
+                self.answer = StreamDecoder(self.fmt.tok)
+                self.state = "text"
+                self.in_reasoning = False
+                continue
+            if t == self.fmt.tool_call_open:
+                self.hdr_ids.clear()
+                self.tool = StreamDecoder(self.fmt.tok)
+                self.tool_parts.clear()
+                self.state = "tool"
+                self.in_reasoning = False
+                continue
+            if t == self.fmt.im_end:
+                if self.state == "thinking":
+                    tail = self.reason.flush()
+                    if tail:
+                        events.append(("reasoning", tail))
+                    self.think_end_at = self.seen
+                elif self.state == "text" or self.state == "idle":
+                    tail = self.answer.flush()
+                    if tail:
+                        events.append(("content", tail))
+                elif self.state == "tool":
+                    self._emit_tool(events)
+                elif self.state == "header" and self.hdr_ids:
+                    txt = self.fmt.decode(self.hdr_ids)
+                    if txt:
+                        events.append(("content", txt))
+                self.hdr_ids.clear()
+                self.state = "idle"
+                self.in_reasoning = False
+                continue
+            push_token(t)
+
+        if final:
+            if self.state == "thinking":
+                tail = self.reason.flush()
+                if tail:
+                    events.append(("reasoning", tail))
+            elif self.state in ("text", "idle"):
+                tail = self.answer.flush()
+                if tail:
+                    events.append(("content", tail))
+            elif self.state == "tool":
+                self._emit_tool(events)
+            elif self.state == "header" and self.hdr_ids:
+                txt = self.fmt.decode(self.hdr_ids)
+                if txt:
+                    events.append(("content", txt))
+            self.hdr_ids.clear()
+            self.state = "idle"
         return events
 
 
