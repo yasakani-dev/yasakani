@@ -23,7 +23,7 @@ from . import __version__, BUILD_NOTE
 from . import gpu as gpus
 from . import widecheck
 from ._native import NativeLib, YasakaniError, find_library, library_loaded, pci_bus_order
-from .runtime import ModelPack, RuntimeProfile
+from .runtime import ModelPack, RuntimeProfile, suppress_fingerprint
 from .selfcheck import FORMAT as SELFCHECK_FORMAT
 from .selfcheck import cases as _selfcheck_cases, ids_sha as _ids_sha, run as _selfcheck_run    # noqa: F401  (names of 0.1.3: bench scripts use them)
 
@@ -136,6 +136,25 @@ def _add_engine_args(sp: argparse.ArgumentParser) -> None:
     _add_wide_args(sp)
 
 
+def _add_suppress_args(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument("--suppress-tokens", action="append", type=Path, default=None, metavar="PATH",
+                    help="JSON file of output tokens to suppress for the whole process, not per request (repeatable; or "
+                         "$YASAKANI_SUPPRESS_TOKENS).  Accepts an ID array, 'target_token_ids'/'suppress_tokens'/'token_ids', "
+                         "or exact vocab 'tokens'")
+    sp.add_argument("--allow-suppress-special", action="store_true",
+                    help="allow --suppress-tokens to include special, control (<think>, <tool_call>, <tool_response>) or EOS tokens")
+
+
+def _suppress_paths(args) -> List[Path]:
+    given = getattr(args, "suppress_tokens", None)
+    if given:
+        return [Path(p) for p in given]
+    env_val = (os.environ.get("YASAKANI_SUPPRESS_TOKENS") or "").strip()
+    if not env_val:
+        return []
+    return [Path(part) for part in env_val.split(os.pathsep) if part.strip()]
+
+
 def _add_wide_args(sp: argparse.ArgumentParser) -> None:
     g = sp.add_argument_group("wide copy passes")
     g.add_argument("--wide", choices=widecheck.MODES, default=None,
@@ -189,7 +208,7 @@ def _vision(args):
     return vision
 
 
-def _open_stack(args, *, warm: bool = True, parallel: int = 1):
+def _open_stack(args, *, warm: bool = True, parallel: int = 1, allow_suppress: bool = True):
     """Model folder -> (pack, engine, formatter, runner).  The tokenizer is loaded first so a broken folder fails before the long load.
     ``parallel`` N >= 2 (serve --parallel N): the context is chosen for N requests at once (``gpu.plan_parallel``); afterwards
     ``args.parallel_planned`` is the N the engine was opened for (1 when the engine library has no multi-stream entries or the free GPU
@@ -199,16 +218,31 @@ def _open_stack(args, *, warm: bool = True, parallel: int = 1):
     from .textio import ChatFormatter
     prefill = gpus.prefill_mode_of(getattr(args, "prefill", None))       # a wrong YASAKANI_PREFILL or YASAKANI_EDIT_COPY fails first
     edit_copy = gpus.edit_copy_of(getattr(args, "edit_copy", None))
+    cmd = getattr(args, "cmd", None)
+    use_suppress = allow_suppress and cmd not in ("selfcheck", "bench")
+    if not use_suppress:
+        if getattr(args, "suppress_tokens", None):
+            raise YasakaniError("%s does not support --suppress-tokens" % (cmd or "this command"))
+        if (os.environ.get("YASAKANI_SUPPRESS_TOKENS") or "").strip():
+            _say("note: ignoring YASAKANI_SUPPRESS_TOKENS for %s (unmasked output is required)" % (cmd or "this command"))
+        suppress_paths: List[Path] = []
+    else:
+        suppress_paths = _suppress_paths(args)
     pack = ModelPack.load(_model_dir(args))
     fmt = ChatFormatter(pack.root)
     vision = _vision(args)                       # wrong image input options fail here, before the long load
+    suppress_ids = pack.load_suppress_tokens(
+        suppress_paths,
+        allow_special=bool(getattr(args, "allow_suppress_special", False)),
+    ) if suppress_paths else ()
+    args.suppress_hash = suppress_fingerprint(suppress_ids)
     det = gpus.detect(args.device)               # nvidia-smi only; CUDA is not started here
     args.gpu_detected = det
     note = gpus.untested_note(det)
     if note:
         _say(note)
-    # several GPUs: the engine sees only the chosen one, as its device 0.  Before any engine library is loaded (--parallel loads it
-    # below to look for the multi-stream entries): CUDA reads CUDA_VISIBLE_DEVICES only once.
+    # several GPUs: the engine sees only the chosen one, as its device 0.  Before any engine library is loaded (--parallel /
+    # --suppress-tokens load it below to check optional entries): CUDA reads CUDA_VISIBLE_DEVICES only once.
     device = _visible_gpu(det, args.device)
     n, lib, plan = int(parallel or 1), None, None
     reserve = gpus.prefill_reserve_mib(prefill, det)     # --prefill new on a card under 30,000 MiB: room for its extra memory
@@ -218,6 +252,11 @@ def _open_stack(args, *, warm: bool = True, parallel: int = 1):
             _say("note: this engine library has no multi-stream entries (yskn_ms_*), so --parallel %d is off: serving one request at "
                  "a time" % n)
             n = 1
+    if suppress_ids:                             # fail on an older engine library before the long model load
+        if lib is None:
+            lib = NativeLib(args.dll)
+        if not lib.supports_suppress:
+            raise YasakaniError("this engine library does not support output token suppression (yskn_set_suppress)")
     if n >= 2:
         plan = (gpus.plan_parallel(pack, det, n, reserve) if args.max_ctx is None
                 else gpus.plan_given_parallel(pack, det, args.max_ctx, n, reserve))
@@ -245,6 +284,9 @@ def _open_stack(args, *, warm: bool = True, parallel: int = 1):
     t0 = time.time()
     eng = Engine(pack, max_ctx=max_ctx, device=device, dll=args.dll, profile=profile, wide=wide, **({"lib": lib} if lib is not None else {}))
     try:
+        if suppress_ids:
+            eng.set_suppress(suppress_ids)
+            _say("suppressing %d output token(s) for this process from %s" % (len(suppress_ids), ", ".join(p.name for p in suppress_paths)))
         ignored = sorted(set(eng.removed_env) | set(replaced))
         if ignored:
             _say("note: ignored %d YSKN_* setting(s) from the environment: %s" % (len(ignored), ", ".join(ignored)))
@@ -351,8 +393,10 @@ def _check_key(args, pack, eng, sched) -> Optional[str]:
         lib = hashlib.sha256(Path(eng.lib.path).read_bytes()).hexdigest()
     except (OSError, AttributeError):
         return None
-    parts = dict(library=lib, gpu=g.name, uuid=g.uuid, compute_capability=g.cc_text, driver=g.driver, model=pack.model_id,
+    parts: dict[str, object] = dict(library=lib, gpu=g.name, uuid=g.uuid, compute_capability=g.cc_text, driver=g.driver, model=pack.model_id,
                  weights=pack.weights.stat().st_size, version=__version__, slots=sched.n_slots, rows=sched.rows, drafter=sched.drafter)
+    if getattr(args, "suppress_hash", None):
+        parts["suppress"] = args.suppress_hash
     return hashlib.sha256(json.dumps(parts, sort_keys=True).encode("utf-8")).hexdigest()[:32]
 
 
@@ -773,7 +817,7 @@ def _bench_concurrent(args, n: int) -> int:
     """bench --concurrency N: the prompts x --runs as requests, N at a time on the scheduler of serve --parallel N."""
     from .sched import ScheduledEngine
     prompts = _load_prompts(args.prompts_file)
-    pack, eng, fmt, runner = _open_stack(args, warm=True, parallel=n)
+    pack, eng, fmt, runner = _open_stack(args, warm=True, parallel=n, allow_suppress=False)
     sched = None
     jobs = [(name, text, run) for name, text in prompts for run in range(args.runs)]
     rows: List[Optional[dict]] = [None] * len(jobs)
@@ -848,7 +892,7 @@ def cmd_bench(args) -> int:
         args.n = n_tokens
         return _bench_concurrent(args, n)
     prompts = _load_prompts(args.prompts_file)
-    pack, eng, fmt, runner = _open_stack(args, warm=True)
+    pack, eng, fmt, runner = _open_stack(args, warm=True, allow_suppress=False)
     rows = []
     try:
         _say("GPU: " + "; ".join(_gpu_lines()))
@@ -884,7 +928,7 @@ def _bench_edit(args) -> int:
     if args.prompts_file or args.n is not None:
         raise YasakaniError("--prompts-file and --n do not apply to --edit: each edit task has its own prompt and output limit")
     tasks = editbench.load_tasks()                     # before the long load
-    pack, eng, fmt, runner = _open_stack(args, warm=True)
+    pack, eng, fmt, runner = _open_stack(args, warm=True, allow_suppress=False)
     try:
         det = getattr(args, "gpu_detected", None)
         head = editbench.header(__version__, pack, eng, det.gpu if det is not None else None, _gpu_lines(), args.think, args.runs,
@@ -985,9 +1029,9 @@ def _selfcheck_parallel(args, pack, eng, fmt, rc: int) -> int:
 def cmd_selfcheck(args) -> int:
     n = _parallel_count(getattr(args, "parallel", None))
     if n >= 2:
-        pack, eng, fmt, runner = _open_stack(args, warm=True, parallel=n)
+        pack, eng, fmt, runner = _open_stack(args, warm=True, parallel=n, allow_suppress=False)
     else:
-        pack, eng, fmt, runner = _open_stack(args, warm=True)
+        pack, eng, fmt, runner = _open_stack(args, warm=True, allow_suppress=False)
     try:
         rc = _selfcheck_one(args, pack, eng, fmt)
         if n >= 2 and not args.write and rc in (0, 3):
@@ -1074,6 +1118,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("serve", help="start the OpenAI-compatible server")
     _add_engine_args(sp)
+    _add_suppress_args(sp)
     sp.add_argument("--host", default="127.0.0.1", help="address to listen on (default 127.0.0.1: this computer only)")
     sp.add_argument("--port", type=int, default=DEFAULT_PORT)
     sp.add_argument("--api-key", default=os.environ.get("YASAKANI_API_KEY"), help="require this key (or set YASAKANI_API_KEY); needed for any non-local --host")
@@ -1104,6 +1149,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("chat", help="talk to the model in the terminal")
     _add_engine_args(sp)
+    _add_suppress_args(sp)
     sp.add_argument("--system", help="system prompt")
     sp.add_argument("--max-tokens", type=int, default=32768)
     sp.add_argument("--temperature", type=float, default=1.0)

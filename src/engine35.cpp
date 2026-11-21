@@ -869,6 +869,34 @@ void Engine35::set_visual(const uint16_t* features, const int32_t* slots, int n_
   const auto err = cudaGetLastError();
   if (err != cudaSuccess) throw std::runtime_error(std::string("visual: ") + cudaGetErrorString(err));
 }
+void Engine35::set_suppress(const int32_t* ids, int n) {
+  if (n < 0) throw std::runtime_error("set_suppress: n must be >= 0");
+  if (n > 0 && !ids) throw std::runtime_error("set_suppress: missing token IDs");
+  rp_launch(); cudaStreamSynchronize(st2_); replay_fence(); cudaStreamSynchronize(st_);
+  const bool was_on = suppress_on_;
+  if (n == 0) {
+    suppress_on_ = false;
+    if (was_on) drop_pass_graphs();
+    return;
+  }
+  std::vector<uint8_t> mask((size_t)V_, 0);
+  int unique = 0;
+  for (int i = 0; i < n; ++i) {
+    const int id = ids[i];
+    if (id < 0 || id >= V_) throw std::runtime_error("set_suppress: token ID out of range");
+    if (!mask[(size_t)id]) { mask[(size_t)id] = 1; ++unique; }
+  }
+  if (V_ - unique < Q35_SMP_K)
+    throw std::runtime_error("set_suppress: at least " + std::to_string(Q35_SMP_K) + " unmasked token IDs must remain");
+  if (!suppressed_) {
+    DevMemScope dm_scope(this);
+    suppressed_ = dz35<uint8_t>((size_t)V_);
+  }
+  const cudaError_t err = cudaMemcpy(suppressed_, mask.data(), (size_t)V_, cudaMemcpyHostToDevice);
+  if (err != cudaSuccess) throw std::runtime_error(std::string("set_suppress: upload failed: ") + cudaGetErrorString(err));
+  suppress_on_ = true;
+  if (!was_on) drop_pass_graphs();
+}
 void Engine35::gemv_res(DevTensor& src, int M, const uint16_t* w, const int8_t* sg_in, uint16_t* xn_out) {
   const bool G = !(kskip_ & 16), S = !(kskip_ & 32);
   if (opt_fin_ && !tq_qx_ && M == 1 && xsmc_ && nmode(M) == 0 && !in2_ && G && S && !ks(64) && src.dev.N == H_) {
@@ -1068,6 +1096,7 @@ void Engine35::head_slice(int row0, int rows, bool advance, bool topk, bool nll)
   if (xsmc_) { P.xsum = 1; P.us_out = us_; }
   launch_lnord(P, st_);
   ArgmaxArgs AA{head_.part, head_.tau, V_, logits_, d_next8_ + row0, blk_val_, blk_idx_, head_.dev.n_workers, rows, 0, rows}; AA.cnt = am_cnt_;
+  AA.suppressed = suppress_on_ ? suppressed_ : nullptr;
   if (xsmc_) { AA.us = us_; AA.rr = S_ + (size_t)row0 * Q35_SST; AA.xsm_eps = eps_; AA.xsm_nb = H_ / 512; AA.xsm_stride = Q35_SST; AA.xsm_n = (float)H_; }
   if (advance && !smp_) { AA.adv_pos = d_pos_; AA.adv_tok = d_toks_; AA.adv_greedy = 1; }
   launch_argmax(AA, st_);
@@ -1095,6 +1124,7 @@ void Engine35::head_wide(int M, bool topk, bool nll, int first, bool prompt) {
     const int rows = std::min(HM_, M - row0);
     const int pos = first + row0;
     ArgmaxArgs AA{head_.part, head_.tau, V_, logits_, d_next8_ + pos, blk_val_, blk_idx_, head_.dev.n_workers, M, row0, rows}; AA.cnt = am_cnt_;
+    AA.suppressed = suppress_on_ ? suppressed_ : nullptr;
     AA.us = us_; AA.rr = S_ + (size_t)first * Q35_SST; AA.xsm_eps = eps_; AA.xsm_nb = H_ / 512; AA.xsm_stride = Q35_SST; AA.xsm_n = (float)H_;
     if (prompt && smp_) launch_prompt_logits(AA, st_);
     else launch_argmax(AA, st_);
@@ -1324,7 +1354,7 @@ void Engine35::ms_bind(Engine35* const* eng, int n, int n_light) {
   { std::string why; if (ms_unsupported(&why)) throw std::runtime_error("ms_bind: " + why); }
   for (int i = 0; i < n; ++i) { Engine35* e = eng[i];
     if (!e || e->shared_weights_ != shared_weights_ || e->max_ctx_ != max_ctx_ || e->nlayers_ != nlayers_ || e->tbcap_ != tbcap_ || e->tbcap_kb_ != tbcap_kb_ ||
-        e->visual_on_ || e->mtp_.on || e->kv8_ != kv8_ || e->kv_fp16_ != kv_fp16_)
+        e->visual_on_ || e->mtp_.on || e->kv8_ != kv8_ || e->kv_fp16_ != kv_fp16_ || e->suppress_on_ != suppress_on_)
       throw std::runtime_error("ms_bind: every stream must be an engine of the same model file, context size and settings in this process");
     for (int j = 0; j < i; ++j) if (eng[j] == e) throw std::runtime_error("ms_bind: an engine is listed twice");
     if (e == this) throw std::runtime_error("ms_bind: the carrier cannot be one of its own streams");
@@ -1458,7 +1488,7 @@ void Engine35::ms_load(int slot, Engine35* src) {
   const int ne = (int)ms_eng_.size();
   if (slot < ne || slot >= ms_ns_) throw std::runtime_error("ms_load: not a light stream slot of the current binding");
   if (!src || src->shared_weights_ != shared_weights_ || src->max_ctx_ != max_ctx_ || src->nlayers_ != nlayers_ || src->tbcap_ != tbcap_ ||
-      src->tbcap_kb_ != tbcap_kb_ || src->kv8_ != kv8_ || src->kv_fp16_ != kv_fp16_)
+      src->tbcap_kb_ != tbcap_kb_ || src->kv8_ != kv8_ || src->kv_fp16_ != kv_fp16_ || src->suppress_on_ != suppress_on_)
     throw std::runtime_error("ms_load: the source must be an engine of the same model file, context size and settings in this process");
   // the streams of a pass share this engine's position table (rope_): a source that reads image input has other positions
   if (src->visual_on_) throw std::runtime_error("ms_load: the source engine has image input on (a multi-stream pass takes text only)");

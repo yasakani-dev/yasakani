@@ -2,6 +2,7 @@
 // Copyright (c) 2026 the YASAKANI authors
 #include "pdl.cuh"
 #include <cuda_fp16.h>
+#include <math_constants.h>
 #include <cfloat>
 #include "a8_prologue.cuh"
 #include "args.hpp"
@@ -54,7 +55,7 @@ __global__ void __launch_bounds__(512) embedding_kernel(EmbArgs A) { pdl_wait();
 
 
 
-template <bool XSM>
+template <bool XSM, bool Suppress = false>
 __global__ void argmax_stage1(ArgmaxArgs A) { pdl_wait(); pdl_trigger();
   __shared__ float sv[256]; __shared__ int si[256]; float best = -FLT_MAX; int bi = 0x7fffffff;
   const int row = A.row + blockIdx.y; float* const logits = A.logits + (size_t)blockIdx.y * A.V;
@@ -70,6 +71,7 @@ __global__ void argmax_stage1(ArgmaxArgs A) { pdl_wait(); pdl_trigger();
     else { float s = A.part[(size_t)row * A.V + v];                               
       for (int w = 1; w < A.nw; ++w) s = __fadd_rn(s, A.part[((size_t)w * A.M + row) * A.V + v]);
       x = __fmul_rn(A.tau[v], s); }
+    if constexpr (Suppress) { if (A.suppressed[v]) x = -CUDART_INF_F; }
     logits[v] = x; if (x > best || (x == best && v < bi)) { best = x; bi = v; } }
   sv[threadIdx.x] = best; si[threadIdx.x] = bi; __syncthreads();
   for (int s = 128; s; s >>= 1) { if (threadIdx.x < s) { const float o = sv[threadIdx.x + s]; const int oi = si[threadIdx.x + s];
@@ -89,6 +91,7 @@ __global__ void argmax_stage1(ArgmaxArgs A) { pdl_wait(); pdl_trigger();
 }
 // Sampling selects the emitted token itself. Produce the exact same logits while
 // clearing each integer accumulator once, without a second vocabulary reduction.
+template <bool Suppress = false>
 __global__ void prompt_logits_kernel(ArgmaxArgs A) { pdl_wait(); pdl_trigger();
   const int row = A.row + blockIdx.y;
   float norm = 0.f;
@@ -102,11 +105,15 @@ __global__ void prompt_logits_kernel(ArgmaxArgs A) { pdl_wait(); pdl_trigger();
   float* logits = A.logits + (size_t)blockIdx.y * A.V;
   for (int v = blockIdx.x * blockDim.x + threadIdx.x; v < A.V; v += gridDim.x * blockDim.x) {
     const long long sum = xsum_combine(A.part, A.nw, A.M, A.V, row, v);
-    logits[v] = __fmul_rn(__fmul_rn(xsum_y(sum, scale), norm), A.tau[v]);
+    float x = __fmul_rn(__fmul_rn(xsum_y(sum, scale), norm), A.tau[v]);
+    if constexpr (Suppress) { if (A.suppressed[v]) x = -CUDART_INF_F; }
+    logits[v] = x;
   }
 }
 void launch_prompt_logits(const ArgmaxArgs& A, cudaStream_t st) {
-  launch_k(prompt_logits_kernel, dim3(128, A.rows), dim3(256), 0, st, A);
+  const dim3 grid(128, A.rows), block(256);
+  if (A.suppressed) launch_k(prompt_logits_kernel<true>, grid, block, 0, st, A);
+  else launch_k(prompt_logits_kernel<false>, grid, block, 0, st, A);
 }
 __global__ void prompt_head_rows_kernel(PromptHeadRows A) {
   pdl_wait(); pdl_trigger();
@@ -202,7 +209,13 @@ __global__ void advance_kernel(int* d_pos, int* d_tok, const int* d_next, int gr
 __global__ void set_int_kernel(int* p, int v) { pdl_wait(); pdl_trigger(); if (threadIdx.x == 0) *p = v; }
 
 void launch_embedding(const EmbArgs& A, cudaStream_t st) { cudaFuncSetAttribute(embedding_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, A.m * 512 * 4); launch_k(embedding_kernel, dim3(A.rows), dim3(512), A.m * 512 * 4, st, A); }
-void launch_argmax(const ArgmaxArgs& A, cudaStream_t st) { if (A.us) launch_k(argmax_stage1<true>, dim3(dim3(256, A.rows)), dim3(256), 0, st, A); else launch_k(argmax_stage1<false>, dim3(dim3(256, A.rows)), dim3(256), 0, st, A);
+void launch_argmax(const ArgmaxArgs& A, cudaStream_t st) {
+  const dim3 grid(256, A.rows), block(256);
+  if (A.suppressed) {
+    if (A.us) launch_k(argmax_stage1<true, true>, grid, block, 0, st, A);
+    else launch_k(argmax_stage1<false, true>, grid, block, 0, st, A);
+  } else if (A.us) launch_k(argmax_stage1<true>, grid, block, 0, st, A);
+  else launch_k(argmax_stage1<false>, grid, block, 0, st, A);
   if (!A.cnt) launch_k(argmax_stage2, dim3(A.rows), dim3(256), 0, st, A); }
 void launch_nll(const NllArgs& A, cudaStream_t st) { launch_k(nll_stage1, dim3(dim3(256, A.rows)), dim3(256), 0, st, A); launch_k(nll_stage2, dim3(A.rows), dim3(256), 0, st, A); }
 void launch_topk8(const TopkArgs& A, cudaStream_t st) { launch_k(topk8_stage1, dim3(dim3(256, A.rows)), dim3(256), 0, st, A); if (!A.cnt) launch_k(topk8_stage2, dim3(A.rows), dim3(256), 0, st, A); }

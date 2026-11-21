@@ -63,6 +63,7 @@ public:
   
   void set_visual(const uint16_t* features, const int32_t* slots, int n_image,
                   const int32_t* positions, int n_prompt, int delta);
+  void set_suppress(const int32_t* ids, int n);
   void decode(int32_t* out, int steps);                    
   void nll(const int32_t* ids, int n, float* out);         
   void logits(float* out);                                 
@@ -480,6 +481,7 @@ private:
   float *h_ = nullptr, *alpha_ = nullptr, *z_ = nullptr, *gq_ = nullptr, *gk_ = nullptr, *gv_ = nullptr, *gbeta_ = nullptr, *gg_ = nullptr, *core_ = nullptr;
   uint16_t *xn_ = nullptr, *q16_ = nullptr, *gate16_ = nullptr; int8_t* qx_ = nullptr;
   float *pm_ = nullptr, *pl_ = nullptr, *pacc_ = nullptr; float2* rope_ = nullptr; float* part_ = nullptr;
+  uint8_t* suppressed_ = nullptr; bool suppress_on_ = false;
   float *tc_h_ = nullptr, *tc_al_ = nullptr, *tc_S_ = nullptr; uint16_t* tc_xn_ = nullptr; int8_t* tc_qx_ = nullptr; int* tc_ids_ = nullptr; int tc_rows_ = 0;
   int8_t* tq_qx_ = nullptr; float* tq_al_ = nullptr; int8_t* scr_qx_ = nullptr; float* scr_al_ = nullptr;   
   

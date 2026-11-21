@@ -60,6 +60,7 @@ typedef struct yskn_engine {
     ms_slot_t ms[MS_MAX];
     int wallowed, wmask, wpref, warch;                  /* 0.1.7 wide copy passes (the STUB_WIDE build only) */
     int xwoff;                                          /* set_opt 31 = 0: no exact-sum GEMV for 17..64 rows */
+    uint8_t *suppress; int suppress_n;
 } yskn_engine;
 
 static __thread char g_err[256];
@@ -100,8 +101,18 @@ static int32_t model_next(const yskn_engine *e, uint64_t h, int n, const smp_t *
     if (s->temp > 0)
         k = mix64(k ^ mix64(((uint64_t)s->seed << 32) ^ ((uint64_t)(uint32_t)s->temp << 8) ^ ((uint64_t)(uint32_t)s->top_p << 20) ^
                             ((uint64_t)(uint32_t)s->top_k << 40) ^ ((uint64_t)(uint32_t)s->min_p << 46) ^ ((uint64_t)(uint32_t)s->sampler << 58)));
-    if (e->model_eos > 0 && (k >> 8) % (uint64_t)e->model_eos == 0) return ((k >> 3) & 1) ? EOS_ID : EOS2_ID;
-    return 1000 + (int32_t)((k >> 24) % (uint64_t)(e->model_vocab > 0 ? e->model_vocab : 64));
+    int vocab = e->model_vocab > 0 ? e->model_vocab : 64;
+    for (int attempt = 0; attempt < vocab + 2; attempt++) {
+        int32_t tok;
+        if (attempt == 0 && e->model_eos > 0 && (k >> 8) % (uint64_t)e->model_eos == 0)
+            tok = ((k >> 3) & 1) ? EOS_ID : EOS2_ID;
+        else
+            tok = 1000 + (int32_t)((k >> 24) % (uint64_t)vocab);
+        if (!e->suppress || e->suppress_n <= 0 || !e->suppress[tok]) return tok;
+        k = mix64(k + 0x9e3779b97f4a7c15ULL);
+    }
+    for (int32_t v = 0; v < VOCAB; v++) if (!e->suppress[v]) return v;
+    return 0;
 }
 static int32_t model_take(const yskn_engine *e, uint64_t *h, int *n, const smp_t *s) {
     int32_t t = model_next(e, *h, *n, s); *h = roll(*h, t); (*n)++; return t;
@@ -185,7 +196,7 @@ EXPORT yskn_engine *yskn_open(const char *path, int max_ctx, int device, int fla
 EXPORT void yskn_close(yskn_engine *e) {
     if (!e) return;
     for (int s = 0; s < MS_MAX; s++) { free(e->ms[s].kv); free(e->ms[s].src_ids); }
-    free(e->hist); free(e->snap); free(e);
+    free(e->suppress); free(e->hist); free(e->snap); free(e);
 }
 EXPORT int yskn_reset(yskn_engine *e) {
     ms_gate(e); free(e->hist); e->hist = 0; e->nhist = 0; e->pos = 0; e->tf_rows = 0; e->live_ok = 0; e->front = -1; return 0;
@@ -203,6 +214,27 @@ EXPORT int stub_set_visual(yskn_engine *e, const uint16_t *features, const int32
     e->visual_sets++;
     return 0;
 }
+EXPORT int yskn_set_suppress(yskn_engine *e, const int32_t *ids, int n) {
+    g_err[0] = 0;
+    ms_gate(e);
+    if (n < 0) { set_err("set_suppress: n must be >= 0"); return -1; }
+    if (n > 0 && !ids) { set_err("set_suppress: missing token IDs"); return -1; }
+    if (n == 0) { e->suppress_n = 0; if (e->suppress) memset(e->suppress, 0, VOCAB); return 0; }
+    uint8_t *mask = calloc(VOCAB, 1);
+    if (!mask) { set_err("set_suppress: out of memory"); return -1; }
+    int unique = 0;
+    for (int i = 0; i < n; i++) {
+        int32_t id = ids[i];
+        if (id < 0 || id >= VOCAB) { free(mask); set_err("set_suppress: token ID out of range"); return -1; }
+        if (!mask[id]) { mask[id] = 1; unique++; }
+    }
+    if (VOCAB - unique < 20) { free(mask); set_err("set_suppress: at least 20 unmasked token IDs must remain"); return -1; }
+    free(e->suppress);
+    e->suppress = mask;
+    e->suppress_n = unique;
+    return 0;
+}
+EXPORT int stub_suppress_count(yskn_engine *e) { return e->suppress_n; }
 EXPORT const char *yskn_last_error(void) { return g_err; }
 EXPORT int yskn_cancel(yskn_engine *e) { atomic_store(&e->cancel, 1); return 0; }
 EXPORT int yskn_set_opt(yskn_engine *e, int key, int value) {

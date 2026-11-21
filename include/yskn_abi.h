@@ -28,6 +28,8 @@ YSKN_API int           yskn_prefill(yskn_engine* e, const int32_t* ids, int n, i
 
 YSKN_API int           yskn_set_visual(yskn_engine* e, const uint16_t* features, const int32_t* slots, int n_image,
                                        const int32_t* positions, int n_prompt, int delta);
+/* Suppress output token IDs (logits -> -inf). Prompt IDs are unaffected. Pass token_ids=NULL or n_tokens=0 to clear. */
+YSKN_API int           yskn_set_suppress(yskn_engine* e, const int32_t* token_ids, int n_tokens);
 YSKN_API int           yskn_decode(yskn_engine* e, int32_t* out_ids, int steps);           
 YSKN_API int           yskn_nll(yskn_engine* e, const int32_t* ids, int n, float* out_nll);  
 YSKN_API int           yskn_logits(yskn_engine* e, float* out_vocab);                      

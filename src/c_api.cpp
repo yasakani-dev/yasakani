@@ -149,6 +149,10 @@ extern "C" YSKN_API int yskn_set_visual(yskn_engine* e, const uint16_t* features
   YSKN_TRY(if (!e->q) throw std::runtime_error("visual: qwen3_5 engine only"); ms_gate(e);
             e->q->set_visual(features, slots, n_image, positions, n_prompt, delta))
 }
+extern "C" YSKN_API int yskn_set_suppress(yskn_engine* e, const int32_t* token_ids, int n_tokens) {
+  YSKN_TRY(if (!e->q) throw std::runtime_error("suppress: qwen3_5 engine only"); ms_gate(e);
+            e->q->set_suppress(token_ids, n_tokens))
+}
 
 
 extern "C" YSKN_API int yskn_prepare_wide(yskn_engine* e, int max_rows) { YSKN_TRY(ms_gate(e); if (!e->q) throw std::runtime_error("prepare_wide: qwen3_5 engine only"); e->q->prepare_wide(max_rows)) }

@@ -12,7 +12,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from ._native import YasakaniError
 
@@ -21,6 +21,15 @@ EOS_IDS = (248046, 248044)         # <|im_end|>, <|endoftext|>
 IM_START = 248045                  # <|im_start|>: the prompt snapshot is taken right after its last occurrence
 VOCAB_SIZE = 248320
 HIDDEN = 5120
+MIN_UNSUPPRESSED_TOKENS = 20       # sampler top-k cap (Q35_SMP_K): fewer leaves placeholder entries in candidate lists
+PROTECTED_CONTROL_TOKENS = (       # special: false in Qwen3.8 tokenizer.json, but suppressing them breaks thinking or tool calls
+    "<think>",
+    "</think>",
+    "<tool_call>",
+    "</tool_call>",
+    "<tool_response>",
+    "</tool_response>",
+)
 
 # ---- environment: read by the engine library when the model is opened -------------------------------------------------------------
 # Value settings.  The two path settings (YSKN_BDR_SHEAD, YSKN_TB_PROFILE) come from the model package.
@@ -133,6 +142,10 @@ class ModelPack:
 
     DEFAULT_FILES = dict(weights="qwen38_27b_e3x.yskn", draft="bdraft2_k8.yskn", draft_head="bdraft2_k8.shead", kv_profile="kvq_u5.bin")
 
+    def load_suppress_tokens(self, paths: Sequence[Path], *, allow_special: bool = False) -> Tuple[int, ...]:
+        """Load and validate one or more output-token suppression JSON files against this model pack."""
+        return load_suppress_tokens(paths, self, allow_special=allow_special)
+
     @classmethod
     def load(cls, root) -> "ModelPack":
         root = Path(root)
@@ -168,3 +181,130 @@ class ModelPack:
             if progress:
                 progress(name, res[name])
         return res
+
+
+def suppress_fingerprint(token_ids: Sequence[int]) -> Optional[str]:
+    if not token_ids:
+        return None
+    payload = ",".join(str(i) for i in sorted(set(token_ids))).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()[:32]
+
+
+def _tokenizer_metadata(root: Path) -> Tuple[str, Dict[str, int], Set[int]]:
+    tok_path = root / "tokenizer.json"
+    try:
+        raw = tok_path.read_bytes()
+    except OSError as exc:
+        raise YasakaniError("cannot read tokenizer.json: %s" % exc) from exc
+    sha = hashlib.sha256(raw).hexdigest()
+    special: Set[int] = set(EOS_IDS) | {IM_START}
+    protected_names = frozenset(PROTECTED_CONTROL_TOKENS)
+    vocab: Dict[str, int] = {}
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        return sha, vocab, special
+    if isinstance(data, dict):
+        model = data.get("model")
+        if isinstance(model, dict) and isinstance(model.get("vocab"), dict):
+            for tok, tid in model["vocab"].items():
+                if isinstance(tok, str) and isinstance(tid, int) and not isinstance(tid, bool):
+                    vocab[tok] = tid
+                    if tok in protected_names:
+                        special.add(tid)
+        added = data.get("added_tokens")
+        if isinstance(added, list):
+            for entry in added:
+                if not isinstance(entry, dict):
+                    continue
+                tid = entry.get("id")
+                content = entry.get("content")
+                if isinstance(tid, int) and not isinstance(tid, bool):
+                    if isinstance(content, str):
+                        vocab[content] = tid
+                    if entry.get("special") or content in protected_names:
+                        special.add(tid)
+    return sha, vocab, special
+
+
+def _validate_int_ids(raw: object, path: Path) -> List[int]:
+    if not isinstance(raw, list):
+        raise YasakaniError("%s: token ID list must be a JSON array" % path)
+    out: List[int] = []
+    for item in raw:
+        if isinstance(item, bool) or not isinstance(item, int):
+            raise YasakaniError("%s: token ID must be an integer, got %r" % (path, item))
+        if item < 0 or item >= VOCAB_SIZE:
+            raise YasakaniError("%s: token ID %d out of range [0, %d)" % (path, item, VOCAB_SIZE))
+        out.append(item)
+    return out
+
+
+def load_suppress_tokens(paths: Sequence[Path], pack: ModelPack, *, allow_special: bool = False) -> Tuple[int, ...]:
+    """Read one or more suppression JSON files (ID array, target_token_ids/suppress_tokens/token_ids, or exact tokens)."""
+    if not paths:
+        return ()
+    tok_sha, vocab, special_ids = _tokenizer_metadata(pack.root)
+    merged: Set[int] = set()
+    for p in paths:
+        path = Path(p)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise YasakaniError("cannot read suppression mask %s: %s" % (path, exc)) from exc
+        if isinstance(data, list):
+            merged.update(_validate_int_ids(data, path))
+            continue
+        if not isinstance(data, dict):
+            raise YasakaniError("%s: expected a JSON array or object" % path)
+        if "vocab_size" in data:
+            vs = data["vocab_size"]
+            if isinstance(vs, bool) or vs != VOCAB_SIZE:
+                raise YasakaniError("%s: vocab_size %r does not match %d" % (path, vs, VOCAB_SIZE))
+        if "tokenizer_sha256" in data:
+            want = data["tokenizer_sha256"]
+            allowed = [want] if isinstance(want, str) else (want if isinstance(want, list) and all(isinstance(s, str) for s in want) else None)
+            if allowed is None or tok_sha not in allowed:
+                raise YasakaniError("%s: tokenizer.json SHA-256 (%s) does not match expected %r" % (path, tok_sha, want))
+        found = False
+        for key in ("target_token_ids", "suppress_tokens", "token_ids"):
+            if key in data:
+                ids = _validate_int_ids(data[key], path)
+                if key == "target_token_ids" and "n_target" in data:
+                    nt = data["n_target"]
+                    if isinstance(nt, bool) or not isinstance(nt, int) or len(ids) != nt:
+                        raise YasakaniError("%s: n_target (%r) does not match target_token_ids length (%d)" % (path, nt, len(ids)))
+                merged.update(ids)
+                found = True
+        if "tokens" in data:
+            raw_toks = data["tokens"]
+            if not isinstance(raw_toks, list) or not all(isinstance(t, str) for t in raw_toks):
+                raise YasakaniError("%s: 'tokens' must be a JSON array of strings" % path)
+            if not vocab:
+                raise YasakaniError("%s: 'tokens' requires a valid tokenizer.json vocabulary" % path)
+            for tok in raw_toks:
+                if tok not in vocab:
+                    raise YasakaniError("%s: token %r not found as a single token in tokenizer.json" % (path, tok))
+                tid = vocab[tok]
+                if tid < 0 or tid >= VOCAB_SIZE:
+                    raise YasakaniError("%s: token %r maps to out-of-range ID %d" % (path, tok, tid))
+                merged.add(tid)
+            found = True
+        if not found:
+            raise YasakaniError(
+                "%s: expected a JSON array of IDs or an object with 'target_token_ids', 'suppress_tokens', 'token_ids', or 'tokens'" % path
+            )
+    remaining = VOCAB_SIZE - len(merged)
+    if remaining < MIN_UNSUPPRESSED_TOKENS:
+        raise YasakaniError(
+            "suppression mask must leave at least %d unmasked token IDs (got %d)" % (MIN_UNSUPPRESSED_TOKENS, remaining)
+        )
+    if not allow_special:
+        blocked = sorted(merged & special_ids)
+        if blocked:
+            sample = ", ".join(str(i) for i in blocked[:5])
+            extra = " (+%d more)" % (len(blocked) - 5) if len(blocked) > 5 else ""
+            raise YasakaniError(
+                "suppression mask includes special/control/EOS token ID(s) %s%s; pass --allow-suppress-special to override" % (sample, extra)
+            )
+    return tuple(sorted(merged))

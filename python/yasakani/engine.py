@@ -254,6 +254,7 @@ class Engine:
         self.ms_drafter = False                             # the drafter makes the drafts of the slots
         self._slot_sampling: List[Optional[Sampling]] = []  # the sampling each slot made so far holds (None = not known)
         self._msb: Optional[_MsBuffers] = None
+        self.suppressed_count = 0
 
     # ---- plumbing --------------------------------------------------------------------------------------------------------------
     def _check(self, rc: int) -> None:
@@ -305,6 +306,26 @@ class Engine:
     @property
     def supports_visual(self) -> bool:
         return "yskn_set_visual" in self._f
+
+    @property
+    def supports_suppress(self) -> bool:
+        return "yskn_set_suppress" in self._f
+
+    def set_suppress(self, token_ids: Optional[Sequence[int]]) -> int:
+        with self._lock:
+            self._need_open()
+            fn = self._f.get("yskn_set_suppress")
+            if not token_ids:
+                if fn is not None:
+                    self._check(fn(self._e, None, 0))
+                self.suppressed_count = 0
+                return 0
+            if fn is None:
+                raise YasakaniError("this engine library does not support output token suppression (yskn_set_suppress)")
+            arr = np.ascontiguousarray(token_ids, dtype=np.int32)
+            self._check(fn(self._e, arr.ctypes.data, int(arr.size)))
+            self.suppressed_count = int(arr.size)
+            return self.suppressed_count
 
     @contextmanager
     def visual_input(self, features, slots, positions, delta):

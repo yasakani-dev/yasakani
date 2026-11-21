@@ -24,7 +24,8 @@ struct EmbArgs { const uint32_t* stream; int wps; int seqs; int K; const uint16_
 struct ArgmaxArgs { const float* part; const float* tau; int V; float* logits; int* d_tok_out; float* blk_val; int* blk_idx; int nw = 1; int M = 1; int row = 0; int rows = 1;
                     const float* us = nullptr; const float* rr = nullptr; float xsm_eps = 1e-6f;    
                     unsigned* cnt = nullptr; int* adv_pos = nullptr; int* adv_tok = nullptr; int adv_greedy = 0;
-                    int xsm_nb = 7, xsm_stride = 8; float xsm_n = 3584.f; };   
+                    int xsm_nb = 7, xsm_stride = 8; float xsm_n = 3584.f;
+                    const uint8_t* suppressed = nullptr; };   
 struct NllArgs { const float* logits; int V; const int* d_target; float* out_nll; float* blk_max; float* blk_sum; int rows = 1; };   
 
 struct TopkArgs { const float* logits; int V; float* cand_val; int* cand_idx; float* top_val; int* top_idx; int rows; unsigned* cnt = nullptr; };   

@@ -379,6 +379,21 @@ print(r.choices[0].message.tool_calls)
   them. These times are measured inside the engine. The speed tables of this project are measured by the client, from the first to the
   last chunk ([docs/MEASUREMENTS.md](https://github.com/yasakani-dev/yasakani/blob/main/docs/MEASUREMENTS.md)), so their numbers differ from these.
 
+### Output token suppression (`--suppress-tokens`)
+
+`yasakani serve` and `yasakani chat` accept `--suppress-tokens PATH` (repeatable; or `YASAKANI_SUPPRESS_TOKENS`, paths separated by the
+platform path separator) to mask output token IDs (`-inf` logits before greedy argmax and sampling; prompt tokens are unaffected).
+
+* **Process-wide setting.** The mask is loaded once on the engine for the whole process and applies to every request; it is not per request.
+* **Accepted JSON formats** (UTF-8, with or without BOM): a plain array of integer token IDs (`[1001, 1002]`), an object with
+  `target_token_ids` (optional `n_target` length check), `suppress_tokens`, `token_ids`, or exact single-token strings in `tokens`
+  (resolved against `tokenizer.json`). Optional `vocab_size` and `tokenizer_sha256` fields are verified against the model folder.
+* **Safety guards.** Special/EOS tokens and structural control tokens (`<think>`, `</think>`, `<tool_call>`, `</tool_call>`,
+  `<tool_response>`, `</tool_response>`) are refused unless `--allow-suppress-special` is passed. At least 20 unmasked token IDs must
+  remain so the sampler's top-k candidate lists stay valid.
+* `yasakani selfcheck` and `yasakani bench` do not accept `--suppress-tokens` and ignore `YASAKANI_SUPPRESS_TOKENS` (with a note at
+  start) so reference checks and speed measurements stay unmasked.
+
 ### Image input (optional)
 
 Image input works on **Windows**, and on Linux with llama.cpp built from source (contributed in [#8](https://github.com/yasakani-dev/yasakani/pull/8); we have not tried it there,
