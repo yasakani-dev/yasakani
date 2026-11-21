@@ -480,6 +480,7 @@ private:
   float *h_ = nullptr, *alpha_ = nullptr, *z_ = nullptr, *gq_ = nullptr, *gk_ = nullptr, *gv_ = nullptr, *gbeta_ = nullptr, *gg_ = nullptr, *core_ = nullptr;
   uint16_t *xn_ = nullptr, *q16_ = nullptr, *gate16_ = nullptr; int8_t* qx_ = nullptr;
   float *pm_ = nullptr, *pl_ = nullptr, *pacc_ = nullptr; float2* rope_ = nullptr; float* part_ = nullptr;
+  bool yarn2_ = false;
   float *tc_h_ = nullptr, *tc_al_ = nullptr, *tc_S_ = nullptr; uint16_t* tc_xn_ = nullptr; int8_t* tc_qx_ = nullptr; int* tc_ids_ = nullptr; int tc_rows_ = 0;
   int8_t* tq_qx_ = nullptr; float* tq_al_ = nullptr; int8_t* scr_qx_ = nullptr; float* scr_al_ = nullptr;   
   

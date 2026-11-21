@@ -1098,30 +1098,52 @@ __constant__ unsigned q35_inv_freq[32] = {
   0x3b80967du, 0x3b1b690du, 0x3abbd3edu, 0x3a6301e2u, 0x3a092e02u, 0x39a5cb60u, 0x394860c1u, 0x38f22ce2u, 0x3892587eu, 0x3830df52u, 0x37d5c441u,
   0x37812dabu, 0x371c1fc4u, 0x36bcb0c1u, 0x36640cc6u, 0x3609cf4au, 0x35a68e4cu, 0x35494c57u, 0x34f3499du, 0x3493048eu, 0x3431af44u};
 
+template <bool Yarn2>
+__device__ __forceinline__ float2 q35_rope_pair(int pos, int i, int pm) {
+  float inv = __uint_as_float(q35_inv_freq[i]);
+  if constexpr (Yarn2) {
+    static_assert(Q35_RD == 64);
+    // YaRN for theta=1e7, original context=262144, beta_fast=32 and beta_slow=1.
+    // The truncated correction range is [14, 22]; interpolate from inv to inv/2.
+    const float ramp = (float)max(0, min(8, i - 14)) * 0.125f;
+    inv = (inv * 0.5f) * ramp + inv * (1.0f - ramp);
+  }
+  const float f = __fmul_rn((float)pos, inv);
+  float c, s;
+  if (pm) pm_sincos_f(f, c, s);
+  else { c = cosf(f); s = sinf(f); }
+  if constexpr (Yarn2) {
+    constexpr float scale = 1.069314718f;  // 1 + 0.1 * ln(2), before bfloat16 rounding
+    c *= scale; s *= scale;
+  }
+  return make_float2(rbf(c), rbf(s));
+}
+
+template <bool Yarn2>
 __global__ void q35_rope_table_kernel(float2* out, int max_ctx, int pm) {
   const int idx = blockIdx.x * blockDim.x + threadIdx.x; if (idx >= max_ctx * (Q35_RD / 2)) return;
-  const int t = idx / (Q35_RD / 2), i = idx % (Q35_RD / 2);
-  const float f = __fmul_rn((float)t, __uint_as_float(q35_inv_freq[i]));
-  if (pm) { float c, s; pm_sincos_f(f, c, s); out[idx] = make_float2(rbf(c), rbf(s)); }
-  else out[idx] = make_float2(rbf(cosf(f)), rbf(sinf(f)));
+  out[idx] = q35_rope_pair<Yarn2>(idx / (Q35_RD / 2), idx % (Q35_RD / 2), pm);
 }
-void launch_q35_rope_table(float2* out, int max_ctx, cudaStream_t st, int pm) {
-  q35_rope_table_kernel<<<(max_ctx * (Q35_RD / 2) + 255) / 256, 256, 0, st>>>(out, max_ctx, pm);
+void launch_q35_rope_table(float2* out, int max_ctx, cudaStream_t st, int pm, bool yarn2) {
+  const int blocks = (max_ctx * (Q35_RD / 2) + 255) / 256;
+  if (yarn2) q35_rope_table_kernel<true><<<blocks, 256, 0, st>>>(out, max_ctx, pm);
+  else q35_rope_table_kernel<false><<<blocks, 256, 0, st>>>(out, max_ctx, pm);
 }
 
 
+template <bool Yarn2>
 __global__ void q35_visual_rope_kernel(float2* out, int max_ctx, const int* positions, int n, int delta, int pm) {
   const int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx >= max_ctx * (Q35_RD / 2)) return;
   const int t = idx / (Q35_RD / 2), i = idx % (Q35_RD / 2);
   const int axis = (i % 3 == 1 && i < 33) ? 1 : ((i % 3 == 2 && i < 30) ? 2 : 0);
   const int p = t < n ? positions[axis * n + t] : t + delta;
-  const float f = __fmul_rn((float)p, __uint_as_float(q35_inv_freq[i]));
-  if (pm) { float c, s; pm_sincos_f(f, c, s); out[idx] = make_float2(rbf(c), rbf(s)); }
-  else out[idx] = make_float2(rbf(cosf(f)), rbf(sinf(f)));
+  out[idx] = q35_rope_pair<Yarn2>(p, i, pm);
 }
-void launch_q35_visual_rope(float2* out, int max_ctx, const int* positions, int n, int delta, cudaStream_t st, int pm) {
-  q35_visual_rope_kernel<<<(max_ctx * (Q35_RD / 2) + 255) / 256, 256, 0, st>>>(out, max_ctx, positions, n, delta, pm);
+void launch_q35_visual_rope(float2* out, int max_ctx, const int* positions, int n, int delta, cudaStream_t st, int pm, bool yarn2) {
+  const int blocks = (max_ctx * (Q35_RD / 2) + 255) / 256;
+  if (yarn2) q35_visual_rope_kernel<true><<<blocks, 256, 0, st>>>(out, max_ctx, positions, n, delta, pm);
+  else q35_visual_rope_kernel<false><<<blocks, 256, 0, st>>>(out, max_ctx, positions, n, delta, pm);
 }
 __global__ void q35_visual_embed_kernel(uint16_t* rows, const uint16_t* table, const int* ids,
                                        const uint16_t* features, const int* map, const int* pos, int M, int max_ctx) {

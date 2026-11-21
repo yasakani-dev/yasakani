@@ -35,6 +35,8 @@ QUALITY_WEIGHTS_MIB = 11000           # weights larger than this are counted wit
                                       # max-quality model: after load it used 3,182 MiB more than the quality model on the
                                       # RTX 5090, and its weights file is 3,203 MiB larger)
 FULL_CONTEXT_MIN_TOTAL_MIB = 30000    # cards with this much memory keep the model's own context (as before 0.1.3)
+YARN2_MAX_CTX = 524288                # experimental --yarn2 context limit (2x the model's native 262,144 tokens)
+BIG_CARD_LOAD_EXTRA_MIB = 700         # extra load memory of runtime.py's 2048/8192 defaults over SMALL_CARD_ENV (about 0.6-0.7 GB)
 # Cards with less than FULL_CONTEXT_MIN_TOTAL_MIB keep the prompt-reading sizes of 0.1.7: OVERHEAD_MIB was measured with them.  The
 # larger defaults of runtime.py (2,048 rows per pass, 8,192 rows of layer work area) take about 0.6 to 0.7 GB more at load.
 SMALL_CARD_ENV = {"YSKN_Q35_PMAX": "1024", "YSKN_Q35_LAYER_ROWS": "4096"}
@@ -498,25 +500,33 @@ def _which_gpu(det: Detected, sizes: Sequence[int], model_max: int) -> str:
     return s + ".  "
 
 
-def plan_context(pack, det: Detected, reserve_mib: int = 0) -> ContextPlan:
+def plan_context(pack, det: Detected, reserve_mib: int = 0, max_ctx_limit: Optional[int] = None) -> ContextPlan:
     """The context for ``pack`` on the detected GPU.  Unchanged (None) on cards with FULL_CONTEXT_MIN_TOTAL_MIB or more, and when
-    nvidia-smi gave no answer.  Raises YasakaniError when not even MIN_CONTEXT tokens fit.  ``reserve_mib`` (prefill_reserve_mib) is
-    taken off the free memory before the context is chosen."""
+    nvidia-smi gave no answer (even with ``--yarn2``, so a card with 24 GB or less cannot silently spill into shared memory).  When free
+    memory is known and ``max_ctx_limit`` exceeds ``pack.max_ctx`` (e.g. ``--yarn2``), the longer context is planned against free GPU memory
+    on every card.  Raises YasakaniError when not even MIN_CONTEXT tokens fit.  ``reserve_mib`` (prefill_reserve_mib) is taken off the free
+    memory before the context is chosen."""
     plan = ContextPlan()
+    limit = pack.max_ctx if max_ctx_limit is None else int(max_ctx_limit)
+    extended = limit > pack.max_ctx
     g = det.worst()
     _small_card_env(plan, g)
     if g is None or g.total_mib is None or g.free_mib is None:
+        if extended:
+            plan.notes.append("note: GPU free memory could not be read, so --yarn2 keeps the model's native %d-token context; "
+                              "pass --max-ctx to set a longer context" % pack.max_ctx)
         if len(det.candidates) > 1:
             plan.notes.append("note: this PC has %d GPUs and their memory could not be read; the context stays %d tokens"
                               % (len(det.candidates), pack.max_ctx))
         return plan
-    if g.total_mib >= FULL_CONTEXT_MIN_TOTAL_MIB:
+    if not extended and g.total_mib >= FULL_CONTEXT_MIN_TOTAL_MIB:
         return plan
     plan.free_mib = g.free_mib
     sizes = [p.stat().st_size for p in (pack.weights, pack.draft, pack.draft_head)]
-    n, head_off = choose(g.free_mib - reserve_mib, sizes[0], sizes[1], sizes[2], pack.max_ctx)
+    extra = BIG_CARD_LOAD_EXTRA_MIB if (extended and g.total_mib >= FULL_CONTEXT_MIN_TOTAL_MIB) else 0
+    n, head_off = choose(g.free_mib - reserve_mib - extra, sizes[0], sizes[1], sizes[2], limit)
     if reserve_mib:                              # not at the cost of more than half of the context: then the plan of the other
-        plain = choose(g.free_mib, sizes[0], sizes[1], sizes[2], pack.max_ctx)          # readings, and the engine decides
+        plain = choose(g.free_mib - extra, sizes[0], sizes[1], sizes[2], limit)          # readings, and the engine decides
         if n < MIN_CONTEXT or 2 * n < plain[0]:
             n, head_off = plain
             if n >= MIN_CONTEXT:
@@ -530,12 +540,24 @@ def plan_context(pack, det: Detected, reserve_mib: int = 0) -> ContextPlan:
             "the model does not fit in the free GPU memory (%d of %d MiB free; it needs about %d MiB with a context of %d tokens).  "
             "%sClose other programs that use the GPU%s, or give --max-ctx to try anyway."
             % (g.free_mib, g.total_mib, int((sizes[0] + sizes[1]) / MIB + overhead_mib(sizes[0]) + MARGIN_MIB + MIN_CONTEXT * KV_BYTES_PER_TOKEN / MIB),
-               MIN_CONTEXT, _which_gpu(det, sizes, pack.max_ctx), "" if sizes[0] / MIB <= QUALITY_WEIGHTS_MIB else ", or use the fastest model"))
+               MIN_CONTEXT, _which_gpu(det, sizes, limit), "" if sizes[0] / MIB <= QUALITY_WEIGHTS_MIB else ", or use the fastest model"))
     if head_off:
         plan.env["YSKN_BDR_SHEAD"] = "0"
         plan.notes.append("note: to leave room for the context, the output head of the draft model (%s, %.1f GiB) is not loaded; "
                           "each pass takes %s longer (measured on the RTX 5090)" % (pack.draft_head.name, sizes[2] / (1 << 30), HEAD_SLOWER))
-    if n < pack.max_ctx:
+    if extended:
+        plan.max_ctx = n
+        if n == limit:
+            plan.notes.append("context: %d tokens (2x YaRN, experimental; %d of %d MiB free); --max-ctx sets it yourself"
+                              % (n, g.free_mib, g.total_mib))
+        elif n > pack.max_ctx:
+            plan.notes.append("context: %d tokens (2x YaRN, experimental), chosen from the free GPU memory (%d of %d MiB free); "
+                              "--max-ctx sets it yourself" % (n, g.free_mib, g.total_mib))
+        else:
+            plan.notes.append("context: %d tokens, chosen from the free GPU memory (%d of %d MiB free); this fits within the model's "
+                              "native %d-token context, so --yarn2 does not give a longer context here (it only changes the outputs)"
+                              % (n, g.free_mib, g.total_mib, pack.max_ctx))
+    elif n < pack.max_ctx:
         plan.max_ctx = n
         plan.notes.append("context: %d tokens, chosen from the free GPU memory (%d of %d MiB free); --max-ctx sets it yourself"
                           % (n, g.free_mib, g.total_mib))
@@ -545,22 +567,30 @@ def plan_context(pack, det: Detected, reserve_mib: int = 0) -> ContextPlan:
 
 def plan_given_context(pack, det: Detected, max_ctx: int, reserve_mib: int = 0) -> ContextPlan:
     """The plan for a context given with --max-ctx.  The context stays as given (it is tried even where the rule says it does not fit),
-    but on a card with less than FULL_CONTEXT_MIN_TOTAL_MIB the draft model's output head is left out when it does not fit beside that
-    context.  Without this the head is always loaded: the package names it in YSKN_BDR_SHEAD, and the engine loads a named head without
-    the free-memory check it makes for one it finds by itself.  Unchanged on larger cards and when nvidia-smi gave no answer."""
+    but on a card with less than FULL_CONTEXT_MIN_TOTAL_MIB (or when ``max_ctx`` exceeds ``pack.max_ctx``, e.g. ``--yarn2``) the draft
+    model's output head is left out when it does not fit beside that context.  Without this the head is always loaded: the package names
+    it in YSKN_BDR_SHEAD, and the engine loads a named head without the free-memory check it makes for one it finds by itself.
+    Unchanged on larger cards for native contexts and when nvidia-smi gave no answer."""
     plan = ContextPlan(max_ctx=int(max_ctx))
+    extended = plan.max_ctx > pack.max_ctx
     g = det.worst()
     _small_card_env(plan, g)
-    if g is None or g.total_mib is None or g.free_mib is None or g.total_mib >= FULL_CONTEXT_MIN_TOTAL_MIB:
+    if g is None or g.total_mib is None or g.free_mib is None or (not extended and g.total_mib >= FULL_CONTEXT_MIN_TOTAL_MIB):
         return plan
     plan.free_mib = g.free_mib
     sizes = [p.stat().st_size for p in (pack.weights, pack.draft, pack.draft_head)]
+    extra = BIG_CARD_LOAD_EXTRA_MIB if (extended and g.total_mib >= FULL_CONTEXT_MIN_TOTAL_MIB) else 0
     _reserve_note(plan, reserve_mib, False)
-    if fit_tokens(g.free_mib - reserve_mib, sum(sizes), overhead_mib(sizes[0])) < plan.max_ctx:
+    if fit_tokens(g.free_mib - reserve_mib - extra, sum(sizes), overhead_mib(sizes[0])) < plan.max_ctx:
         plan.env["YSKN_BDR_SHEAD"] = "0"
         plan.notes.append("note: the output head of the draft model (%s, %.1f GiB) is not loaded: it does not fit beside %d tokens of "
                           "context in the free GPU memory (%d of %d MiB free); each pass takes %s longer (measured on the RTX 5090)"
                           % (pack.draft_head.name, sizes[2] / (1 << 30), plan.max_ctx, g.free_mib, g.total_mib, HEAD_SLOWER))
+        if extended and fit_tokens(g.free_mib - reserve_mib - extra, sizes[0] + sizes[1], overhead_mib(sizes[0])) < plan.max_ctx:
+            plan.notes.append("warning: %d tokens of context may not fit in the free GPU memory (%d of %d MiB free); trying anyway.  "
+                              "When the GPU memory overflows, Windows keeps part of it in ordinary memory and everything becomes several "
+                              "times slower, without an error.  Lower --max-ctx if needed."
+                              % (plan.max_ctx, g.free_mib, g.total_mib))
     return plan
 
 
@@ -592,13 +622,15 @@ def choose_parallel(free_mib: float, weights_bytes: int, draft_bytes: int, head_
     return with_head, False
 
 
-def plan_parallel(pack, det: Detected, n: int, reserve_mib: int = 0) -> ContextPlan:
+def plan_parallel(pack, det: Detected, n: int, reserve_mib: int = 0, max_ctx_limit: Optional[int] = None) -> ContextPlan:
     """The context for ``n`` requests at once (serve --parallel n): the carrier and every stream slot take the same context, the
-    longest that fits the free GPU memory, a multiple of CONTEXT_STEP and at most the model's own; on every card (the RTX 5090
-    included, where the model's own context does not fit n + 1 times).  The draft model's output head is left out by the rule of
-    :func:`choose`.  Raises YasakaniError when not even MIN_CONTEXT tokens fit (naming the most streams that do).  When nvidia-smi gives
-    no free memory, the plan is for one request at a time (``parallel`` 1, with a note)."""
+    longest that fits the free GPU memory, a multiple of CONTEXT_STEP and at most ``max_ctx_limit`` (default: the model's own); on
+    every card (the RTX 5090 included, where the model's own context does not fit n + 1 times).  The draft model's output head is left
+    out by the rule of :func:`choose`.  Raises YasakaniError when not even MIN_CONTEXT tokens fit (naming the most streams that do).
+    When nvidia-smi gives no free memory, the plan is for one request at a time (``parallel`` 1, with a note)."""
     n = int(n)
+    limit = pack.max_ctx if max_ctx_limit is None else int(max_ctx_limit)
+    extended = limit > pack.max_ctx
     plan = ContextPlan(parallel=n)
     g = det.worst()
     _small_card_env(plan, g)
@@ -609,18 +641,19 @@ def plan_parallel(pack, det: Detected, n: int, reserve_mib: int = 0) -> ContextP
         return plan
     plan.free_mib = g.free_mib
     sizes = [p.stat().st_size for p in (pack.weights, pack.draft, pack.draft_head)]
-    free = g.free_mib - reserve_mib
-    ctx, head_off = choose_parallel(free, sizes[0], sizes[1], sizes[2], pack.max_ctx, n)
+    extra = BIG_CARD_LOAD_EXTRA_MIB if (extended and g.total_mib >= FULL_CONTEXT_MIN_TOTAL_MIB) else 0
+    free = g.free_mib - reserve_mib - extra
+    ctx, head_off = choose_parallel(free, sizes[0], sizes[1], sizes[2], limit, n)
     if reserve_mib:                              # not at the cost of more than half of the context (as plan_context)
-        plain = choose_parallel(g.free_mib, sizes[0], sizes[1], sizes[2], pack.max_ctx, n)
+        plain = choose_parallel(g.free_mib - extra, sizes[0], sizes[1], sizes[2], limit, n)
         if ctx < MIN_CONTEXT or 2 * ctx < plain[0]:
             ctx, head_off = plain
             if ctx >= MIN_CONTEXT:
                 plan.notes.append(NO_ROOM_NOTE % reserve_mib)
-            free, reserve_mib = g.free_mib, 0
+            free, reserve_mib = g.free_mib - extra, 0
     if ctx < MIN_CONTEXT:
         fits = [m for m in range(n - 1, 1, -1)
-                if choose_parallel(free, sizes[0], sizes[1], sizes[2], pack.max_ctx, m)[0] >= MIN_CONTEXT]
+                if choose_parallel(free, sizes[0], sizes[1], sizes[2], limit, m)[0] >= MIN_CONTEXT]
         raise YasakaniError(
             "--parallel %d does not fit in the free GPU memory (%d of %d MiB free): every request needs a context of at least %d tokens "
             "of its own.  %s" % (n, g.free_mib, g.total_mib, MIN_CONTEXT, ("--parallel %d fits." % fits[0]) if fits
@@ -633,6 +666,9 @@ def plan_parallel(pack, det: Detected, n: int, reserve_mib: int = 0) -> ContextP
     plan.max_ctx = ctx
     plan.notes.append("context: %d tokens for each of %d requests at once, chosen from the free GPU memory (%d of %d MiB free); "
                       "--max-ctx sets it yourself" % (ctx, n, g.free_mib, g.total_mib))
+    if extended and ctx <= pack.max_ctx:
+        plan.notes.append("note: %d tokens per request fits within the model's native %d-token context, so --yarn2 does not give a "
+                          "longer context here (it only changes the outputs)" % (ctx, pack.max_ctx))
     _reserve_note(plan, reserve_mib, True)
     return plan
 

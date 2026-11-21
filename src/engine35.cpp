@@ -217,6 +217,11 @@ void Engine35::ensure_part(size_t floats) {
 }
 
 Engine35::Engine35(const std::string& path, int max_ctx, int flags) : flags_(flags) {
+  if (const char* e = std::getenv("YSKN_Q35_YARN2"); e && e[0]) {
+    if (std::string(e) == "1") yarn2_ = true;
+    else if (std::string(e) != "0") throw std::runtime_error("YSKN_Q35_YARN2 must be 0 or 1");
+  }
+  if (yarn2_ && max_ctx > 524288) throw std::runtime_error("2x YaRN supports at most 524288 context tokens");
   DevMemScope dm_scope(this);
   cudaStreamCreateWithFlags(&st_, cudaStreamNonBlocking);
   cudaStreamCreateWithFlags(&st2_, cudaStreamNonBlocking); cudaEventCreateWithFlags(&ev_v_, cudaEventDisableTiming); cudaEventCreateWithFlags(&ev_rp_, cudaEventDisableTiming);
@@ -414,7 +419,7 @@ Engine35::Engine35(const std::string& path, int max_ctx, int flags) : flags_(fla
     pm_ = dz35<float>((size_t)Mmax_ * ns * Q35_NH * 4); pl_ = dz35<float>((size_t)Mmax_ * ns * Q35_NH * 4); pacc_ = dz35<float>((size_t)Mmax_ * ns * Q35_NH * Q35_HD * 4); }
   pos_slices_ = dz35<int>(64 * 4); mtp_pos_slices_ = dz35<int>(64 * 4);
   if (Pmax_ > Mmax_) { pmix_big_ = dz35<uint16_t>((size_t)Pmax_ * Q35_CONV * 2); pab_big_ = dz35<float>((size_t)Pmax_ * 96 * 4); }
-  rope_ = dz35<float2>((size_t)max_ctx_ * (Q35_RD / 2) * sizeof(float2)); launch_q35_rope_table(rope_, max_ctx_, st_);
+  rope_ = dz35<float2>((size_t)max_ctx_ * (Q35_RD / 2) * sizeof(float2)); launch_q35_rope_table(rope_, max_ctx_, st_, 0, yarn2_);
   logits_ = dz35<float>((size_t)HM_ * V_ * 4); blk_val_ = dz35<float>((size_t)HM_ * 256 * 4); blk_idx_ = dz35<int>((size_t)HM_ * 256 * 4);
   blk_max_ = dz35<float>((size_t)HM_ * 256 * 4); blk_sum_ = dz35<float>((size_t)HM_ * 256 * 4);
   tk_val_ = dz35<float>((size_t)HM_ * 256 * 8 * 4); tk_idx_ = dz35<int>((size_t)HM_ * 256 * 8 * 4);
@@ -666,8 +671,8 @@ void Engine35::apply_kz() {
   { const char* p = std::getenv("YSKN_Q35_PM"); if (p && p[0]) on = std::atoi(p) ? 1 : 0; }   
   cudaStreamSynchronize(st_);
   q35_set_pm(on, st_); q35_flow_set_pm(on, st_); pfa_set_pm(on, st_);
-  if (visual_on_) launch_q35_visual_rope(rope_, max_ctx_, visual_positions_, visual_prompt_, visual_delta_, st_, on);
-  else launch_q35_rope_table(rope_, max_ctx_, st_, on);
+  if (visual_on_) launch_q35_visual_rope(rope_, max_ctx_, visual_positions_, visual_prompt_, visual_delta_, st_, on, yarn2_);
+  else launch_q35_rope_table(rope_, max_ctx_, st_, on, yarn2_);
   smp_p_.pm = on; cudaStreamSynchronize(st_); cudaMemcpy(d_smp_, &smp_p_, sizeof(Q35SmpParams), cudaMemcpyHostToDevice);
 }
 void Engine35::drop_pass_graphs() {
@@ -863,8 +868,8 @@ void Engine35::set_visual(const uint16_t* features, const int32_t* slots, int n_
     cudaMemcpyAsync(visual_features_, features, (size_t)n_image * H_ * 2, cudaMemcpyHostToDevice, st_);
   }
   int pm = kz_ ? 1 : 0; const char* e = std::getenv("YSKN_Q35_PM"); if (e && e[0]) pm = std::atoi(e) ? 1 : 0;
-  if (visual_on_) launch_q35_visual_rope(rope_, max_ctx_, visual_positions_, n_prompt, delta, st_, pm);
-  else launch_q35_rope_table(rope_, max_ctx_, st_, pm);
+  if (visual_on_) launch_q35_visual_rope(rope_, max_ctx_, visual_positions_, n_prompt, delta, st_, pm, yarn2_);
+  else launch_q35_rope_table(rope_, max_ctx_, st_, pm, yarn2_);
   cudaStreamSynchronize(st_);
   const auto err = cudaGetLastError();
   if (err != cudaSuccess) throw std::runtime_error(std::string("visual: ") + cudaGetErrorString(err));
@@ -1324,7 +1329,7 @@ void Engine35::ms_bind(Engine35* const* eng, int n, int n_light) {
   { std::string why; if (ms_unsupported(&why)) throw std::runtime_error("ms_bind: " + why); }
   for (int i = 0; i < n; ++i) { Engine35* e = eng[i];
     if (!e || e->shared_weights_ != shared_weights_ || e->max_ctx_ != max_ctx_ || e->nlayers_ != nlayers_ || e->tbcap_ != tbcap_ || e->tbcap_kb_ != tbcap_kb_ ||
-        e->visual_on_ || e->mtp_.on || e->kv8_ != kv8_ || e->kv_fp16_ != kv_fp16_)
+        e->visual_on_ || e->mtp_.on || e->kv8_ != kv8_ || e->kv_fp16_ != kv_fp16_ || e->yarn2_ != yarn2_)
       throw std::runtime_error("ms_bind: every stream must be an engine of the same model file, context size and settings in this process");
     for (int j = 0; j < i; ++j) if (eng[j] == e) throw std::runtime_error("ms_bind: an engine is listed twice");
     if (e == this) throw std::runtime_error("ms_bind: the carrier cannot be one of its own streams");
@@ -1458,7 +1463,7 @@ void Engine35::ms_load(int slot, Engine35* src) {
   const int ne = (int)ms_eng_.size();
   if (slot < ne || slot >= ms_ns_) throw std::runtime_error("ms_load: not a light stream slot of the current binding");
   if (!src || src->shared_weights_ != shared_weights_ || src->max_ctx_ != max_ctx_ || src->nlayers_ != nlayers_ || src->tbcap_ != tbcap_ ||
-      src->tbcap_kb_ != tbcap_kb_ || src->kv8_ != kv8_ || src->kv_fp16_ != kv_fp16_)
+      src->tbcap_kb_ != tbcap_kb_ || src->kv8_ != kv8_ || src->kv_fp16_ != kv_fp16_ || src->yarn2_ != yarn2_)
     throw std::runtime_error("ms_load: the source must be an engine of the same model file, context size and settings in this process");
   // the streams of a pass share this engine's position table (rope_): a source that reads image input has other positions
   if (src->visual_on_) throw std::runtime_error("ms_load: the source engine has image input on (a multi-stream pass takes text only)");

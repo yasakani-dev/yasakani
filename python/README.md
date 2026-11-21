@@ -379,6 +379,22 @@ print(r.choices[0].message.tool_calls)
   them. These times are measured inside the engine. The speed tables of this project are measured by the client, from the first to the
   last chunk ([docs/MEASUREMENTS.md](https://github.com/yasakani-dev/yasakani/blob/main/docs/MEASUREMENTS.md)), so their numbers differ from these.
 
+### Extended context with 2x YaRN (`--yarn2`, experimental)
+
+`yasakani serve`, `yasakani chat` and `yasakani bench` accept `--yarn2` (experimental) to turn on 2x YaRN rotary scaling
+(`YSKN_Q35_YARN2=1`) for contexts up to **524,288 tokens** (2x the model's native 262,144-token context).
+
+* **Experimental.** With `--yarn2` on, the rotary table changes and outputs differ from the native rotary table at **every** length,
+  not only past 262,144 tokens. Quality has not been measured beyond 262,144 tokens or with the 5-bit KV cache (whose quantization
+  table was fitted with the native rotary table).
+* **Context length and memory.** When you pass `--yarn2` without `--max-ctx`, the package plans the longest context up to 524,288
+  tokens that fits the free GPU memory (a multiple of 16,384, accounting for the larger 0.2.0 prefill buffers on cards with 30,000 MiB
+  or more); if `nvidia-smi` cannot query free GPU memory, it keeps the native 262,144-token context and asks for `--max-ctx`. Passing `--max-ctx` sets the length yourself (at most 524,288) and leaves out the draft output head (`bdraft2_k8.shead`)
+  when it does not fit beside that context. With the shipped `bdraft2` drafter, per-token GPU memory stays 22,400 bytes/token
+  (~10.9 GiB at 524,288 tokens); the separate built-in MTP draft path (`yskn_load_draft`, not used by this package) also allocates a
+  `max_ctx × 5,120 × 2` byte hidden-state history (~5.4 GB at 524,288).
+* `yasakani selfcheck` does not accept `--yarn2`, because `selfcheck.json` references are made with the native rotary table.
+
 ### Image input (optional)
 
 Image input works on **Windows**, and on Linux with llama.cpp built from source (contributed in [#8](https://github.com/yasakani-dev/yasakani/pull/8); we have not tried it there,

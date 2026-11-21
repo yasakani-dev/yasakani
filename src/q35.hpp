@@ -110,8 +110,8 @@ struct Q35AttnPostMs { Q35MsRows ms; int8_t* const* k8 = nullptr; float* const* 
                        uint8_t* const* kp = nullptr; float* const* kps = nullptr; uint8_t* const* vp = nullptr; float* const* vps = nullptr; };
 void launch_q35_attn_post_ms(const Q35AttnPostArgs&, const Q35AttnPostMs&, cudaStream_t);
 void launch_tb_requant_ms(const Q35AttnPostArgs&, const Q35AttnPostMs&, cudaStream_t);
-void launch_q35_rope_table(float2* out, int max_ctx, cudaStream_t, int pm = 0);   
-void launch_q35_visual_rope(float2* out, int max_ctx, const int* positions, int n, int delta, cudaStream_t, int pm);
+void launch_q35_rope_table(float2* out, int max_ctx, cudaStream_t, int pm = 0, bool yarn2 = false);
+void launch_q35_visual_rope(float2* out, int max_ctx, const int* positions, int n, int delta, cudaStream_t, int pm, bool yarn2 = false);
 void launch_q35_visual_embed(uint16_t* rows, const uint16_t* table, const int* ids,
                             const uint16_t* features, const int* map, const int* pos,
                             int M, int max_ctx, cudaStream_t);

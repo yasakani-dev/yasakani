@@ -136,6 +136,13 @@ def _add_engine_args(sp: argparse.ArgumentParser) -> None:
     _add_wide_args(sp)
 
 
+def _add_yarn2_args(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument("--yarn2", action="store_true",
+                    help="experimental: 2x YaRN rotary scaling, planning context up to %d tokens (or --max-ctx up to %d).  "
+                         "Outputs differ from the native rotary table at every length; quality beyond 262144 tokens and with the "
+                         "5-bit KV cache has not been measured" % (gpus.YARN2_MAX_CTX, gpus.YARN2_MAX_CTX))
+
+
 def _add_wide_args(sp: argparse.ArgumentParser) -> None:
     g = sp.add_argument_group("wide copy passes")
     g.add_argument("--wide", choices=widecheck.MODES, default=None,
@@ -189,7 +196,7 @@ def _vision(args):
     return vision
 
 
-def _open_stack(args, *, warm: bool = True, parallel: int = 1):
+def _open_stack(args, *, warm: bool = True, parallel: int = 1, allow_yarn2: bool = True):
     """Model folder -> (pack, engine, formatter, runner).  The tokenizer is loaded first so a broken folder fails before the long load.
     ``parallel`` N >= 2 (serve --parallel N): the context is chosen for N requests at once (``gpu.plan_parallel``); afterwards
     ``args.parallel_planned`` is the N the engine was opened for (1 when the engine library has no multi-stream entries or the free GPU
@@ -199,6 +206,12 @@ def _open_stack(args, *, warm: bool = True, parallel: int = 1):
     from .textio import ChatFormatter
     prefill = gpus.prefill_mode_of(getattr(args, "prefill", None))       # a wrong YASAKANI_PREFILL or YASAKANI_EDIT_COPY fails first
     edit_copy = gpus.edit_copy_of(getattr(args, "edit_copy", None))
+    yarn2 = bool(getattr(args, "yarn2", False))
+    cmd = getattr(args, "cmd", None)
+    if yarn2 and (not allow_yarn2 or cmd == "selfcheck"):
+        raise YasakaniError("selfcheck does not support --yarn2: the reference files were made with the native rotary table")
+    if yarn2 and args.max_ctx is not None and args.max_ctx > gpus.YARN2_MAX_CTX:
+        raise YasakaniError("--yarn2 supports at most %d context tokens (got %d)" % (gpus.YARN2_MAX_CTX, args.max_ctx))
     pack = ModelPack.load(_model_dir(args))
     fmt = ChatFormatter(pack.root)
     vision = _vision(args)                       # wrong image input options fail here, before the long load
@@ -218,15 +231,16 @@ def _open_stack(args, *, warm: bool = True, parallel: int = 1):
             _say("note: this engine library has no multi-stream entries (yskn_ms_*), so --parallel %d is off: serving one request at "
                  "a time" % n)
             n = 1
+    ctx_limit = gpus.YARN2_MAX_CTX if yarn2 else None
     if n >= 2:
-        plan = (gpus.plan_parallel(pack, det, n, reserve) if args.max_ctx is None
+        plan = (gpus.plan_parallel(pack, det, n, reserve, max_ctx_limit=ctx_limit) if args.max_ctx is None
                 else gpus.plan_given_parallel(pack, det, args.max_ctx, n, reserve))
         if plan.parallel < 2:                    # the free memory is not known
             for line in plan.notes:
                 _say(line)
             n, plan = 1, None
     if plan is None and args.max_ctx is None:    # 0.1.3: a context that fits the free GPU memory (unchanged on the RTX 5090)
-        plan = gpus.plan_context(pack, det, reserve)
+        plan = gpus.plan_context(pack, det, reserve, max_ctx_limit=ctx_limit)
     elif plan is None:                           # a given context is used as it is; the draft model's output head only where it fits
         plan = gpus.plan_given_context(pack, det, args.max_ctx, reserve)
     gpus.use_prefill(plan, prefill, det)
@@ -234,12 +248,23 @@ def _open_stack(args, *, warm: bool = True, parallel: int = 1):
     args.parallel_planned, args.context_plan = n, plan
     for line in plan.notes:
         _say(line)
+    if yarn2:
+        _say("note: --yarn2 (experimental): 2x YaRN rotary scaling is on; outputs differ from the native rotary table at every length, "
+             "and quality beyond %d tokens or with the 5-bit KV cache has not been measured" % pack.max_ctx)
+        if args.max_ctx is not None and args.max_ctx <= pack.max_ctx:
+            _say("note: --yarn2 with --max-ctx %d does not exceed the model's native %d-token context (outputs still differ from the "
+                 "native rotary table)" % (args.max_ctx, pack.max_ctx))
     _say(plan.prefill_line)
     if plan.edit_copy == "on":
         _say("edit copy: on")
     max_ctx = plan.max_ctx
-    profile = RuntimeProfile.default(pack, plan.env) if plan.env else None
-    replaced = [k for k in plan.env if k in os.environ]     # set in the shell, but the plan's value is used: named with the removed ones
+    extra_env = dict(plan.env) if plan.env else {}
+    if yarn2:
+        if max_ctx is not None and max_ctx > gpus.YARN2_MAX_CTX:
+            raise YasakaniError("--yarn2 supports at most %d context tokens (got %d)" % (gpus.YARN2_MAX_CTX, max_ctx))
+        extra_env["YSKN_Q35_YARN2"] = "1"
+    profile = RuntimeProfile.default(pack, extra_env) if extra_env else None
+    replaced = [k for k in extra_env if k in os.environ]     # set in the shell, but the plan's value is used: named with the removed ones
     wide = widecheck.mode_of(getattr(args, "wide", None))         # 0.1.7: a wrong YASAKANI_WIDE fails here, before the long load
     _say("loading the model (%s of weights) ..." % _human(pack.weights.stat().st_size))
     t0 = time.time()
@@ -351,8 +376,10 @@ def _check_key(args, pack, eng, sched) -> Optional[str]:
         lib = hashlib.sha256(Path(eng.lib.path).read_bytes()).hexdigest()
     except (OSError, AttributeError):
         return None
-    parts = dict(library=lib, gpu=g.name, uuid=g.uuid, compute_capability=g.cc_text, driver=g.driver, model=pack.model_id,
+    parts: dict[str, object] = dict(library=lib, gpu=g.name, uuid=g.uuid, compute_capability=g.cc_text, driver=g.driver, model=pack.model_id,
                  weights=pack.weights.stat().st_size, version=__version__, slots=sched.n_slots, rows=sched.rows, drafter=sched.drafter)
+    if getattr(args, "yarn2", False):
+        parts["yarn2"] = True
     return hashlib.sha256(json.dumps(parts, sort_keys=True).encode("utf-8")).hexdigest()[:32]
 
 
@@ -985,9 +1012,9 @@ def _selfcheck_parallel(args, pack, eng, fmt, rc: int) -> int:
 def cmd_selfcheck(args) -> int:
     n = _parallel_count(getattr(args, "parallel", None))
     if n >= 2:
-        pack, eng, fmt, runner = _open_stack(args, warm=True, parallel=n)
+        pack, eng, fmt, runner = _open_stack(args, warm=True, parallel=n, allow_yarn2=False)
     else:
-        pack, eng, fmt, runner = _open_stack(args, warm=True)
+        pack, eng, fmt, runner = _open_stack(args, warm=True, allow_yarn2=False)
     try:
         rc = _selfcheck_one(args, pack, eng, fmt)
         if n >= 2 and not args.write and rc in (0, 3):
@@ -1074,6 +1101,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("serve", help="start the OpenAI-compatible server")
     _add_engine_args(sp)
+    _add_yarn2_args(sp)
     sp.add_argument("--host", default="127.0.0.1", help="address to listen on (default 127.0.0.1: this computer only)")
     sp.add_argument("--port", type=int, default=DEFAULT_PORT)
     sp.add_argument("--api-key", default=os.environ.get("YASAKANI_API_KEY"), help="require this key (or set YASAKANI_API_KEY); needed for any non-local --host")
@@ -1104,6 +1132,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("chat", help="talk to the model in the terminal")
     _add_engine_args(sp)
+    _add_yarn2_args(sp)
     sp.add_argument("--system", help="system prompt")
     sp.add_argument("--max-tokens", type=int, default=32768)
     sp.add_argument("--temperature", type=float, default=1.0)
@@ -1133,6 +1162,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("bench", help="measure generation speed (greedy; fixed length, or with --edit the edit tasks of the speed tables; "
                                       "--edit --think samples)")
     _add_engine_args(sp)
+    _add_yarn2_args(sp)
     sp.add_argument("--edit", action="store_true",
                     help="run the 3 edit tasks of the speed tables in the README (code edit, JSONL edit, long JSONL edit) until the model "
                          "ends its answer; prints tokens, seconds, tok/s, tokens per pass, wide copy passes and whether each answer is "

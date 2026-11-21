@@ -40,10 +40,10 @@ extern "C"  int yskn_pm_test(int fn, unsigned long long base, const void* h_in, 
     cudaMemcpy(d, h_in, (size_t)n * 8, cudaMemcpyHostToDevice);
     pm_f64_kernel<<<(unsigned)((n + 255) / 256), 256>>>(fn, d, d + n, (unsigned)n);
     e = cudaMemcpy(h_out, d + n, (size_t)n * 8, cudaMemcpyDeviceToHost); cudaFree(d);
-  } else if (fn == 20) {
+  } else if (fn == 20 || fn == 21) {
     float2* d = nullptr; const size_t bytes = (size_t)n * (Q35_RD / 2) * sizeof(float2);
     if ((e = cudaMalloc(&d, bytes)) != cudaSuccess) return (int)e;
-    launch_q35_rope_table(d, (int)n, nullptr, (int)base);
+    launch_q35_rope_table(d, (int)n, nullptr, (int)base, fn == 21);
     e = cudaMemcpy(h_out, d, bytes, cudaMemcpyDeviceToHost); cudaFree(d);
   } else return (int)cudaErrorInvalidValue;
   if (e != cudaSuccess) return (int)e;
