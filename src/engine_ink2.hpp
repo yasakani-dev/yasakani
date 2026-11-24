@@ -231,8 +231,8 @@ class EngineInk2 {
   float* d_msg_queries_ = nullptr;
   std::vector<Ink2Layer> layers_;
 
-  // KV caches (FP32 default for exact parity & short-ctx speed; BF16 opt-in via YSKN_INK2_KV=bf16) & short-conv history across 48 visits
-  bool kv_bf16_ = false;
+  // KV caches (BF16 default, the 16-bit KV memory of earlier releases; FP32 opt-in via YSKN_INK2_KV=fp32) & short-conv history across 48 visits
+  bool kv_bf16_ = true;
   bool use_suffix_draft_ = true;
   std::vector<void*> d_kc_, d_vc_;
   float* d_conv_base_ = nullptr;

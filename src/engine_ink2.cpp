@@ -559,8 +559,9 @@ EngineInk2::EngineInk2(const std::string& path, int max_ctx, int /*flags*/) {
     const int m = std::atoi(emx);
     if (m >= 2) tree_max_ = std::min(kMaxTree, m);
   }
-  if (const char* ekv = std::getenv("YSKN_INK2_KV")) {
-    kv_bf16_ = (std::strcmp(ekv, "bf16") == 0 || std::strcmp(ekv, "BF16") == 0 || std::strcmp(ekv, "1") == 0);
+  if (const char* ekv = std::getenv("YSKN_INK2_KV")) {  // bf16 (default) or fp32
+    if (std::strcmp(ekv, "fp32") == 0 || std::strcmp(ekv, "FP32") == 0 || std::strcmp(ekv, "0") == 0) kv_bf16_ = false;
+    else if (std::strcmp(ekv, "bf16") == 0 || std::strcmp(ekv, "BF16") == 0 || std::strcmp(ekv, "1") == 0) kv_bf16_ = true;
   }
   if (const char* esuf = std::getenv("YSKN_INK2_SUFFIX_DRAFT")) {
     use_suffix_draft_ = (std::strcmp(esuf, "0") != 0);
@@ -797,7 +798,7 @@ EngineInk2::EngineInk2(const std::string& path, int max_ctx, int /*flags*/) {
   }
   reader.close_all();
 
-  // KV caches (FP32 default, BF16 opt-in via YSKN_INK2_KV=bf16) & contiguous short-conv history across 48 visits
+  // KV caches (BF16 default, FP32 opt-in via YSKN_INK2_KV=fp32) & contiguous short-conv history across 48 visits
   const size_t nv = cfg_.schedule.size();
   const size_t kv_row_elems = size_t(cfg_.hkv) * size_t(cfg_.head_dim);
   const size_t kv_eb = kv_bf16_ ? sizeof(__nv_bfloat16) : sizeof(float);
