@@ -248,6 +248,13 @@ extern "C" YSKN_API int yskn_time_cycle(yskn_engine* e, const int32_t* ids, int 
   YSKN_TRY(ms_gate(e); if (!e->q) throw std::runtime_error("time_cycle: qwen3_5 engine only"); e->q->time_cycle(ids, M, iters, ms)) }
 extern "C" YSKN_API int yskn_wide_state(yskn_engine* e, int32_t* out, int n, int* n_out) {
   YSKN_TRY(if (!e->q) throw std::runtime_error("wide_state: qwen3_5 engine only"); *n_out = e->q->wide_state(out, n)) }
+// The engines yskn_snap_info serves, for its error text. A preprocessor directive cannot sit inside the YSKN_TRY argument
+// (MSVC rejects it), so the choice is made here.
+#if YSKN_WITH_INK2
+#define YSKN_SNAP_ENGINES "qwen3_5 or inkling2"
+#else
+#define YSKN_SNAP_ENGINES "qwen3_5"
+#endif
 extern "C" YSKN_API int yskn_snap_info(yskn_engine* e, int32_t* out4, int32_t* ids, int max_ids) { YSKN_TRY(
   YSKN_INK2_ONLY(if (e->ink) {
     const auto& lv = e->ink->live_tokens();
@@ -258,11 +265,7 @@ extern "C" YSKN_API int yskn_snap_info(yskn_engine* e, int32_t* out4, int32_t* i
     if (ids) for (int i = 0; i < (int)lv.size() && i < max_ids; ++i) ids[i] = lv[i];
     return 0;
   })
-#if YSKN_WITH_INK2
-  if (!e->q) throw std::runtime_error("snap: qwen3_5 or inkling2 engine only");
-#else
-  if (!e->q) throw std::runtime_error("snap: qwen3_5 engine only");
-#endif
+  if (!e->q) throw std::runtime_error("snap: " YSKN_SNAP_ENGINES " engine only");
   const auto& lv = e->q->snap_live(); out4[0] = e->q->position(); out4[1] = e->q->snap_pos(); out4[2] = e->q->snap_live_ok() ? 1 : 0;
   out4[3] = (int32_t)lv.size(); if (ids) for (int i = 0; i < (int)lv.size() && i < max_ids; ++i) ids[i] = lv[i]) }
 extern "C" int yskn_lfrow_table(yskn_engine* e, const uint8_t* tab48) { YSKN_TRY(ms_gate(e); if (e->q) e->q->lfrow_table(tab48); else throw std::runtime_error("lfrow: 27B engine only")) }
