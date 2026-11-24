@@ -1706,7 +1706,7 @@ def port_answers(port, seconds=0.25):
 
 def pick_port(preferred, avoid=()):
     for p in [preferred] + list(range(preferred + 10, preferred + 60)):
-        if p not in avoid and not port_answers(p) and port_is_free(p):      # ask first: a port in use is not even bound for the test
+        if p not in avoid and port_is_free(p) and not port_answers(p):      # the bind test first: it is quick for a port that cannot be bound
             return p
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:

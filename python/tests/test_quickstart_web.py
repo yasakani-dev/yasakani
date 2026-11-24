@@ -1169,7 +1169,7 @@ class HelperTests(Base):
         with mock.patch.object(QS, "port_is_free", lambda p: asked.append(p) or True):
             got = QS.pick_port(port)
         self.assertIn(got, range(port + 10, port + 60))
-        self.assertNotIn(port, asked)                                # a port that answers is not bound for the test
+        self.assertEqual(asked[0], port)                             # the bind test passed for it, and it was still not taken
 
     def test_a_port_without_a_listener_does_not_answer(self):
         port = free_port()
