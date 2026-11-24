@@ -158,12 +158,29 @@ class PreparedVisual(tuple):
         return value
 
 
+INK2_IMAGE_PARTS = ("image_url", "input_image", "image")     # the image parts of an Inkling-2 request (as chat.IMAGE_PART_TYPES)
+
+
+def _ink2_part_source(part):
+    """The image of an input_image or image part, read as the converted folder reads it: a string or {"url": ...}."""
+    t = part.get("type")
+    x = part.get("image_url", part.get("image")) if t == "input_image" else part.get("image", part.get("image_url"))
+    if isinstance(x, dict):
+        x = x.get("url")
+    if not isinstance(x, str) or not x:
+        from .chat import RequestError
+        raise RequestError("an image part needs its image: a data:image/...;base64 URI, or a local path (with %s)"
+                           % LOCAL_FILES_HINT)
+    return x
+
+
 def split_images(messages, *, is_inkling2: bool = False):
     sources, out = [], []
     allowed_roles = ("user", "tool") if is_inkling2 else ("user",)
+    kinds = INK2_IMAGE_PARTS if is_inkling2 else ("image_url",)
     for message in messages:
         content = message.get("content")
-        if not isinstance(content, list) or not any(isinstance(p, dict) and p.get("type") == "image_url" for p in content):
+        if not isinstance(content, list) or not any(isinstance(p, dict) and p.get("type") in kinds for p in content):
             out.append(message)
             continue
         if message.get("role") not in allowed_roles:
@@ -171,6 +188,10 @@ def split_images(messages, *, is_inkling2: bool = False):
             raise RequestError("images are supported only in %s messages" % ("user and tool" if is_inkling2 else "user"))
         parts = []
         for part in content:
+            if is_inkling2 and isinstance(part, dict) and part.get("type") in ("input_image", "image"):
+                sources.append(_ink2_part_source(part))
+                parts.append({"type": "image"})
+                continue
             if isinstance(part, dict) and part.get("type") == "image_url":
                 value = part.get("image_url")
                 if not isinstance(value, dict) or not isinstance(value.get("url"), str) or not value["url"]:
@@ -708,9 +729,9 @@ class Ink2NativeVision:
         if fmt.encode(INK2_IMAGE_TOKEN).tolist() != [image_id]:
             raise RuntimeError("tokenizer does not encode %s as a single token" % INK2_IMAGE_TOKEN)
         markers = sum(int(t) == image_id for t in prompt)
-        if markers != len(sources):
-            raise RequestError("the messages hold %d image markers for %d image(s); do not write %s as text"
-                               % (markers, len(sources), INK2_IMAGE_TOKEN))
+        if markers != len(sources):                  # the message of the converted folder
+            raise RequestError("the text of the messages contains the image placeholder %s, which is reserved for images"
+                               % INK2_IMAGE_TOKEN)
         with self._lock:
             identity = self._fingerprint()
             if identity != self._identity:

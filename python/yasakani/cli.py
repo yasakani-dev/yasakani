@@ -299,7 +299,9 @@ def _ink2_tower_problem(pack) -> str:
 
 
 def _inkling2_vision(args, pack, eng):
+    from .inkling2 import VISION_OFF
     mode = getattr(args, "ink2_vision_mode", "auto")
+    args.ink2_vision_problem = VISION_OFF        # why images are refused (serve's message), until the encoder is ready
     if mode == "off":
         return None
     if not pack.has_vision:
@@ -312,6 +314,7 @@ def _inkling2_vision(args, pack, eng):
         if mode == "on" or getattr(args, "image", None):
             raise YasakaniError("image input cannot be on: %s" % problem)
         _say("note: image input is off: %s" % problem)
+        args.ink2_vision_problem = problem
         return None
     from .vision import Ink2NativeVision, error_text
     cap, req = getattr(args, "ink2_vision_limits", (None, None))
@@ -329,6 +332,7 @@ def _inkling2_vision(args, pack, eng):
         vision.check()
     except (ValueError, OSError, RuntimeError, ImportError) as ex:
         raise YasakaniError("image input: %s" % error_text(ex)) from ex
+    args.ink2_vision_problem = ""
     return vision
 
 
@@ -811,6 +815,8 @@ def cmd_serve(args) -> int:
             cfg.hf_inkling2 = True
             cfg.keep_tool_ids = True
             cfg.sampling_defaults = dict(pack.sampling_defaults)
+            cfg.vision_parts = True              # the image parts and messages of a converted folder (image_url, input_image, image)
+            cfg.vision_problem = getattr(args, "ink2_vision_problem", "") or ""
         state.runner = runner
         _say("ready: OpenAI-compatible API at %s/v1   (model id %r%s%s)" % (base, cfg.model_id, ", API key required" if cfg.api_key else "",
                                                                          ", image input on" if runner.vision is not None else ""))
