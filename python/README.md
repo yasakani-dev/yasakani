@@ -714,6 +714,11 @@ image into image tokens that take places in the prompt like text tokens. In this
   adds it (it reads only the image part of the published weights file and does not touch the text weights). A folder of
   the published weights file (`"format": "hf-safetensors"`) reads the image tower from that file and needs no extra file. `yasakani info`
   shows whether the folder has it (`images` line) and whether the engine library reads images (`engine capabilities: ... image input`).
+* **Pillow.** The image files are read with the Pillow library, in the Python that runs `yasakani`. The quickstart of 0.3.5 installs it
+  into its environment; with an install of your own, use `pip install ".[vision]"` instead of `pip install .`, or add it with
+  `pip install Pillow` (as for the [Qwen3.8 image input](#image-input-optional)). Without it the model works with text as before, and a
+  request with an image fails with `image input needs Pillow: ...`: add Pillow to that Python (in a quickstart folder:
+  `venv\Scripts\python -m pip install Pillow`).
 * **On and off.** `chat` and `serve` take `--vision auto|on|off` (default `auto`, or `YASAKANI_INK2_VISION`). `auto` loads the image
   tower when the folder has it and the engine library reads images, else the model works as before, text only; `on` stops with the
   reason instead; `off` does not load it. One start-up line says `image input: on (...)` or `image input: off (reason)`.
@@ -730,7 +735,7 @@ image into image tokens that take places in the prompt like text tokens. In this
   at 32,768 tokens on the RTX 5090, the GPU memory in use rose by 720 MiB (754,974,720 bytes, about 0.75 GB): 20,156 MiB against
   19,436 MiB with `--vision off`. Without `--max-ctx` the context of a converted folder is chosen with this memory counted; `--vision off`
   gives it back.
-* **Time.** Encoding one 1280 × 720 image (576 image tokens) took about 12.7 ms on the RTX 5090 (one run). An
+* **Time.** Encoding one 1280 × 720 image (576 image tokens) took about 12.7 ms on the RTX 5090 (median of 6 encodes in one job). An
   image seen in the last request is not encoded again (its places in the prompt are kept), and the vectors of recent images stay in
   memory (up to 512 MiB).
 * **Formats.** PNG, JPEG, WebP, GIF, BMP and TIFF (one frame); other files, such as EPS, WMF or PDF, are refused unread.
@@ -818,6 +823,8 @@ and is named in the note on ignored settings.
   Close the other programs, or lower `--max-ctx`.
 * *only thinking, no answer* - the length limit was reached while the model was still thinking; see the note on `max_tokens` above
   (`/effort medium`, `/effort low` or `/think off` in `yasakani chat`).
+* *image input needs Pillow* - the Python that runs `yasakani` has no Pillow: `pip install Pillow` into it (in a quickstart folder:
+  `venv\Scripts\python -m pip install Pillow`), or install the package with `pip install ".[vision]"`.
 * *cannot listen on 127.0.0.1:8765* - another program (or a second server) uses the port; pick another with `--port`.
 * *output differs in selfcheck* - run `yasakani verify` first (a damaged download is the most common cause), then run the self-check once more.
   On a GPU other than the RTX 5090, *self-check FAILED* after the comparison of the predictions, or after the self-consistency lines on any

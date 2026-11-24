@@ -312,7 +312,7 @@ square of the image tokens, so with the variable set `--vision-max-image-tokens`
 
 ### Inkling-2 Mini on Linux: the engine inside `libyskn.so` (`-DYSKN_WITH_INK2=ON`; #28, #30, #32)
 
-日本語：Linux では、Inkling-2 Mini のエンジンを `libyskn.so` に入れて組み立てられます。@audreyt さんの寄稿です（[#28](https://github.com/yasakani-dev/yasakani/pull/28)・[#30](https://github.com/yasakani-dev/yasakani/pull/30)・[#32](https://github.com/yasakani-dev/yasakani/pull/32)）。CMake の `-DYSKN_WITH_INK2=ON` を付けます（標準は付けません）。この時は実行に cuBLAS（CUDA Toolkit の `libcublas.so`）が要ります。ダウンロードしたままのモデルのフォルダー（`yasakani.json` が無い物）を変換せずに読みます。0.3.5 で速くなり、先読み用のモデル（`mtp.safetensors`）も使います。キーと値は標準で bf16 で持ちます。`YSKN_INK2_KV=fp32` で 32 ビットになります。先読みは、標準では貪欲法の時だけです。環境変数で、サンプリングにも使うか読み込まないかを選べます（下）。画像も読めます。オプションと決まりは Windows と同じです（チャットの `/image` はありません）。会話の次の番では、プレフィックスキャッシュで前の部分を読み直しません。ソースからの組み立てで、公式の配布物ではありません。配布する Windows の `yskn.dll` には入っていません。
+日本語：Linux では、Inkling-2 Mini のエンジンを `libyskn.so` に入れて組み立てられます。@audreyt さんの寄稿です（[#28](https://github.com/yasakani-dev/yasakani/pull/28)・[#30](https://github.com/yasakani-dev/yasakani/pull/30)・[#32](https://github.com/yasakani-dev/yasakani/pull/32)）。CMake の `-DYSKN_WITH_INK2=ON` を付けます（標準は付けません）。この時は実行に cuBLAS（CUDA Toolkit の `libcublas.so`）が要ります。ダウンロードしたままのモデルのフォルダー（`yasakani.json` が無い物）を変換せずに読みます。0.3.5 で速くなり、先読み用のモデル（`mtp.safetensors`）も使います。キーと値は標準で bf16 で持ちます。`YSKN_INK2_KV=fp32` で 32 ビットになります。先読みは、標準では貪欲法の時だけです。環境変数で、サンプリングにも使うか読み込まないかを選べます（下）。画像も読めます。オプションと決まりは Windows と同じです（チャットの `/image` はありません）。画像には Pillow が要るので、パッケージは `pip install "./python[vision]"` で入れます。会話の次の番では、プレフィックスキャッシュで前の部分を読み直しません。ソースからの組み立てで、公式の配布物ではありません。配布する Windows の `yskn.dll` には入っていません。
 
 [#28](https://github.com/yasakani-dev/yasakani/pull/28) (@audreyt) contributed a second engine for Inkling-2 Mini, inside `libyskn.so`;
 [#30](https://github.com/yasakani-dev/yasakani/pull/30) and [#32](https://github.com/yasakani-dev/yasakani/pull/32), by the same author,
@@ -349,7 +349,9 @@ release, and the released Windows `yskn.dll` does not contain it:
   those of the converted folder ([python/README.md](python/README.md#inkling-2-mini-image-input)): `--vision auto|on|off` (or
   `YASAKANI_INK2_VISION`), `--vision-max-image-tokens`, `--vision-max-request-image-tokens`, `--vision-allow-local-files`,
   `chat --image` (the chat of this engine has no `/image`), and in `serve` image parts in user and tool messages (`image_url`, `input_image` and `image`), with the
-  same limits, the same shrink of large images and the same messages for what is refused. What we added on top:
+  same limits, the same shrink of large images and the same messages for what is refused. The package reads the image files with
+  Pillow, so install it with `pip install "./python[vision]"` instead of `pip install ./python` ([Running it](#running-it)); without
+  Pillow a request with an image fails with `image input needs Pillow`. What we added on top:
   * Before the image tower is used, `vision_config` in `config.json` and the type, shape and size of every image-tower tensor are
     checked against Inkling-2 Mini. A folder with another configuration, or with a damaged entry, opens with text only and one line
     that gives the reason (`--vision auto`); `--vision on` or `--image` stops with that reason.
@@ -397,7 +399,7 @@ yasakani serve --model-dir ~/models/Inkling-2-Mini --dll build/bin/libyskn.so
 
 ### Inkling-2 Mini on Linux: `libyskn_inkling2.so` (`build_linux.sh`, since 0.3.5)
 
-日本語：0.3.5 から、Inkling-2 Mini 用のライブラリー（`src/inkling2/`）を Linux でもソースから組み立てられます（[#33](https://github.com/yasakani-dev/yasakani/pull/33)）。`bash src/inkling2/build_linux.sh` で `build/inkling2/libyskn_inkling2.so` ができ、`YASAKANI_INK2_DLL` でその場所を教えます。RTX 50 シリーズでは `INK2_NVFP4_TC=1` を付けます。CPU のエミュレーションとその自己試験は入っていません。寄稿者が確認した方法で、公式の対応ではありません。変換したフォルダー（`"architecture": "inkling2"`）は、このライブラリーが読みます。ダウンロードしたままのフォルダーは、上の `libyskn.so` のエンジンが読みます。
+日本語：0.3.5 から、Inkling-2 Mini 用のライブラリー（`src/inkling2/`）を Linux でもソースから組み立てられます（[#33](https://github.com/yasakani-dev/yasakani/pull/33)）。`bash src/inkling2/build_linux.sh` で `build/inkling2/libyskn_inkling2.so` ができ、`YASAKANI_INK2_DLL` でその場所を教えます。RTX 50 シリーズでは `INK2_NVFP4_TC=1` を付けます。CPU のエミュレーションとその自己試験は入っていません。寄稿者が確認した方法で、公式の対応ではありません。変換したフォルダー（`"architecture": "inkling2"`）は、このライブラリーが読みます。ダウンロードしたままのフォルダーは、上の `libyskn.so` のエンジンが読みます。画像には Pillow が要るので、パッケージは `pip install "./python[vision]"` で入れます。
 
 [#33](https://github.com/yasakani-dev/yasakani/pull/33) (@Albrod) contributed a Linux build of the Inkling-2 library of
 [the section above](#the-inkling-2-mini-library-yskn_inkling2dll-since-031). This is building from source, tested by contributors, not an
@@ -415,6 +417,8 @@ official release: there is no prebuilt `libyskn_inkling2.so`, and the released l
   library (`YASAKANI_TEST_INK2_DLL`) cannot run on Linux. The `cuda` backend, which runs the model, does not use them.
 * The package looks only for `yskn_inkling2.dll` by name. On Linux give the library with `YASAKANI_INK2_DLL` (or `--dll` naming the
   `.so` file itself).
+* For images, install the package with Pillow: `pip install "./python[vision]"` instead of `pip install ./python`, as for
+  [the engine above](#linux-inkling-2).
 * Which engine reads which folder: a folder made by `inkling2_convert.py` (`"architecture": "inkling2"` in its `yasakani.json`, for
   example the published converted folder) goes to this library; the folder of the published model as downloaded (no `yasakani.json`) goes
   to the engine inside `libyskn.so` of [the section above](#linux-inkling-2). The two can be built side by side.

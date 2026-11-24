@@ -678,16 +678,22 @@ the GPU memory for dropped replies) are in the [README](../README.md#inkling-2-m
 ### Can Inkling-2 Mini read images?
 
 Yes, new in 0.3.5: still images, as the published model reads them. The image tower runs on the GPU inside the engine
-library, on Windows and in both Linux builds from source ([BUILDING.md](../BUILDING.md#linux-inkling-2)). A converted folder needs one more file, `inkling_2_mini_vision.yskn` (637 MB, the published image tower unchanged). The
-quickstart of 0.3.5 downloads it with the folder, and for a folder of 0.3.2 to 0.3.4 it asks once whether to add it
+library, on Windows and in both Linux builds from source ([BUILDING.md](../BUILDING.md#linux-inkling-2)). A folder with converted weights (`--scheme quality`, such as our converted copy on Hugging Face) needs one more file,
+`inkling_2_mini_vision.yskn` (637 MB, the published image tower unchanged); a folder that keeps the published weights file reads the image
+tower from that file. The
+quickstart of 0.3.5 downloads the image file with the folder, and for a folder of 0.3.2 to 0.3.4 it asks once whether to add it
 (about 0.64 GB; Enter alone downloads it, `n` keeps text only; later `START.cmd --image-file`). With the file, the quickstart page shows an image button, `yasakani serve` takes OpenAI `image_url` parts with `data:image/...;base64` URIs, and
 `yasakani chat` takes `--image PATH`.
+Images also need the Pillow library in the Python that runs `yasakani`. The quickstart of 0.3.5 installs it into its environment; if that
+fails, it says so and prints the command that adds it later (in the quickstart folder: `venv\Scripts\python -m pip install Pillow`);
+until then text works and a request with an image fails. With an
+install of your own, use `pip install ".[vision]"`. The error `image input needs Pillow` means that this Python has no Pillow.
 
 An image of H × W pixels becomes ceil(H / 40) × ceil(W / 40) image tokens, for example 576 for 1280 × 720. Images above 1,024 image
 tokens (`--vision-max-image-tokens`) are shrunk to fit; that shrink is this project's choice, not part of the official method. The
 image tower takes about 0.75 GB more GPU memory with the defaults (measured on the RTX 5090 at 32,768 tokens); `--vision off` does not load it, and then
-the model is text only as before. Encoding one 1280 × 720 image took about 12.7 ms on the RTX 5090. Requests without images give the same
-output as before. Not supported: video, several frames of one file, images in system or assistant messages, and images from URLs (they are never fetched).
+the model is text only as before. Encoding one 1280 × 720 image took about 12.7 ms on the RTX 5090. On the RTX 5090, requests without images
+gave the same output as 0.3.4, bit for bit, in 21 cases. Not supported: video, several frames of one file, images in system or assistant messages, and images from URLs (they are never fetched).
 Details: [python/README.md](../python/README.md#inkling-2-mini-image-input).
 
 ### What is not supported yet?

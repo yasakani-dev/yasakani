@@ -61,6 +61,8 @@ START.cmd がすること
     （約 0.64 GB）を足すかを 1 回だけ聞きます。Enter だけで取得します。n なら文章だけのままです。後から足す時は
     START.cmd --image-file です。自分で取得や変換をしたフォルダーは、これまで通り START.cmd --model-dir <フォルダー> で
     開けます。手順はリポジトリの README.ja.md の「Inkling-2 Mini」にあります。
+    画像には Pillow のライブラリーが要り、START.cmd がこのフォルダーの環境に入れます。入れられなかった時はそう表示し、
+    後から足すコマンドも出します。足すまでは、文章は使えて、画像は使えません。
   - 手で入れる手順と、くわしい説明は https://github.com/yasakani-dev/yasakani にあります。
 
 English
@@ -121,6 +123,8 @@ Good to know
     later: START.cmd --image-file. A folder you downloaded or converted yourself still opens with
     START.cmd --model-dir <folder>. The steps are in the section
     "Inkling-2 Mini" of README.md in the repository.
+    Images need the Pillow library, which START.cmd installs into the environment in this folder. If that fails, it says
+    so and prints the command that adds it later; until then text works and images do not.
   - The manual steps and the full documentation are at https://github.com/yasakani-dev/yasakani
 
 License: Apache License 2.0 (see the repository).
