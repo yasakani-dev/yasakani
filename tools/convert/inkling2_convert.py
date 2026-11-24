@@ -5,14 +5,15 @@
 
   python inkling2_convert.py --source <downloaded folder> --out <new model folder> [--scheme published | quality]
                              [--drafter-scheme d4 | d8 | published] [--repo ID] [--revision SHA] [--copy]
-                             [--device cpu | cuda] [--threads N]
+                             [--device cpu | cuda] [--threads N] [--vision]
                              [--reference-code DIR [--reference-device cpu | cuda]] [--selfcheck-tokens FILE]
   python inkling2_convert.py --selfcheck-only --out <model folder> --reference-code DIR [--reference-device cuda]
 
 Two schemes:
 
 * ``published`` (default): the published weights file, unchanged (a hard link when the source and the new folder are on the same
-  drive, else a copy).  The vision tensors stay in the file and are not read.  selfcheck.json holds the prompt of the model's
+  drive, else a copy).  The image tower (the vision tensors model.visual.*) stays in that file, and image input reads it from
+  there; ``--vision`` has nothing to add.  selfcheck.json holds the prompt of the model's
   official test and the greedy tokens that test expects.
 * ``quality``: one ``.yskn`` file (version 2, docs/FORMAT.md section 10) with the text weights re-quantised:
     - NVFP4 (4-bit codes, an E4M3 scale per 16 values, one factor per matrix, scale search): the attention query projection
@@ -25,6 +26,9 @@ Two schemes:
       rel_logits_proj, the attention-residual queries.
   The vision tower and the drafter are not in the file.  Measured on 43 windows (14,024 positions) against the
   published model: KL 0.0110, top-1 96.0 %; the file has 15.05 GB (the published file 19.5 GB, with the vision tower).
+  ``--vision`` adds the image tower as a separate file, inkling_2_mini_vision.yskn: the published bfloat16 tensors, unchanged
+  (0.64 GB; tools/convert/inkling2_vision_convert.py, which also runs on its own for a folder converted earlier).  Without it
+  the folder reads text only.
   The expected tokens of selfcheck.json are made FROM THE CONVERTED WEIGHTS, by a reference implementation of the model (PyTorch;
   not part of this repository).  The conversion on the CPU is reproducible byte for byte, and data/inkling2_selfcheck.json holds
   the tokens of the conversions we checked (by source revision, scheme and the SHA-256 of the .yskn file): when the file written
@@ -433,7 +437,7 @@ def notice_text(repo: str, revision: str, weights: str, how: str, scheme: str = 
     if scheme == "published":
         body = [
             "* The weights (%s), the configuration, the tokenizer and the chat template are the published files," % weights,
-            "  unchanged (weights: %s of the published file). The vision tensors in the weights file are not used." % how,
+            "  unchanged (weights: %s of the published file). Image input reads the vision tensors from that file." % how,
             "  The drafter (%s), when this folder has it, is the published file, unchanged." % DRAFTER_FILE,
             "* selfcheck.json and yasakani.json were written by the YASAKANI converter (tools/convert/inkling2_convert.py).",
             "  The expected tokens in selfcheck.json are those of the official tests of the model's code.",
@@ -444,7 +448,7 @@ def notice_text(repo: str, revision: str, weights: str, how: str, scheme: str = 
             "  (tools/convert/inkling2_convert.py, scheme \"%s\"). The weights were re-quantised by this tool: most dense" % scheme,
             "  matrices are stored in 4-bit (NVFP4) or 8-bit (MXFP8) formats, and the experts that the published file stores in 8 bits",
             "  were re-packed to 4 bits. The other tensors are the published values. The outputs of this model differ slightly",
-            "  from those of the published model. The vision tower is not included."] + ([
+            "  from those of the published model. The vision tower is not in this weights file."] + ([
             "  The drafter (%s), when this folder has it, is the published file, unchanged." % DRAFTER_FILE] if drafter == DRAFTER_FILE
             else [
             "  The drafter (%s) was made from the published %s by the same converter: its large matrices are" % (drafter, DRAFTER_FILE),
@@ -634,7 +638,7 @@ def convert(source: Path, out: Path, repo: str = None, revision: str = None, cop
         how = place(source / weights, out / weights, copy)
         say("weights  %-36s %s (%.2f GB)" % (weights, how, (out / weights).stat().st_size / 1e9))
         out_weights = weights
-        weights_entry = {"file": weights, "format": "hf-safetensors", "note": "published file, unchanged; vision tensors unused"}
+        weights_entry = {"file": weights, "format": "hf-safetensors", "note": "published file, unchanged; the image tower is read from it"}
         (out / "NOTICE").write_text(notice_text(repo, revision, weights, how), encoding="utf-8", newline="\n")
         cases = []
         if known is not None:
@@ -793,15 +797,29 @@ def main(argv=None) -> int:
     ap.add_argument("--reference-device", default="cpu", help="PyTorch device of the reference run (cpu or cuda)")
     ap.add_argument("--selfcheck-tokens", help="JSON file {case: [token ids]} with the expected tokens of a reference run")
     ap.add_argument("--selfcheck-only", action="store_true", help="only make selfcheck.json of an existing re-quantised folder again")
+    ap.add_argument("--vision", action="store_true", help="also write the image tower (inkling_2_mini_vision.yskn, the published "
+                                                          "bfloat16 tensors unchanged) for image input; scheme quality")
     a = ap.parse_args(argv)
     if a.selfcheck_only:
         refresh_selfcheck(Path(a.out), a.reference_code, a.reference_device, a.selfcheck_tokens)
         return 0
     if not a.source:
         ap.error("--source is required")
+    if a.vision:                         # every check of the image tower before the long text conversion starts
+        vision_convert().plan_source(Path(a.source))
     convert(Path(a.source), Path(a.out), a.repo, a.revision, a.copy, a.default_ctx, a.scheme, a.device, a.threads,
             a.reference_code, a.reference_device, a.selfcheck_tokens, a.drafter_scheme)
+    if a.vision:
+        vision_convert().convert_vision(Path(a.source), Path(a.out), a.revision)
     return 0
+
+
+def vision_convert():
+    """tools/convert/inkling2_vision_convert.py (next to this file)."""
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))
+    import inkling2_vision_convert
+    return inkling2_vision_convert
 
 
 if __name__ == "__main__":

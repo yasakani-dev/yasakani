@@ -105,7 +105,7 @@ class ConverterTests(unittest.TestCase):
         self.assertEqual(meta["architecture"], "inkling2")
         self.assertEqual(meta["source"]["repository"], "hf-internal-testing/tiny-inkling2-mini")
         self.assertEqual(meta["weights"], dict(file="model.safetensors", format="hf-safetensors",
-                                               note="published file, unchanged; vision tensors unused"))
+                                               note="published file, unchanged; the image tower is read from it"))
         self.assertEqual(meta["stop_token_ids"], [200006])
         self.assertEqual(meta["drafter"]["file"], "mtp.safetensors")
         self.assertEqual(meta["sampling"], dict(temperature=1.0, top_p=1.0, top_k=0))
