@@ -16,14 +16,17 @@ from yasakani.runtime import ModelPack
 from yasakani.textio import ChatFormatter, Inkling2OutputStream
 from yasakani.vision import Ink2NativeVision, split_images
 
-INK2_DIR = Path("/home/au/models/Inkling-2-Mini")
+# the published Inkling-2-Mini folder (config.json, tokenizer, safetensors); the tests are skipped when it is not set
+_INK2_ENV = os.environ.get("YASAKANI_TEST_INK2_HF_DIR", "")
+INK2_DIR = Path(_INK2_ENV) if _INK2_ENV else None
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIB_PATH = Path(os.environ.get("YASAKANI_LIB", str(REPO_ROOT / "build/bin/libyskn.so")))
 SAMPLING = Sampling(temperature=0.0, top_p=1.0, top_k=0, min_p=0.0, seed=1)
 
 
 def _has_ink2_runtime() -> bool:
-    return (INK2_DIR / "config.json").is_file() and (INK2_DIR / "tokenizer.json").is_file() and LIB_PATH.is_file()
+    return (INK2_DIR is not None and (INK2_DIR / "config.json").is_file() and (INK2_DIR / "tokenizer.json").is_file()
+            and LIB_PATH.is_file())
 
 
 def _png_uri(im) -> str:
@@ -32,7 +35,7 @@ def _png_uri(im) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-@unittest.skipUnless(_has_ink2_runtime(), "Inkling-2 checkpoint or libyskn.so not available")
+@unittest.skipUnless(_has_ink2_runtime(), "YASAKANI_TEST_INK2_HF_DIR or libyskn.so not available")
 class Inkling2PrefixCacheTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -227,7 +230,7 @@ class Inkling2PrefixCacheTests(unittest.TestCase):
         self.assertEqual(r_branch.ids, r_branch_cold.ids)
 
 
-@unittest.skipUnless(_has_ink2_runtime(), "Inkling-2 checkpoint or libyskn.so not available")
+@unittest.skipUnless(_has_ink2_runtime(), "YASAKANI_TEST_INK2_HF_DIR or libyskn.so not available")
 class Inkling2PrefixCacheSwaRestoreTests(unittest.TestCase):
     def test_swa_host_restore_and_wrapped_ring_bit_exact(self) -> None:
         script = r"""

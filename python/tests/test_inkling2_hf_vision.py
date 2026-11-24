@@ -8,6 +8,7 @@ import base64
 import http.client
 import io
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -41,7 +42,9 @@ from yasakani.vision import (
     validate_vision_limits,
 )
 
-INK2_DIR = Path("/home/au/models/Inkling-2-Mini")
+# the published Inkling-2-Mini folder (tokenizer.json, chat_template.jinja); the server tests are skipped when it is not set
+_INK2_ENV = os.environ.get("YASAKANI_TEST_INK2_HF_DIR", "")
+INK2_DIR = Path(_INK2_ENV) if _INK2_ENV else None
 
 
 def _need_pillow():
@@ -267,8 +270,8 @@ class Inkling2CliOptionTests(unittest.TestCase):
             cli._validate_ink2_vision_args(args)
 
 
-@unittest.skipUnless((INK2_DIR / "tokenizer.json").is_file() and (INK2_DIR / "chat_template.jinja").is_file(),
-                     "Inkling-2-Mini tokenizer files not present")
+@unittest.skipUnless(INK2_DIR is not None and (INK2_DIR / "tokenizer.json").is_file()
+                     and (INK2_DIR / "chat_template.jinja").is_file(), "YASAKANI_TEST_INK2_HF_DIR not set")
 class Inkling2VisionServerStubTests(unittest.TestCase):
     def setUp(self):
         _need_pillow()
