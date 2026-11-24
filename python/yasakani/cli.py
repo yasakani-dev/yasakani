@@ -1395,7 +1395,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-loop-guard", action="store_true")
     sp.add_argument("--image", action="append", default=None, metavar="PATH",
                     help="an image file for the first message (repeatable: the images go first, in the order given, then the "
-                         "text); /image PATH in the chat adds one to the next message.  Inkling-2 Mini model folders only")
+                         "text); /image PATH in the chat adds one to the next message.  Converted Inkling-2 Mini folders only")
     _add_ink2_vision_args(sp)
     sp.add_argument("--vision-cache", default=None, help="folder to keep image features in (default: none)")
     sp.set_defaults(func=cmd_chat)
