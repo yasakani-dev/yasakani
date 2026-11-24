@@ -712,17 +712,19 @@ when you type it, and the quickstart's check for a new version, each send one re
 
 Since 0.1.7, the quickstart (`START.cmd`) can update itself; from 0.1.7 to 0.3.4 it offers 0.3.5. From v0.1.6 or older, download the quickstart ZIP of the current release (`yasakani-quickstart-0.3.5.zip`) by hand once and run `START.cmd`; the models are kept.
 
-* **The check.** At most once a day, before it shows the menu or before it opens the browser page directly (from the second run on,
+* **The check.** At every start, at most once an hour (since 0.3.5; 0.3.4 and older: at most once a day), before it shows the menu or
+  before it opens the browser page directly (from the second run on,
   `START.cmd` does that without a menu), the quickstart first prints that it asks github.com, then sends one HTTPS request:
   `GET https://api.github.com/repos/yasakani-dev/yasakani/releases/latest`, with the User-Agent `yasakani-quickstart` and nothing else about
   your PC (no ID, no version of Windows, no GPU, no prompt). It waits at most 5 seconds; if GitHub cannot be reached, it says so in one line and
   goes on. Pre-releases are never offered. GitHub sees your IP address, as with any download.
-* **Checking at once (new in 0.3.4).** Because the automatic check runs at most once a day, someone who started the quickstart within
-  the day before a release sees no **Update** button until the next check, and a double-click no longer shows the menu. The Model tab
-  of the page has **Check for updates**: it makes the quickstart send the same single request when you press it, and only then (also
-  with the daily check turned off). On 0.3.3 or older, open a command prompt in the quickstart folder and run
-  `START.cmd --action update` (or `START.cmd --menu` and choose “check for a new version”).
-* **Turning it off.** `START.cmd --no-update-check` turns the daily check off and remembers it (in `quickstart_state.json`);
+* **Checking at once (new in 0.3.4).** Because the automatic check runs at most once an hour, someone who started the quickstart
+  shortly before a release sees no **Update** button until the next check, up to an hour later (up to a day on 0.3.4 or older), and a
+  double-click does not show the menu. The Model tab of the page has **Check for updates**: it makes the quickstart send the same
+  single request when you press it, and only then (also with the automatic check turned off). On any version, including 0.3.3 or
+  older, you can also open a command prompt in the quickstart folder and run `START.cmd --action update` (or `START.cmd --menu` and
+  choose “check for a new version”).
+* **Turning it off.** `START.cmd --no-update-check` turns the automatic check off and remembers it (in `quickstart_state.json`);
   `START.cmd --update-check` turns it on again. The environment variable `YASAKANI_NO_UPDATE_CHECK=1` also turns it off. The menu item
   “check for a new version” and `START.cmd --action update` still work when you choose them.
 * **Nothing changes without a yes.** When there is a newer version, the quickstart shows the old and new version. Before the menu it
