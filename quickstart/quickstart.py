@@ -21,8 +21,9 @@ runs on this computer too.  Nothing is sent anywhere else.  The quit button and 
 script (/webchat/shutdown, /webchat/switch_model) that need this address in Host and Origin and a one-time token; the script then
 stops `yasakani serve` and ends, or starts it again with the other downloaded model on the same address.
 
-Updates: at most once a day, when the menu is shown or the browser page is opened directly, the script asks GitHub's API for the
-latest release (one HTTPS request without anything about this computer; it says so first, and --no-update-check turns it off).
+Updates: at every start (at most once an hour), when the menu is shown or the browser page is opened directly, the script asks
+GitHub's API for the latest release (one HTTPS request without anything about this computer; it says so first, and
+--no-update-check or YASAKANI_NO_UPDATE_CHECK=1 turns it off).
 The page's "check for updates" asks the same once, at once, only when it is pressed (also with --no-update-check).
 Nothing is updated without a yes (at the menu: the question; in the page: the update button).  An update downloads the start files
 of that release, checks them against its SHA256SUMS.txt, keeps the current ones in backup/<version>/, puts the new ones in place and
@@ -73,7 +74,7 @@ UPDATE_DOWNLOAD = REPO_URL + "/releases/download/"
 UPDATE_UA = "yasakani-quickstart"
 START_FILES = ("LICENSE", "README.txt", "START.cmd", "chat.html", "lookahead_check.py", "quickstart.py")
 MAX_START_FILE, MAX_START_ZIP, MAX_SUMS, MAX_API = 4 << 20, 16 << 20, 64 << 10, 1 << 20
-CHECK_EVERY = 24 * 3600
+CHECK_EVERY = 3600                  # the automatic check: at every start, at most once an hour (until 0.3.4: once a day)
 CHECK_NOW_WAIT = 12.0               # the page's "check for updates": how long its request waits for the check (fetch_latest: 5 s)
 UPDATE_RC = 75                      # run_web: the page asked for the update; the server is stopped
 SWITCH_RC = 76                      # run_web: the page picked another downloaded model (a.web_switch); the server is stopped
@@ -603,7 +604,8 @@ T = {
         "ja": "新しい版の自動の確認を止めました（--update-check で戻せます）。",
         "en": "The automatic check for a new version is off now (--update-check turns it on again).",
     },
-    "upd_on": {"ja": "新しい版の自動の確認を使います（1 日に 1 回まで）。", "en": "The automatic check for a new version is on (at most once a day)."},
+    "upd_on": {"ja": "新しい版の自動の確認を使います（起動のたび。1 時間に 1 回まで）。",
+               "en": "The automatic check for a new version is on (at every start, at most once an hour)."},
     "upd_dev": {
         "ja": "開発用: 更新の問い合わせ先を {u} にしています（GitHub ではありません）。",
         "en": "Development only: updates are looked up at {u} (not GitHub).",
@@ -1562,7 +1564,7 @@ def check_disabled(a, st, environ=None):
 
 
 def update_check(ui, st, save, src, force=False, now=None, disabled=False, result=None):
-    """The check of the menu (at most once a day) or, with ``force``, of the menu item, --action update and the page's "check for
+    """The check of the menu (at most once an hour) or, with ``force``, of the menu item, --action update and the page's "check for
     updates".  -> the newer release or None.  Never raises: a failed check prints one line and goes on.  ``result`` (a dict), when
     given, gets "state" ("newer", "latest", "skipped" or "failed") and for a failure "message", for a check that asked."""
     result = {} if result is None else result
@@ -1638,7 +1640,7 @@ def apply_update(ui, folder, rel, src, yes, after_args, st, save):
 
 
 def update_answered(a):
-    """--yes answers the update question only together with --action update.  The daily check at the menu and the menu item
+    """--yes answers the update question only together with --action update.  The automatic check at the menu and the menu item
     always ask, also when the launcher runs with --yes (for example after an update, which passes --yes on)."""
     return bool(getattr(a, "yes", False)) and getattr(a, "action", None) == "update"
 
@@ -1656,7 +1658,7 @@ def apply_rollback(ui, folder, st, save, yes, after_args):
     _write_files(folder, files)
     st.pop("update_backup", None)
     if b.get("from"):
-        st["update_skip"] = b["from"]                 # the daily check does not offer that version again (the menu item still does)
+        st["update_skip"] = b["from"]                 # the automatic check does not offer that version again (the menu item still does)
     m = st.get("model")
     if isinstance(m, str) and ("\"m_%s\"" % m).encode("utf-8") not in files["quickstart.py"]:
         # the launcher that came back has no such model (it would stop on the name): forget the choice and let the user start it

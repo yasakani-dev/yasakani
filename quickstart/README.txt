@@ -44,8 +44,8 @@ START.cmd がすること
     やめるときは、このフォルダーを消すだけです。
   - 配布ファイルにはコード署名がありません。Windows が警告を出したら、発行元と入手先を確かめたうえで実行してください。
   - 途中で止めた時も、もう一度 START.cmd をダブルクリックすれば、済んだ手順は飛ばして続きから始まります。
-  - 新しい版の確認：1 日に 1 回まで、github.com に問い合わせます。問い合わせるのは、メニューを出す前か、ブラウザーの画面を
-    直接開く前です（問い合わせる前に表示します。送るのは最新の版を聞くリクエスト 1 回だけで、このパソコンの情報は送りません）。
+  - 新しい版の確認：起動のたびに github.com に問い合わせます（1 時間に 1 回まで）。問い合わせるのは、メニューを
+    出す前か、ブラウザーの画面を直接開く前です（問い合わせる前に表示します。送るのは最新の版を聞くリクエスト 1 回だけで、このパソコンの情報は送りません）。
     新しい版がある時、メニューの前では更新するかを聞きます。ブラウザーの画面を直接開く時は、黒い画面では聞きません。
     画面に「更新する」ボタンが出ます。「y」と答えるかボタンを押すまで、何も変えません。
     画面の「モデル・状態」の「更新を確認」を押すと、その場で 1 回だけ問い合わせます
@@ -104,8 +104,8 @@ Good to know
   - Everything is kept inside this folder; nothing is installed system-wide. To remove it, delete the folder.
   - The files are not code-signed. If Windows shows a warning, check the publisher and the source before you run them.
   - If a run was stopped halfway, double-click START.cmd again: finished steps are skipped.
-  - New versions: at most once a day START.cmd asks github.com for the latest version, before it shows the menu or before
-    it opens the browser page directly (it says so first; one request, nothing about this computer is sent). If there is a
+  - New versions: at every start (at most once an hour) START.cmd asks github.com for the latest version, before it
+    shows the menu or before it opens the browser page directly (it says so first; one request, nothing about this computer is sent). If there is a
     newer one, it asks before the menu whether to update. When the page opens directly, nothing is asked in the black
     window: the page shows an Update button. Nothing changes until you answer y or press the button.
     "Check for updates" in the Model tab of the page asks at once, one request, only when you press it

@@ -197,17 +197,38 @@ class CheckTests(Base):
         self.assertEqual(headers.get("User-Agent"), "yasakani-quickstart")
         self.assertFalse({k.lower() for k in headers} - {"host", "user-agent", "accept", "accept-encoding", "connection"})
 
-    def test_once_a_day(self):
+    def test_once_an_hour(self):
+        self.assertEqual(QS.CHECK_EVERY, 3600)
         self.gh.publish("9.9.9")
         now = 1_000_000_000
         self.assertEqual(self.check(now=now)[0]["version"], "9.9.9")
         self.assertEqual(len(self.gh.api_calls()), 1)
-        rel, out = self.check(now=now + 3600)               # known from the state, no request, no line
+        rel, out = self.check(now=now + 59 * 60)            # known from the state, no request, no line
         self.assertEqual(rel["version"], "9.9.9")
         self.assertEqual(out, "")
         self.assertEqual(len(self.gh.api_calls()), 1)
-        self.check(now=now + 25 * 3600)
+        self.check(now=now + 61 * 60)
         self.assertEqual(len(self.gh.api_calls()), 2)
+
+    def test_a_start_61_minutes_later_asks_again_59_minutes_later_does_not(self):
+        """The rule of 0.3.5: every start asks, unless the last check was less than an hour ago."""
+        self.gh.publish(QS.QS_VERSION)
+        now = 1_000_000_000
+        self.check(now=now)
+        self.assertEqual(len(self.gh.api_calls()), 1)
+        rel, out = self.check(now=now + 59 * 60)
+        self.assertIsNone(rel)
+        self.assertEqual(out, "")
+        self.assertEqual(len(self.gh.api_calls()), 1)
+        rel, out = self.check(now=now + 61 * 60)
+        self.assertIsNone(rel)
+        self.assertIn("github.com", out.splitlines()[0])
+        self.assertEqual(len(self.gh.api_calls()), 2)
+        self.assertEqual(self.st["update_checked"], now + 61 * 60)
+        self.check(now=now + 61 * 60 + 59 * 60)                         # the hour counts from the last check
+        self.assertEqual(len(self.gh.api_calls()), 2)
+        self.check(now=now + 2 * 61 * 60)
+        self.assertEqual(len(self.gh.api_calls()), 3)
 
     def test_disabled_makes_no_request(self):
         self.gh.publish("9.9.9")

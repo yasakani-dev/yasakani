@@ -1599,7 +1599,7 @@ class RunWebTests(RunWebBase):
 @unittest.skipUnless(sys.platform == "win32", "the launcher itself runs on Windows only")
 class LauncherTests(RunWebBase):
     """main() with a home that looks set up (engine, environment, models: empty files), a stand-in for nvidia-smi and for the
-    yasakani package.  Nothing is downloaded and github.com is not asked (the daily check is off in the state)."""
+    yasakani package.  Nothing is downloaded and github.com is not asked (the automatic check is off in the state)."""
 
     def setUp(self):
         super().setUp()

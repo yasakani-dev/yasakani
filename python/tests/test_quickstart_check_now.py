@@ -247,18 +247,32 @@ class EndpointTests(CheckNowBase):
         self.assertEqual(self.gh.requests, [])
 
 
-class DailyRuleTests(CheckNowBase):
-    def test_the_daily_check_is_unchanged(self):
-        """After a press the automatic check within 24 h asks nobody (it knows the answer), and later it asks once again."""
+class HourlyRuleTests(CheckNowBase):
+    def test_the_hourly_check_after_a_press(self):
+        """After a press the automatic check within the hour asks nobody (it knows the answer), and later it asks once again."""
         self.gh.publish(QS.QS_VERSION)
         port = self.serve_check()
         self.assertEqual(self.press(port)[1]["state"], "latest")
         now = self.st["update_checked"]
-        self.assertIsNone(QS.update_check(self.ui, self.st, self.save, self.src, now=now + 3600))
+        self.assertIsNone(QS.update_check(self.ui, self.st, self.save, self.src, now=now + 59 * 60))
         self.assertEqual(len(self.gh.api_calls()), 1)
-        QS.update_check(self.ui, self.st, self.save, self.src, now=now + 25 * 3600)
+        QS.update_check(self.ui, self.st, self.save, self.src, now=now + 61 * 60)
         self.assertEqual(len(self.gh.api_calls()), 2)
-        self.assertEqual(QS.CHECK_EVERY, 24 * 3600)
+        self.assertEqual(QS.CHECK_EVERY, 3600)
+
+    def test_start_61_minutes_after_the_last_check_asks_again(self):
+        """A start 59 minutes after the last check asks nobody; a start 61 minutes after it asks once."""
+        self.gh.publish("9.9.9")
+        now = 1_000_000_000
+        self.st["update_checked"] = now
+        self.st["update_latest"] = {"version": "9.9.9", "tag": "v9.9.9"}
+        rel = QS.update_check(self.ui, self.st, self.save, self.src, now=now + 59 * 60)
+        self.assertEqual(rel["version"], "9.9.9")                                  # the known answer: the button, no request
+        self.assertEqual(self.gh.api_calls(), [])
+        rel = QS.update_check(self.ui, self.st, self.save, self.src, now=now + 61 * 60)
+        self.assertEqual(rel["version"], "9.9.9")
+        self.assertEqual(len(self.gh.api_calls()), 1)
+        self.assertEqual(self.st["update_checked"], now + 61 * 60)
 
     def test_result_is_only_an_addition(self):
         self.gh.publish("9.9.9")
@@ -427,8 +441,10 @@ console.log(JSON.stringify(out));
         text = readme.decode("utf-8")
         self.assertIn("「更新を確認」を押すと、その場で 1 回だけ問い合わせます", text)
         self.assertIn('"Check for updates" in the Model tab of the page asks at once, one request, only when you press it', text)
-        self.assertIn("1 日に 1 回まで", text)
-        self.assertIn("at most once a day", text)
+        self.assertIn("1 時間に 1 回まで", text)
+        self.assertIn("at most once an hour", text)
+        self.assertNotIn("1 日に 1 回", text)
+        self.assertNotIn("once a day", text)
         self.assertNotIn(b"\n", readme.replace(b"\r\n", b""))                       # CRLF kept
 
 
