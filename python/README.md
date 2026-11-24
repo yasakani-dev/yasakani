@@ -635,7 +635,7 @@ A folder of the published model as downloaded, with no `yasakani.json`, runs on 
 ([BUILDING.md](../BUILDING.md#linux-inkling-2-library)). With a library without the engine of `libyskn.so` (the released Windows `yskn.dll` too), a downloaded folder gives the error of 0.3.0
 (the Qwen3.8 files are missing), with a hint. That engine uses the model's sampling defaults (temperature 1.0, top-p 1.0, no top-k),
 takes tool calls in `yasakani serve`, and opens 32,768 tokens unless `--max-ctx` is given; `--yarn2`, `--suppress-tokens` and `--parallel` are refused or not used for it.
-Since 0.3.5 it uses the model's drafter (`mtp.safetensors`) for greedy decoding by default (`YSKN_INK2_MTP=1` drafts for sampling too, `0` does not load it),
+Since 0.3.5 it uses the model's drafter (`mtp.safetensors`) for greedy decoding by default (an environment variable makes it draft for sampling too, or not load it),
 stores keys and values in bf16 (`YSKN_INK2_KV=fp32` for 32 bits), keeps up to 6 snapshots of earlier prompts (a prefix cache), and reads
 images with the options and rules of [Image input](#inkling-2-mini-image-input), with three differences: the chat has no `/image`,
 `--vision-cache DIR` keeps image vectors on disk, and the GPU memory of the image tower is not counted when the context is chosen.

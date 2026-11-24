@@ -312,7 +312,7 @@ square of the image tokens, so with the variable set `--vision-max-image-tokens`
 
 ### Inkling-2 Mini on Linux: the engine inside `libyskn.so` (`-DYSKN_WITH_INK2=ON`; #28, #30, #32)
 
-日本語：Linux では、Inkling-2 Mini のエンジンを `libyskn.so` に入れて組み立てられます。@audreyt さんの寄稿です（[#28](https://github.com/yasakani-dev/yasakani/pull/28)・[#30](https://github.com/yasakani-dev/yasakani/pull/30)・[#32](https://github.com/yasakani-dev/yasakani/pull/32)）。CMake の `-DYSKN_WITH_INK2=ON` を付けます（標準は付けません）。この時は実行に cuBLAS（CUDA Toolkit の `libcublas.so`）が要ります。ダウンロードしたままのモデルのフォルダー（`yasakani.json` が無い物）を変換せずに読みます。0.3.5 で速くなり、先読み用のモデル（`mtp.safetensors`）も使います。キーと値は標準で bf16 で持ちます。`YSKN_INK2_KV=fp32` で 32 ビットになります。先読みは、標準では貪欲法の時だけです。`YSKN_INK2_MTP=1` でサンプリングにも使います。`YSKN_INK2_MTP=0` では読み込みません。画像も読めます。オプションと決まりは Windows と同じです（チャットの `/image` はありません）。会話の次の番では、プレフィックスキャッシュで前の部分を読み直しません。ソースからの組み立てで、公式の配布物ではありません。配布する Windows の `yskn.dll` には入っていません。
+日本語：Linux では、Inkling-2 Mini のエンジンを `libyskn.so` に入れて組み立てられます。@audreyt さんの寄稿です（[#28](https://github.com/yasakani-dev/yasakani/pull/28)・[#30](https://github.com/yasakani-dev/yasakani/pull/30)・[#32](https://github.com/yasakani-dev/yasakani/pull/32)）。CMake の `-DYSKN_WITH_INK2=ON` を付けます（標準は付けません）。この時は実行に cuBLAS（CUDA Toolkit の `libcublas.so`）が要ります。ダウンロードしたままのモデルのフォルダー（`yasakani.json` が無い物）を変換せずに読みます。0.3.5 で速くなり、先読み用のモデル（`mtp.safetensors`）も使います。キーと値は標準で bf16 で持ちます。`YSKN_INK2_KV=fp32` で 32 ビットになります。先読みは、標準では貪欲法の時だけです。環境変数で、サンプリングにも使うか読み込まないかを選べます（下）。画像も読めます。オプションと決まりは Windows と同じです（チャットの `/image` はありません）。会話の次の番では、プレフィックスキャッシュで前の部分を読み直しません。ソースからの組み立てで、公式の配布物ではありません。配布する Windows の `yskn.dll` には入っていません。
 
 [#28](https://github.com/yasakani-dev/yasakani/pull/28) (@audreyt) contributed a second engine for Inkling-2 Mini, inside `libyskn.so`;
 [#30](https://github.com/yasakani-dev/yasakani/pull/30) and [#32](https://github.com/yasakani-dev/yasakani/pull/32), by the same author,
@@ -372,7 +372,7 @@ release, and the released Windows `yskn.dll` does not contain it:
   * `yasakani bench --max-ctx 8192 --n 128 --runs 2`, greedy: 203.0 tokens/s on average (21.9 with the engine of 0.3.4 in our earlier
     run).
   * Sampled with the model's defaults, a code prompt, 128 tokens, seeds 1, 2 and 3, a context of 4,096 tokens: 35.3, 43.0 and 44.8
-    tokens/s by default; 21.9, 21.6 and 22.0 with `YSKN_INK2_MTP=1`; 56.4, 56.9 and 57.7 with `YSKN_INK2_MTP=0`. In our earlier run
+    tokens/s by default; 21.9, 21.6 and 22.0 with the drafter drafting for sampling too; 56.4, 56.9 and 57.7 without the drafter. In our earlier run
     of 128 sampled tokens the engine of 0.3.4 gave 17.0 to 17.4 tokens/s.
   * GPU memory at the default context of 32,768 tokens (the peak of `bench --n 32` minus the 1,640 MiB in use before): 22,105 MiB. With
     `YSKN_INK2_KV=fp32` it was 23,593 MiB (measured with #30 alone, where the default also gave 22,105 MiB).
