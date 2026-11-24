@@ -28,10 +28,13 @@ YSKN_API int           yskn_prefill(yskn_engine* e, const int32_t* ids, int n, i
 
 YSKN_API int           yskn_set_visual(yskn_engine* e, const uint16_t* features, const int32_t* slots, int n_image,
                                        const int32_t* positions, int n_prompt, int delta);
-/* Encode one or more RGB uint8 frames [H_i, W_i, 3] on GPU into BF16 Inkling-2 visual embeddings [n_tokens, hidden]. */
+#if defined(YSKN_WITH_INK2) && YSKN_WITH_INK2
+/* Linux library built with YSKN_WITH_INK2 only (not in the default build): encode one or more RGB uint8 frames [H_i, W_i, 3]
+   on the GPU into BF16 Inkling-2 Mini image vectors [n_tokens, 2304], n_tokens = sum of ceil(H_i/40) * ceil(W_i/40). */
 YSKN_API int           yskn_ink2_encode_rgb(yskn_engine* e, const uint8_t* const* frames,
                                             const int32_t* widths, const int32_t* heights, int n_frames,
                                             uint16_t* out_bf16, int32_t* out_grids, int32_t* out_n_tokens);
+#endif
 /* Suppress output token IDs (logits -> -inf). Prompt IDs are unaffected. Pass token_ids=NULL or n_tokens=0 to clear. */
 YSKN_API int           yskn_set_suppress(yskn_engine* e, const int32_t* token_ids, int n_tokens);
 YSKN_API int           yskn_decode(yskn_engine* e, int32_t* out_ids, int steps);           

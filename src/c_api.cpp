@@ -217,11 +217,18 @@ extern "C" int yskn_spec_generate(yskn_engine* e, const int32_t* prompt, int n_p
 extern "C" YSKN_API int yskn_cancel(yskn_engine* e) { e->cancel.store(1); return 0; }
 extern "C" YSKN_API int yskn_set_visual(yskn_engine* e, const uint16_t* features, const int32_t* slots, int n_image,
                                         const int32_t* positions, int n_prompt, int delta) {
+#if YSKN_WITH_INK2
   YSKN_TRY(if (!e) throw std::runtime_error("visual: null engine");
            YSKN_INK2(e->ink->set_visual(features, slots, n_image, n_prompt))
            if (e->q) { ms_gate(e); e->q->set_visual(features, slots, n_image, positions, n_prompt, delta); }
            else throw std::runtime_error("visual: qwen3_5 or inkling2 engine only");)
+#else
+  YSKN_TRY(if (!e->q) throw std::runtime_error("visual: qwen3_5 engine only"); ms_gate(e);
+            e->q->set_visual(features, slots, n_image, positions, n_prompt, delta))
+#endif
 }
+#if YSKN_WITH_INK2
+// Image input of the Inkling-2 engine (Linux, YSKN_WITH_INK2 only): not in the default build.
 extern "C" YSKN_API int yskn_ink2_encode_rgb(yskn_engine* e, const uint8_t* const* frames,
                                              const int32_t* widths, const int32_t* heights, int n_frames,
                                              uint16_t* out_bf16, int32_t* out_grids, int32_t* out_n_tokens) {
@@ -229,6 +236,7 @@ extern "C" YSKN_API int yskn_ink2_encode_rgb(yskn_engine* e, const uint8_t* cons
            YSKN_INK2(e->ink->encode_rgb(frames, widths, heights, n_frames, out_bf16, out_grids, out_n_tokens))
            throw std::runtime_error("ink2_encode_rgb: inkling2 engine only");)
 }
+#endif
 extern "C" YSKN_API int yskn_set_suppress(yskn_engine* e, const int32_t* token_ids, int n_tokens) {
   YSKN_TRY(if (!e->q) throw std::runtime_error("suppress: qwen3_5 engine only"); ms_gate(e);
             e->q->set_suppress(token_ids, n_tokens))
@@ -250,7 +258,11 @@ extern "C" YSKN_API int yskn_snap_info(yskn_engine* e, int32_t* out4, int32_t* i
     if (ids) for (int i = 0; i < (int)lv.size() && i < max_ids; ++i) ids[i] = lv[i];
     return 0;
   })
+#if YSKN_WITH_INK2
   if (!e->q) throw std::runtime_error("snap: qwen3_5 or inkling2 engine only");
+#else
+  if (!e->q) throw std::runtime_error("snap: qwen3_5 engine only");
+#endif
   const auto& lv = e->q->snap_live(); out4[0] = e->q->position(); out4[1] = e->q->snap_pos(); out4[2] = e->q->snap_live_ok() ? 1 : 0;
   out4[3] = (int32_t)lv.size(); if (ids) for (int i = 0; i < (int)lv.size() && i < max_ids; ++i) ids[i] = lv[i]) }
 extern "C" int yskn_lfrow_table(yskn_engine* e, const uint8_t* tab48) { YSKN_TRY(ms_gate(e); if (e->q) e->q->lfrow_table(tab48); else throw std::runtime_error("lfrow: 27B engine only")) }

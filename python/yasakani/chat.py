@@ -318,7 +318,8 @@ class ChatRunner:
         is_ink2 = bool(getattr(self.fmt, "hf_inkling2", False) or getattr(self.fmt, "is_inkling2", False))
         messages, sources = split_images(p.messages, is_inkling2=is_ink2)
         if sources and self.vision is None:
-            hint = ("(Inkling-2 built-in vision requires an engine library with yskn_ink2_encode_rgb)"
+            hint = ("(the Inkling-2 image encoder needs the Linux engine library built with YSKN_WITH_INK2 and a model "
+                    "folder with its image tower)"
                     if is_ink2 else "(start the server with --mmproj, --llama-dir and --vision-model)")
             raise RequestError("only text content is supported: image input is not configured " + hint)
         kw = dict(p.template_kwargs)
