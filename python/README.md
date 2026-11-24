@@ -6,7 +6,7 @@ This package is the part you talk to: a local **OpenAI-compatible server**, a **
 whether your files and your installation are the reference ones. The engine itself is the DLL; the package loads it, applies the
 default settings the published numbers were measured with, handles the chat template and the tokenizer, and streams the answer.
 
-Status: version `0.3.5`. Text, and optionally still images (new in 0.1.2; on Linux only with llama.cpp built from source, see [Image input](#image-input-optional)). One request is generated at a time, unless the server is started with `--parallel N` (experimental, see [Several requests at once](#several-requests-at-once-experimental)). Tool calling is new in 0.1.1. Since 0.1.3 the engine also runs on other RTX 30, 40 and 50 series cards, without tuning or tests (see [GPUs other than the RTX 5090](#gpus-other-than-the-rtx-5090)). 0.2.0 reads prompts faster on cards with 30,000 MiB or more and adds the edit copy, which is on by default (see [Prompt reading and edit copy](#prompt-reading-and-edit-copy)). 0.3.1 adds Inkling-2 Mini as an experimental, text-only model on a second engine library (see [Inkling-2 Mini](#inkling-2-mini-experimental)); 0.3.2 makes it the fourth model of the quickstart and chooses its context from the free GPU memory.
+Status: version `0.3.5`. Text, and optionally still images (new in 0.1.2; on Linux only with llama.cpp built from source, see [Image input](#image-input-optional)). One request is generated at a time, unless the server is started with `--parallel N` (experimental, see [Several requests at once](#several-requests-at-once-experimental)). Tool calling is new in 0.1.1. Since 0.1.3 the engine also runs on other RTX 30, 40 and 50 series cards, without tuning or tests (see [GPUs other than the RTX 5090](#gpus-other-than-the-rtx-5090)). 0.2.0 reads prompts faster on cards with 30,000 MiB or more and adds the edit copy, which is on by default (see [Prompt reading and edit copy](#prompt-reading-and-edit-copy)). 0.3.1 adds Inkling-2 Mini as an experimental, text-only model on a second engine library (see [Inkling-2 Mini](#inkling-2-mini-experimental)); 0.3.2 makes it the fourth model of the quickstart and chooses its context from the free GPU memory; 0.3.5 lets it read still images (see [Image input](#inkling-2-mini-image-input)).
 
 ## What you need
 
@@ -737,7 +737,7 @@ image into image tokens that take places in the prompt like text tokens. In this
 * **The quickstart page** shows an image button when the model reads images (paste and drop work too): up to 4 images per message, each
   file up to 11 MB (the launcher takes request bodies up to 16 MiB), sent as the original bytes.
 * **Checks.** With the published image tower on the RTX 5090, the first 64 greedy tokens of four image prompts equal those of a float32
-  reference run (the image vectors of the official image code, the original text weights), with the fast path off and on; the answers name the total of a table row (126) and the text in an image. Requests
+  reference run (the image vectors of the official image code, the original text weights), with the fast path and the drafter each off and on; the answers name the total of a table row (126) and the text in an image. Requests
   without images give the same tokens and logits as without image input.
 * **Not supported:** video, several frames of one file, images in system or assistant messages, image input on the CPU (host) build of the
   engine library, and images in `selfcheck` and `bench`.

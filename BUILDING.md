@@ -22,7 +22,7 @@ The `yskn.dll` on the release page is the build of 0.3.1 (SHA-256 `41a6bbd9bc1f8
 `src/q35.hpp` and `src/q35_kernels.cu`. These files were compiled again in a copy of the build folder of 0.2.0 with the tool versions of
 the table, and linked. The objects of `src/q35_atxpk.cu` and `src/q35_atxpk_ms.cu`, whose source did not change, are those of the 0.2.0
 build: nvcc 13.2 gives some kernels of these files different machine code from one compilation to the next, so we kept the tested ones.
-0.3.2 to 0.3.4 ship this same file.
+0.3.2 to 0.3.5 ship this same file.
 The `yskn.dll` of 0.2.0 (SHA-256 `c995bb24c297ae823dfc92eaaf3357401083a9922abe2fdfeb56509c323fd052`, 64,498,688 bytes) was made in two
 steps. The first step (SHA-256 `3e06622b…39e1`, 63,142,400 bytes) is the source of 0.1.7 plus the
 new prompt reading and the edit copy ([docs/TECHNOLOGY.md](docs/TECHNOLOGY.md),
@@ -99,8 +99,8 @@ for a library you built and pass with `--dll` ([docs/TECHNOLOGY.md](docs/TECHNOL
 
 日本語：Inkling-2 Mini 用のエンジンは別の DLL（`yskn_inkling2.dll`）で、エンジンの zip の `yskn.dll` の隣に入っています。ソースは `src/inkling2/` です。「x64 Native Tools Command Prompt for VS 2022」で `src\inkling2\build.cmd cuda` を実行すると `build\inkling2\yskn_inkling2.dll` ができます。Qwen3.8 用の `yskn.dll` とはコードを共有しません。
 
-The engine zip of 0.3.1 holds a second library next to `yskn.dll`: `yskn_inkling2.dll`, the engine for Inkling-2 Mini (text only, one
-request at a time; experimental in 0.3.1). It has its own C interface (`src/inkling2/ink2_api.h`) and shares no code with `yskn.dll`.
+The engine zip of 0.3.1 holds a second library next to `yskn.dll`: `yskn_inkling2.dll`, the engine for Inkling-2 Mini (text only in 0.3.1, still images since 0.3.5; one
+request at a time; experimental). It has its own C interface (`src/inkling2/ink2_api.h`) and shares no code with `yskn.dll`.
 The Python package loads it only for
 a model folder whose `yasakani.json` says `"architecture": "inkling2"`, and finds it in this order: `--dll` when it names this library or a
 folder that holds it, the environment variable `YASAKANI_INK2_DLL`, then `yskn_inkling2.dll` next to `yskn.dll` (`--dll`, `YASAKANI_DLL` or
@@ -110,7 +110,7 @@ What is in `src/inkling2/`:
 
 * `ink2_kernels.inc`: every GPU kernel, one source for two builds. `ink2_cuda.cu` compiles it as CUDA kernels; `ink2_emu.cpp` runs the
   same source on the CPU under a small thread-block emulator (used by the self-test and by the CPU build for the unit tests).
-* `ink2_engine.cpp`: the order of the layer visits, the caches, the loading of the weights and the C interface (interface version 3,
+* `ink2_engine.cpp`: the order of the layer visits, the caches, the loading of the weights and the C interface (interface version 4 since 0.3.5,
   `ink2_api.h`). It checks the values of `config.json` it is given (head counts, sizes, experts and top-k, kernel and window sizes)
   before it allocates anything. `ink2_kargs.h`: the argument blocks of the kernels. `ink2_selftest.cpp`: every kernel on random
   inputs, the CPU emulation against the GPU build. `ink2_micro.cu`: launch and barrier measurements of the GPU.
@@ -132,17 +132,21 @@ What is in `src/inkling2/`:
   `ink2_nvfp4.cu` (expert products of prompt passes on the NVFP4 tensor cores of the RTX 50 series, built for `sm_120a`), and
   `ink2_drafter_sk.inc` / `ink2_drafter_sk_kargs.h` (Split-K attention of the drafter). All of it is off unless the package (or a
   caller of the load options and `ink2_set_option`) turns it on; with it off the library gives the results of 0.3.2 bit for bit.
+* The image tower (since 0.3.5): `ink2_vision.cu` (the encoder: the patches of 40 x 40 pixels, 23 blocks and the projector, with the
+  bfloat16 weights as published and FP32 sums), `ink2_vision.h` and `ink2_vision_api.h` (the exported `ink2_vision_*` calls and
+  `ink2_feed_many_img`; `ink2_capabilities()` bit 32). `build.cmd cuda` builds it in; the host build has no image tower.
 * `build.cmd`: the build. There is no CMake file for this library.
 
-The released `yskn_inkling2.dll` is the file of 0.3.3, which 0.3.4 ships unchanged (`src/inkling2/` did not change). It has SHA-256 `282ddcc470e570207dae1362c188be57e6170518e03283475790a28c46a28c7f` (24,137,728 bytes): the
-engine with the drafter (also from a converted drafter file, `mtp_d4.yskn`), with the products for packed dense matrices and with the
-fast path, built from `src/inkling2/` of this release. It was built with the tools of
+The released `yskn_inkling2.dll` of 0.3.5 has SHA-256 `{{SHA_INK2_DLL}}` (about 25 MB): the
+engine with the drafter (also from a converted drafter file, `mtp_d4.yskn`), with the products for packed dense matrices, with the
+fast path and, new in 0.3.5, with the image tower, built from `src/inkling2/` of this release. 0.3.3 and 0.3.4 shipped the file
+`282ddcc470e570207dae1362c188be57e6170518e03283475790a28c46a28c7f` (24,137,728 bytes), without the image tower. It was built with the tools of
 the table above (Visual C++ 19.44, CUDA Toolkit 13.2) by `build.cmd cuda`. Like `yskn.dll` it has machine code for compute capability 8.6
 (RTX 30 series), 8.9 (RTX 40 series) and 12.0 (RTX 50 series), plus PTX for `compute_120`, and machine code for `sm_120a` for the NVFP4
 prompt products; the CUDA runtime is linked statically. It
 also uses the OpenMP library of Visual C++ (`vcomp140.dll`, part of the Visual C++ 2015-2022 x64 runtime). Only the RTX 5090 has been
 tested. At a context of 32,768 tokens the engine allocates about 23 GB of GPU memory for the published weights (24 GB with the drafter)
-and about 19 GB for the weights of `--scheme quality` (19.5 GB with their 4-bit drafter), so cards with less than 24 GB cannot run it.
+and about 19 GB for the weights of `--scheme quality` (19.5 GB with their 4-bit drafter), so cards with less than 24 GB cannot run it. The image tower takes about 0.77 GB more with the defaults (`--vision off` does not load it).
 With the fast path (its 8-bit key/value cache) the weights of `--scheme quality` with their drafter took 17.9 GB at 32,768 tokens and
 20.5 GB at 131,072 tokens (the engine's allocations, RTX 5090).
 
@@ -154,7 +158,7 @@ src\inkling2\build.cmd cuda
 yasakani info --model-dir D:\models\inkling2-mini --dll build\inkling2\yskn_inkling2.dll
 ```
 
-The build takes a few minutes and writes `build\inkling2\yskn_inkling2.dll` (about 24 MB). `set INK2_ARCHS=-gencode
+The build takes a few minutes and writes `build\inkling2\yskn_inkling2.dll` (about 25 MB). `set INK2_ARCHS=-gencode
 arch=compute_120,code=sm_120` before it builds for the RTX 50 series only; `set INK2_NVFP4_TC=0` builds it without the NVFP4 prompt
 products (the fast path then runs without them; since 0.3.4 `--fast auto` still turns it on for RTX 30, 40 and 50 cards). `src\inkling2\build.cmd host` builds
 `build\inkling2\ink2_host.dll`, the kernels on the CPU only: it is not released and serves the unit tests of the package
