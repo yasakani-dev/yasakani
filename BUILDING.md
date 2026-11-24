@@ -162,8 +162,9 @@ The build takes a few minutes and writes `build\inkling2\yskn_inkling2.dll` (abo
 arch=compute_120,code=sm_120` before it builds for the RTX 50 series only; `set INK2_NVFP4_TC=0` builds it without the NVFP4 prompt
 products (the fast path then runs without them; since 0.3.4 `--fast auto` still turns it on for RTX 30, 40 and 50 cards). `src\inkling2\build.cmd host` builds
 `build\inkling2\ink2_host.dll`, the kernels on the CPU only: it is not released and serves the unit tests of the package
-(`YASAKANI_TEST_INK2_DLL`, with the tiny test checkpoint in `YASAKANI_TEST_INK2_SOURCE`; see `python/tests/test_inkling2.py`). The library
-is for Windows only; there is no Linux build of it (on Linux, see [the Inkling-2 engine of #28](#linux-inkling-2) below). Then check it
+(`YASAKANI_TEST_INK2_DLL`, with the tiny test checkpoint in `YASAKANI_TEST_INK2_SOURCE`; see `python/tests/test_inkling2.py`). The released
+library is for Windows. Since 0.3.5 the same source also builds on Linux, from source only (see
+[Inkling-2 Mini on Linux: `libyskn_inkling2.so`](#linux-inkling-2-library) below). Then check it
 with `yasakani selfcheck` on the model folder: it compares the greedy tokens with those of the official test of the model.
 
 ## Linux (building from source)
@@ -323,7 +324,8 @@ built only when you ask for it, and the released Windows `yskn.dll` does not con
   `hf download thinkingmachines/Inkling-2-Mini --local-dir ~/models/Inkling-2-Mini`). The package sends such a folder to this engine only
   when the library was built with the option. A library built without it gives the error of earlier versions for such a folder, with a
   hint. A folder made by `inkling2_convert.py` (with `"architecture": "inkling2"` in its `yasakani.json`) always takes the path of
-  `yskn_inkling2.dll` above, which is Windows only.
+  the Inkling-2 library above: `yskn_inkling2.dll` on Windows, and on Linux `libyskn_inkling2.so`, built from source
+  ([below](#linux-inkling-2-library)).
 * It runs the shapes of Inkling-2 Mini only. Before it loads anything it checks `config.json` and the type, shape and size of every
   tensor in the weights file, and it stops with an error on anything else.
 * It does not use the drafter (`mtp.safetensors`), and it reads the published weights, not those of `--scheme quality`. Text only, one
@@ -338,6 +340,47 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_COMPILER=/usr/local/
 cmake --build build -j
 yasakani chat  --model-dir ~/models/Inkling-2-Mini --dll build/bin/libyskn.so
 yasakani serve --model-dir ~/models/Inkling-2-Mini --dll build/bin/libyskn.so
+```
+
+<a name="linux-inkling-2-library"></a>
+
+### Inkling-2 Mini on Linux: `libyskn_inkling2.so` (`build_linux.sh`, since 0.3.5)
+
+日本語：0.3.5 から、Inkling-2 Mini 用のライブラリー（`src/inkling2/`）を Linux でもソースから組み立てられます（[#33](https://github.com/yasakani-dev/yasakani/pull/33)）。`bash src/inkling2/build_linux.sh` で `build/inkling2/libyskn_inkling2.so` ができ、`YASAKANI_INK2_DLL` でその場所を教えます。RTX 50 シリーズでは `INK2_NVFP4_TC=1` を付けます。CPU のエミュレーションとその自己試験は入っていません。寄稿者が確かめた方法で、公式の対応ではありません。変換したフォルダー（`"architecture": "inkling2"`）はこのライブラリー、ダウンロードしたままのフォルダーは上の #28 のエンジンが読みます。
+
+[#33](https://github.com/yasakani-dev/yasakani/pull/33) (@Albrod) contributed a Linux build of the Inkling-2 library of
+[the section above](#the-inkling-2-mini-library-yskn_inkling2dll-since-031). This is building from source, tested by contributors, not an
+official release: there is no prebuilt `libyskn_inkling2.so`, and the released library is the Windows `yskn_inkling2.dll`.
+
+* `src/inkling2/build_linux.sh` builds `build/inkling2/libyskn_inkling2.so` with nvcc and g++ (CUDA Toolkit 13, GCC). It uses the CUDA
+  flags of `build.cmd cuda` (`-O3 -fmad=false`, `ink2_fast.cu` with the default `-fmad`), the same GPU generations (`sm_86`, `sm_89`,
+  `sm_120` and PTX for `compute_120`; `INK2_ARCHS` chooses others) and the static CUDA runtime, and it includes the image tower
+  (`ink2_vision.cu`). The library then depends only on the C and C++ runtime libraries of the system.
+* `INK2_NVFP4_TC=1` also builds the NVFP4 prompt products for the RTX 50 series (`ink2_nvfp4.cu`, `sm_120a`). Unlike `build.cmd`, the
+  script leaves them out by default; on an RTX 50 card set it, as in the commands below. Without them `--fast auto` still turns the fast
+  path on, without the NVFP4 prompt products.
+* The CPU emulation (`ink2_emu.cpp`, which uses Windows fibers) is not in the Linux build. `ink2_host_stub_linux.cpp` takes its place, so
+  the `host` backend and the kernel self-test `ink2_selftest` stop with a message, and the unit tests of the package that need the CPU
+  library (`YASAKANI_TEST_INK2_DLL`) cannot run on Linux. The `cuda` backend, which runs the model, does not use them.
+* The package looks only for `yskn_inkling2.dll` by name. On Linux give the library with `YASAKANI_INK2_DLL` (or `--dll` naming the
+  `.so` file itself).
+* Which engine reads which folder: a folder made by `inkling2_convert.py` (`"architecture": "inkling2"` in its `yasakani.json`, for
+  example the published converted folder) goes to this library; the folder of the published model as downloaded (no `yasakani.json`) goes
+  to the engine inside `libyskn.so` of [the section above](#linux-inkling-2). The two can be built side by side.
+* What we ran (November 24, 2026, one RTX 5090 under WSL2, Ubuntu 24.04, CUDA 13.1, GCC 13.3; the converted folder with the image file,
+  defaults, the build with `INK2_NVFP4_TC=1`): the build with and without `INK2_NVFP4_TC=1` without errors (about 25 MB, the 65 `ink2_*` entries of the
+  Windows library); `yasakani selfcheck` passed (3/3); `yasakani bench` (256 tokens, the 4 built-in prompts, one run each, a 32,768-token
+  context) gave 283.2 tokens/s on average, with at most 19,992 MiB of GPU memory in use in nvidia-smi (about 1,640 MiB of that before
+  the start); and one request with an image (a table, "What is the total of Gamma in the table?") gave the right total.
+* What its author ran (their numbers, an RTX 3090, Linux, CUDA 13.3, GCC 13.3, with the sources of 0.3.3 and 0.3.4 before the image
+  tower): `selfcheck` 3/3 with `--fast off`/`on` and `--draft off`/`on`; with 0.3.4 and the defaults, `--fast auto` chose the fast path
+  and `bench --draft auto` gave 126.9 tokens/s with a peak of 18.4 GB in nvidia-smi.
+
+```sh
+INK2_NVFP4_TC=1 bash src/inkling2/build_linux.sh      # RTX 50 series; without INK2_NVFP4_TC on RTX 30 and 40
+export YASAKANI_INK2_DLL=$PWD/build/inkling2/libyskn_inkling2.so
+yasakani selfcheck --model-dir ~/models/inkling2-mini
+yasakani chat      --model-dir ~/models/inkling2-mini
 ```
 
 ## GPUs
