@@ -1566,12 +1566,16 @@ def check_disabled(a, st, environ=None):
 def update_check(ui, st, save, src, force=False, now=None, disabled=False, result=None):
     """The check of the menu (at most once an hour) or, with ``force``, of the menu item, --action update and the page's "check for
     updates".  -> the newer release or None.  Never raises: a failed check prints one line and goes on.  ``result`` (a dict), when
-    given, gets "state" ("newer", "latest", "skipped" or "failed") and for a failure "message", for a check that asked."""
+    given, gets "state" ("newer", "latest", "skipped" or "failed") and for a failure "message", for a check that asked.
+    A state value "update_checked" that is not a number (a damaged state file) counts as never checked.  A clock set back
+    (now earlier than the last check) asks once and stores the new time, so the hour counts from then on."""
     result = {} if result is None else result
     now = time.time() if now is None else now
     if disabled and not force:
         return None
-    last = st.get("update_checked") or 0
+    last = st.get("update_checked")
+    if isinstance(last, bool) or not isinstance(last, (int, float)) or last != last:
+        last = 0                                        # missing or damaged (text, list, NaN, ...): never checked
     if not force and 0 <= now - last < CHECK_EVERY:
         c = st.get("update_latest")
         if isinstance(c, dict) and is_newer(c.get("version"), QS_VERSION) and c.get("version") != st.get("update_skip") \

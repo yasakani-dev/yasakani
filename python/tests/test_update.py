@@ -230,6 +230,34 @@ class CheckTests(Base):
         self.check(now=now + 2 * 61 * 60)
         self.assertEqual(len(self.gh.api_calls()), 3)
 
+    def test_a_damaged_time_counts_as_never_checked(self):
+        """A state file with a time that is not a number does not stop the launcher: the start asks and stores a number."""
+        self.gh.publish(QS.QS_VERSION)
+        now = 1_000_000_000
+        for bad in ("yesterday", "1000000000", [1], {"t": 1}, True, None, float("nan")):
+            self.st = {"update_checked": bad}
+            calls = len(self.gh.api_calls())
+            rel, out = self.check(now=now)
+            self.assertIsNone(rel)
+            self.assertIn("github.com", out.splitlines()[0])
+            self.assertEqual(len(self.gh.api_calls()), calls + 1, repr(bad))
+            self.assertEqual(self.st["update_checked"], now)
+
+    def test_a_clock_set_back_asks_once_then_keeps_the_hour(self):
+        self.gh.publish(QS.QS_VERSION)
+        now = 1_000_000_000
+        self.check(now=now)
+        self.assertEqual(len(self.gh.api_calls()), 1)
+        back = now - 24 * 3600                                          # the clock went back a day
+        self.check(now=back)
+        self.assertEqual(len(self.gh.api_calls()), 2)
+        self.assertEqual(self.st["update_checked"], back)
+        rel, out = self.check(now=back + 59 * 60)                       # the hour counts from the new time
+        self.assertEqual(out, "")
+        self.assertEqual(len(self.gh.api_calls()), 2)
+        self.check(now=back + 61 * 60)
+        self.assertEqual(len(self.gh.api_calls()), 3)
+
     def test_disabled_makes_no_request(self):
         self.gh.publish("9.9.9")
         a = SimpleNamespace(no_update_check=False)
