@@ -150,6 +150,8 @@ class ModelPack:
     vocab_size: int = VOCAB_SIZE
     padded_vocab_size: int = VOCAB_SIZE
     eos_ids: Tuple[int, ...] = EOS_IDS
+    hidden_size: int = HIDDEN
+    has_vision: bool = False
     sampling_defaults: Dict[str, float] = field(default_factory=dict)    # the model's (generation_config.json); empty: Qwen3.8's
 
     DEFAULT_FILES = dict(weights="qwen38_27b_e3x.yskn", draft="bdraft2_k8.yskn", draft_head="bdraft2_k8.shead", kv_profile="kvq_u5.bin")
@@ -217,6 +219,8 @@ class ModelPack:
                 vocab_size=vocab_v,
                 padded_vocab_size=padded_v,
                 eos_ids=tuple(eos_list),
+                hidden_size=int(tcfg.get("hidden_size", 2304)),
+                has_vision=isinstance(cfg.get("vision_config"), dict),
                 sampling_defaults=_model_sampling(gc),          # as the 0.3.0 Inkling-2 path: the model's own values
             )
         files = dict(cls.DEFAULT_FILES)

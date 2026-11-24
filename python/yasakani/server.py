@@ -19,7 +19,8 @@
 * ``thinking_budget`` (a request field; the default comes from the environment variable YASAKANI_THINKING_BUDGET, 0 = no limit):
   when the thinking has taken that many tokens it is closed and the model goes on to the answer.
 * Optional still-image input through ``image_url`` (Qwen3.8: configure --mmproj, --llama-dir and --vision-model; Inkling-2 Mini:
-  on by itself when the model folder has its image tower, ``--vision off`` turns it off).  ``/v1/models`` says whether the model
+  on by itself when the model folder has its image tower, ``--vision off`` turns it off; the Linux
+  engine of the published folder encodes on the GPU as well).  ``/v1/models`` says whether the model
   reads images (``"vision"``); image tokens count as prompt tokens in ``usage``.
   Not supported (answered with 400): the old ``functions`` / ``function_call`` fields,
   ``n`` > 1, ``logprobs``.

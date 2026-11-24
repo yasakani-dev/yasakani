@@ -12,7 +12,9 @@
 namespace yskn::ink2 {
 
 void launch_embed_norm(const int32_t* tokens, int tok_off, const __nv_bfloat16* embed,
-                       const __nv_bfloat16* norm_w, float* out, int T, int H, float eps, cudaStream_t s);
+                       const __nv_bfloat16* norm_w, float* out, int T, int H, float eps, cudaStream_t s,
+                       const __nv_bfloat16* vis_feats = nullptr, const int32_t* vis_idx = nullptr,
+                       int32_t img_tok_id = 200054);
 
 void launch_rmsnorm(const float* x, const void* w, bool w_f32, float* out, int T, int H, float eps,
                     cudaStream_t s);

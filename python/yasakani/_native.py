@@ -133,6 +133,10 @@ class NativeLib:
         if f is not None:
             f.argtypes, f.restype = [P, P, P, I, P, I, I], I
             self.fn["yskn_set_visual"] = f
+        f = getattr(self.dll, "yskn_ink2_encode_rgb", None)
+        if f is not None:
+            f.argtypes, f.restype = [P, P, P, P, I, P, P, P], I
+            self.fn["yskn_ink2_encode_rgb"] = f
         f = getattr(self.dll, "yskn_set_suppress", None)
         if f is not None:
             f.argtypes, f.restype = [P, P, I], I

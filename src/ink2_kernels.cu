@@ -211,14 +211,32 @@ struct FltMutPtrs3 {
 
 // ---- 1. Embed + RMSNorm ----
 __global__ void k_embed_norm(const int32_t* tokens, int tok_off, const __nv_bfloat16* embed,
-                             const __nv_bfloat16* norm_w, float* out, int H, float eps) {
+                             const __nv_bfloat16* norm_w, float* out, int H, float eps,
+                             const __nv_bfloat16* vis_feats, const int32_t* vis_idx, int32_t img_tok_id) {
   __shared__ float sh[32];
   const int t = blockIdx.x;
   const int tid = threadIdx.x;
   const int ntg = blockDim.x;
   const int id = tokens[tok_off + t];
-  const __nv_bfloat16* row = embed + size_t(id) * size_t(H);
   float* dst = out + size_t(t) * size_t(H);
+  if (vis_feats && vis_idx && id == img_tok_id) {
+    const int vrow = vis_idx[t];
+    if (vrow >= 0) {
+      const __nv_bfloat16* vptr = vis_feats + size_t(vrow) * size_t(H);
+      if (H == 2304 && ntg == 192) {
+        const uint2* r2 = reinterpret_cast<const uint2*>(vptr);
+        const uint2 u0 = __ldg(r2 + tid), u1 = __ldg(r2 + tid + 192), u2 = __ldg(r2 + tid + 384);
+        float4* d4 = reinterpret_cast<float4*>(dst);
+        d4[tid] = make_float4(ink2_bf16_lo(u0.x), ink2_bf16_hi(u0.x), ink2_bf16_lo(u0.y), ink2_bf16_hi(u0.y));
+        d4[tid + 192] = make_float4(ink2_bf16_lo(u1.x), ink2_bf16_hi(u1.x), ink2_bf16_lo(u1.y), ink2_bf16_hi(u1.y));
+        d4[tid + 384] = make_float4(ink2_bf16_lo(u2.x), ink2_bf16_hi(u2.x), ink2_bf16_lo(u2.y), ink2_bf16_hi(u2.y));
+        return;
+      }
+      for (int c = tid; c < H; c += ntg) dst[c] = __bfloat162float(vptr[c]);
+      return;
+    }
+  }
+  const __nv_bfloat16* row = embed + size_t(id) * size_t(H);
   if (H == 2304 && ntg == 192) {
     const uint2* r2 = reinterpret_cast<const uint2*>(row);
     const uint2* w2 = reinterpret_cast<const uint2*>(norm_w);
@@ -5322,8 +5340,10 @@ __global__ void __launch_bounds__(256) k_compact_taps_scatter(
 }  // namespace
 
 void launch_embed_norm(const int32_t* tokens, int tok_off, const __nv_bfloat16* embed,
-                       const __nv_bfloat16* norm_w, float* out, int T, int H, float eps, cudaStream_t s) {
-  k_embed_norm<<<T, (H == 2304) ? 192 : 128, 0, s>>>(tokens, tok_off, embed, norm_w, out, H, eps);
+                       const __nv_bfloat16* norm_w, float* out, int T, int H, float eps, cudaStream_t s,
+                       const __nv_bfloat16* vis_feats, const int32_t* vis_idx, int32_t img_tok_id) {
+  k_embed_norm<<<T, (H == 2304) ? 192 : 128, 0, s>>>(tokens, tok_off, embed, norm_w, out, H, eps,
+                                                      vis_feats, vis_idx, img_tok_id);
 }
 
 void launch_rmsnorm(const float* x, const void* w, bool w_f32, float* out, int T, int H, float eps, cudaStream_t s) {

@@ -325,6 +325,40 @@ class Engine:
         return "yskn_set_visual" in self._f
 
     @property
+    def supports_ink2_vision(self) -> bool:
+        return bool(self.pack.is_hf_inkling2 and "yskn_set_visual" in self._f and "yskn_ink2_encode_rgb" in self._f)
+
+    def encode_ink2_images(self, rgbs: Sequence[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+        """Encode one or more contiguous RGB uint8 frames [H_i, W_i, 3] on GPU -> (features_u16, grids_i32)."""
+        if not self.supports_ink2_vision:
+            raise YasakaniError("the engine library does not support native Inkling-2 vision encoding")
+        if not rgbs:
+            raise ValueError("encode_ink2_images requires at least one frame")
+        arrs = [np.ascontiguousarray(np.asarray(im, dtype=np.uint8)) for im in rgbs]
+        widths = np.empty(len(arrs), dtype=np.int32)
+        heights = np.empty(len(arrs), dtype=np.int32)
+        tot_tok = 0
+        for i, a in enumerate(arrs):
+            if a.ndim != 3 or a.shape[2] != 3 or a.shape[0] <= 0 or a.shape[1] <= 0:
+                raise ValueError("each image must be a non-empty (H, W, 3) uint8 array")
+            h, w = int(a.shape[0]), int(a.shape[1])
+            heights[i], widths[i] = h, w
+            tot_tok += ((h + 39) // 40) * ((w + 39) // 40)
+        hidden = int(getattr(self.pack, "hidden_size", 2304))
+        out_u16 = np.empty((tot_tok, hidden), dtype=np.uint16)
+        grids = np.empty((len(arrs), 2), dtype=np.int32)
+        ptrs = (C.c_void_p * len(arrs))(*[a.ctypes.data for a in arrs])
+        n_tok = C.c_int(0)
+        with self._lock:
+            self._need_open()
+            self._check(self._f["yskn_ink2_encode_rgb"](
+                self._e, C.cast(ptrs, C.c_void_p), widths.ctypes.data, heights.ctypes.data,
+                len(arrs), out_u16.ctypes.data, grids.ctypes.data, C.byref(n_tok)))
+        if int(n_tok.value) != tot_tok:
+            raise YasakaniError("ink2 vision encoder token count mismatch (%d != %d)" % (n_tok.value, tot_tok))
+        return out_u16, grids
+
+    @property
     def supports_suppress(self) -> bool:
         return "yskn_set_suppress" in self._f
 
@@ -345,25 +379,47 @@ class Engine:
             return self.suppressed_count
 
     @contextmanager
-    def visual_input(self, features, slots, positions, delta):
+    def visual_input(self, features, slots, positions=None, delta=0, n_prompt=None):
         """Keep visual input and generation under the same lock; always clear it afterwards.
 
         Features are bfloat16 bits, not float16 values. The arrays stay alive until generation finishes.
-        Clearing also resets the native prefix cache, so images cannot leak into later text requests.
+        Clearing keeps prefix tracking safe across subsequent requests.
         """
         if not self.supports_visual:
             raise YasakaniError("the engine library has no yskn_set_visual export")
-        features, slots, positions = map(np.asarray, (features, slots, positions))
+        features, slots = np.asarray(features), np.asarray(slots)
+        if self.pack.is_hf_inkling2 or positions is None:
+            hidden = int(getattr(self.pack, "hidden_size", 2304)) if self.pack.is_hf_inkling2 else 5120
+            if features.dtype != np.uint16 or features.ndim != 2 or features.shape != (slots.size, hidden):
+                raise ValueError("visual features must be bfloat16 bits with shape (image tokens, %d)" % hidden)
+            if np.any((features & 0x7f80) == 0x7f80):
+                raise ValueError("non-finite visual features")
+            if slots.dtype != np.int32 or slots.ndim != 1 or not slots.size:
+                raise ValueError("visual slots must be a nonempty int32 vector")
+            n_prompt_i = int(n_prompt) if n_prompt is not None else (int(slots.max()) + 1)
+            if n_prompt_i <= 0 or n_prompt_i >= self.max_ctx or np.any(slots < 0) or np.any(slots >= n_prompt_i) or len(np.unique(slots)) != len(slots):
+                raise ValueError("invalid visual slots or prompt length")
+            features, slots = np.ascontiguousarray(features), np.ascontiguousarray(slots)
+            with self._lock:
+                self._need_open()
+                f = self._f["yskn_set_visual"]
+                try:
+                    self._check(f(self._e, features.ctypes.data, slots.ctypes.data, len(slots), None, n_prompt_i, 0))
+                    yield
+                finally:
+                    self._check(f(self._e, None, None, 0, None, 0, 0))
+            return
+        positions = np.asarray(positions)
         if features.dtype != np.uint16 or features.ndim != 2 or features.shape != (slots.size, 5120):
             raise ValueError("visual features must be bfloat16 bits with shape (image tokens, 5120)")
         if slots.dtype != np.int32 or slots.ndim != 1 or not slots.size:
             raise ValueError("visual slots must be a nonempty int32 vector")
         if positions.dtype != np.int32 or positions.ndim != 2 or positions.shape[0] != 3:
             raise ValueError("visual positions must be int32 with shape (3, prompt tokens)")
-        n_prompt = positions.shape[1]
-        if n_prompt >= self.max_ctx or np.any(slots < 0) or np.any(slots >= n_prompt) or len(np.unique(slots)) != len(slots):
+        n_prompt_i = positions.shape[1]
+        if n_prompt_i >= self.max_ctx or np.any(slots < 0) or np.any(slots >= n_prompt_i) or len(np.unique(slots)) != len(slots):
             raise ValueError("invalid visual slots or prompt length")
-        if np.any(positions < 0) or np.any(positions >= self.max_ctx) or int(delta) != int(positions.max()) + 1 - n_prompt:
+        if np.any(positions < 0) or np.any(positions >= self.max_ctx) or int(delta) != int(positions.max()) + 1 - n_prompt_i:
             raise ValueError("invalid visual positions or delta")
         features, slots, positions = map(np.ascontiguousarray, (features, slots, positions))
         with self._lock:
@@ -371,7 +427,7 @@ class Engine:
             f = self._f["yskn_set_visual"]
             try:
                 self._check(f(self._e, features.ctypes.data, slots.ctypes.data, len(slots), positions.ctypes.data,
-                              n_prompt, int(delta)))
+                              n_prompt_i, int(delta)))
                 yield
             finally:
                 self._check(f(self._e, None, None, 0, None, 0, 0))

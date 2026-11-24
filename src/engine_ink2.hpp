@@ -2,6 +2,8 @@
 // Copyright (c) 2026 the YASAKANI authors
 #pragma once
 
+#include "ink2_prefix_cache.hpp"
+
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -9,10 +11,13 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace yskn {
+
+class Ink2VisionEncoder;
 
 struct Ink2Config {
   int hidden = 2304;
@@ -42,6 +47,7 @@ struct Ink2Config {
   float logit_softcap = 30.0f;
   std::vector<bool> is_local;
   std::vector<int> schedule;  // length 48
+  int image_token_id = 200054;
 };
 
 struct Ink2Tensor {
@@ -120,6 +126,10 @@ struct Ink2GenStats {
   int64_t accepted = 0;
   double prefill_ms = 0.0;
   double gen_ms = 0.0;
+  int snap_mode = 0;  // 0 fresh prefill, 1 live continuation, 2 restored snapshot
+  int snap_slots = 0;
+  int snap_saved = 0;
+  double snap_ms = 0.0;
 };
 
 // CPU speculative acceptance helper (greedy exact & unbiased sampled rejection with independent residual salt).
@@ -151,6 +161,9 @@ class EngineInk2 {
   int vocab() const { return cfg_.vocab; }
   int max_ctx() const { return max_ctx_; }
   int position() const { return pos_; }
+  int snap_count() const { return prefix_cache_.valid_count(); }
+  int latest_snap_pos() const { return prefix_cache_.latest_pos(); }
+  const std::vector<int32_t>& live_tokens() const { return live_tokens_; }
 
   void reset();
   int32_t prefill(const int32_t* ids, int n);
@@ -158,6 +171,9 @@ class EngineInk2 {
   void logits(float* out);
   void set_opt(int key, int value);
   void set_suppress(const int32_t* token_ids, int n_tokens);
+  void set_visual(const uint16_t* features, const int32_t* slots, int n_image, int n_prompt);
+  void encode_rgb(const uint8_t* const* frames, const int32_t* widths, const int32_t* heights, int n_frames,
+                  uint16_t* out_bf16, int32_t* out_grids, int32_t* out_n_tokens);
   void generate(const int32_t* prompt, int n_prompt, int n_gen, int eos1, int eos2,
                 const std::atomic<int>* cancel, int32_t* out_ids, Ink2GenStats& st);
 
@@ -173,6 +189,11 @@ class EngineInk2 {
     uint32_t anc_mask[kMaxTree] = {};
   };
 
+  size_t kv_elem_bytes() const { return kv_bf16_ ? sizeof(__nv_bfloat16) : sizeof(float); }
+  void reset_kv();
+  void prepare_swa_write(int write_end);
+  void capture_snapshot(int pos, Ink2SnapKind kind, Ink2GenStats& st);
+  bool visual_prefix_matches(int prefix_len) const;
   void forward_tokens(const int32_t* ids, int T, int pos0, bool need_logits,
                       bool capture_taps = false, bool save_snaps = false, bool need_all_logits = false,
                       const int32_t* d_pos_ptr = nullptr, bool greedy_argmax_only = false);
@@ -192,10 +213,14 @@ class EngineInk2 {
   int sm_count_ = 48;
   int max_ctx_ = 32768;
   int ring_rows_ = 0;
+  int max_swa_ = 1024;
+  int prefill_chunk_ = kPrefillChunk;
   int pos_ = 0;
+  int max_written_pos_ = 0;
   int32_t last_tok_ = -1;
   bool logits_valid_ = false;
   std::vector<int32_t> live_tokens_;
+  Ink2PrefixCache prefix_cache_;
 
   // Sampling options (matching Engine35 option keys)
   float temp_ = 0.0f;
@@ -352,6 +377,19 @@ class EngineInk2 {
   cudaGraphExec_t beam_draft_graph_exec_[2] = {};
   cudaGraph_t tree_verify_graph_[kNumTreeBuckets][2] = {};
   cudaGraphExec_t tree_verify_graph_exec_[kNumTreeBuckets][2] = {};
+
+  // Native vision encoder & vis_sig injection state
+  std::unique_ptr<Ink2VisionEncoder> vision_;
+  bool vis_active_ = false;
+  int vis_n_image_ = 0;
+  int vis_n_prompt_ = 0;
+  int vis_cap_ = 0;
+  __nv_bfloat16* d_vis_feats_ = nullptr;
+  int vis_map_cap_ = 0;
+  int32_t* d_vis_map_ = nullptr;
+  std::vector<int32_t> vis_map_;
+  std::vector<uint64_t> active_vis_hash_;
+  std::vector<uint64_t> live_vis_hash_;
 };
 
 }  // namespace yskn

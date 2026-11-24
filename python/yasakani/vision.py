@@ -8,6 +8,7 @@ from collections import OrderedDict
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import struct
@@ -52,6 +53,10 @@ def still_formats(Image) -> tuple:
     name it does not know)."""
     Image.init()
     return tuple(f for f in STILL_FORMATS if f in Image.OPEN)
+INK2_IMAGE_TOKEN = "<|unused_200054|>"
+INK2_IMAGE_TOKEN_ID = 200054
+INK2_TILE_SIZE = 40
+INK2_HIDDEN = 2304
 
 
 def physical_cores() -> int:
@@ -153,16 +158,17 @@ class PreparedVisual(tuple):
         return value
 
 
-def split_images(messages):
+def split_images(messages, *, is_inkling2: bool = False):
     sources, out = [], []
+    allowed_roles = ("user", "tool") if is_inkling2 else ("user",)
     for message in messages:
         content = message.get("content")
         if not isinstance(content, list) or not any(isinstance(p, dict) and p.get("type") == "image_url" for p in content):
             out.append(message)
             continue
-        if message.get("role") != "user":
+        if message.get("role") not in allowed_roles:
             from .chat import RequestError
-            raise RequestError("images are supported only in user messages")
+            raise RequestError("images are supported only in %s messages" % ("user and tool" if is_inkling2 else "user"))
         parts = []
         for part in content:
             if isinstance(part, dict) and part.get("type") == "image_url":
@@ -171,7 +177,7 @@ def split_images(messages):
                     from .chat import RequestError
                     raise RequestError("image_url needs a nonempty url string")
                 sources.append(value["url"])
-                parts.append({"type": "text", "text": MARKER})
+                parts.append({"type": "image"} if is_inkling2 else {"type": "text", "text": MARKER})
             else:
                 parts.append(part)
         out.append(dict(message, content=parts))
@@ -181,7 +187,7 @@ def split_images(messages):
     return (out if sources else messages), sources
 
 
-def read_image(source, *, allow_local_files=False):
+def read_image(source, *, allow_local_files=False, rgba_checkerboard: bool = False):
     """Read a base64 data URI. Local files require an explicit server-side opt-in: True, or the folder they must be in.
     Never fetch a remote URL.  A source that is not a usable image raises ValueError."""
     if source.startswith("data:"):
@@ -242,7 +248,17 @@ def read_image(source, *, allow_local_files=False):
             if getattr(image, "n_frames", 1) != 1:
                 raise ValueError("only still images are supported")
             image.load()
-            return ImageOps.exif_transpose(image).convert("RGB")
+            transposed = ImageOps.exif_transpose(image)
+            if rgba_checkerboard and getattr(transposed, "has_transparency_data", False):
+                rgba = np.array(transposed.convert("RGBA"), dtype=np.int32)
+                h, w, _ = rgba.shape
+                rows = np.arange(h, dtype=np.int32)[:, None] // 8
+                cols = np.arange(w, dtype=np.int32)[None, :] // 8
+                bg = np.where((rows + cols) % 2 == 0, 204, 153)
+                alpha = rgba[:, :, 3:4]
+                rgb = ((rgba[:, :, :3] * alpha + bg[:, :, None] * (255 - alpha) + 127) // 255).astype(np.uint8)
+                return Image.fromarray(rgb, mode="RGB")
+            return transposed.convert("RGB")
     except ValueError:
         raise
     except Image.DecompressionBombError:                     # Pillow's own size limit, checked inside Image.open
@@ -515,5 +531,236 @@ class VisionProcessor:
             if self._encoder is not None:
                 self._encoder.close()
                 self._encoder = None
+            self._memory.clear()
+            self._memory_bytes = 0
+
+
+def ink2_grid_size(width: int, height: int) -> tuple[int, int]:
+    return ((int(height) + INK2_TILE_SIZE - 1) // INK2_TILE_SIZE,
+            (int(width) + INK2_TILE_SIZE - 1) // INK2_TILE_SIZE)
+
+
+def _fit_ink2_image(image, max_tokens: int):
+    w, h = image.size
+    rows, cols = ink2_grid_size(w, h)
+    if rows * cols <= max_tokens:
+        return image
+    from PIL import Image
+    scale = math.sqrt(float(max_tokens) / float(rows * cols))
+    nw = max(1, min(w, int(math.floor(w * scale))))
+    nh = max(1, min(h, int(math.floor(h * scale))))
+    while True:
+        nr, nc = ink2_grid_size(nw, nh)
+        if nr * nc <= max_tokens or (nw == 1 and nh == 1):
+            break
+        nnw = max(1, int(nw * 0.99)) if nw > 1 else 1
+        nnh = max(1, int(nh * 0.99)) if nh > 1 else 1
+        if nnw == nw and nnh == nh:
+            if nw >= nh and nw > 1:
+                nnw = nw - 1
+            elif nh > 1:
+                nnh = nh - 1
+        nw, nh = nnw, nnh
+    return image.resize((nw, nh), Image.Resampling.LANCZOS)
+
+
+def validate_ink2_features(item, hidden_size: int = INK2_HIDDEN):
+    grid = np.asarray(item["grid"])
+    if grid.shape != (2,) or grid.dtype.kind not in "iu" or np.any(grid <= 0):
+        raise ValueError("invalid image grid")
+    h, w = map(int, grid)
+    n = h * w
+    features = item["features"]
+    if features.dtype != np.uint16 or features.shape != (n, int(hidden_size)):
+        raise ValueError("invalid bfloat16 image feature shape")
+    if np.any((features & 0x7f80) == 0x7f80):
+        raise ValueError("non-finite image features")
+    return h, w
+
+
+def build_ink2_visual_prompt(prompt, images, image_id: int = INK2_IMAGE_TOKEN_ID, *, max_tokens=None, max_ctx=None,
+                             hidden_size: int = INK2_HIDDEN):
+    """Expand each `<|unused_200054|>` placeholder to grid H*W slots for Inkling-2."""
+    if not images or sum(int(t) == image_id for t in prompt) != len(images):
+        raise ValueError("image placeholder count does not match supplied images")
+    grids = [validate_ink2_features(item, hidden_size=hidden_size) for item in images]
+    size = len(prompt) - len(images) + sum(h * w for h, w in grids)
+    _check_length(size, max_tokens, max_ctx)
+    ids, slots, features = [], [], []
+    index = 0
+    for token in prompt:
+        if int(token) != image_id:
+            ids.append(int(token))
+        else:
+            h, w = grids[index]
+            n = h * w
+            slots.extend(range(len(ids), len(ids) + n))
+            ids.extend([image_id] * n)
+            features.append(images[index]["features"])
+            index += 1
+    return np.asarray(ids, np.int32), dict(
+        features=np.ascontiguousarray(np.concatenate(features)),
+        slots=np.asarray(slots, np.int32),
+        n_prompt=len(ids),
+    )
+
+
+def validate_vision_limits(max_image_tokens=DEFAULT_IMAGE_TOKENS, max_request_image_tokens=None) -> tuple[int, int]:
+    mit = int(max_image_tokens)
+    if not IMAGE_TOKENS_RANGE[0] <= mit <= IMAGE_TOKENS_RANGE[1]:
+        raise ValueError("--vision-max-image-tokens must be between %d and %d" % IMAGE_TOKENS_RANGE)
+    mrit = REQUEST_IMAGE_TOKENS_FACTOR * mit if max_request_image_tokens is None else int(max_request_image_tokens)
+    if not mit <= mrit <= MAX_IMAGES * MAX_IMAGE_TOKENS:
+        raise ValueError("--vision-max-request-image-tokens must be between the per-image limit (%d) and %d"
+                         % (mit, MAX_IMAGES * MAX_IMAGE_TOKENS))
+    return mit, mrit
+
+
+class Ink2NativeVision:
+    """Native GPU vision encoder wrapper for Inkling-2 with bounded LRU memory cache and optional disk cache."""
+
+    def __init__(self, engine, *, cache=None, allow_local_files=False,
+                 max_image_tokens=DEFAULT_IMAGE_TOKENS, max_request_image_tokens=None):
+        self.engine = engine
+        self.cache = _absolute(cache) if cache else None
+        self.max_image_tokens, self.max_request_image_tokens = validate_vision_limits(
+            max_image_tokens, max_request_image_tokens)
+        if allow_local_files not in (False, None, True):
+            allow_local_files = str(_absolute(allow_local_files))
+        self.allow_local_files = allow_local_files or False
+        self.hidden_size = int(getattr(getattr(engine, "pack", None), "hidden_size", INK2_HIDDEN))
+        self._memory = OrderedDict()
+        self._memory_bytes = 0
+        self._identity = None
+        self._lock = threading.RLock()
+
+    def check(self):
+        if not getattr(self.engine, "supports_ink2_vision", False):
+            raise RuntimeError("engine does not support native Inkling-2 vision encoding")
+        if self.allow_local_files not in (False, None, True) and not Path(self.allow_local_files).is_dir():
+            raise FileNotFoundError("%s: no such folder: %s" % (LOCAL_FILES_HINT, self.allow_local_files))
+        if self.cache:
+            self.cache.mkdir(parents=True, exist_ok=True)
+
+    def summary(self) -> str:
+        return ("image input: native GPU encoder; at most %d image tokens per image (larger images are downsized), "
+                "%d per request, %d images per request"
+                % (self.max_image_tokens, self.max_request_image_tokens, MAX_IMAGES))
+
+    def _fingerprint(self):
+        pack = getattr(self.engine, "pack", None)
+        files = []
+        if pack is not None:
+            for p in (pack.weights, pack.root / "config.json"):
+                if p.is_file():
+                    st = p.stat()
+                    files.append((str(p.resolve()), st.st_size, st.st_mtime_ns))
+        return json.dumps(["ink2-gpu-bf16-v1", self.max_image_tokens, self.hidden_size, files]).encode()
+
+    def _cached(self, key):
+        if key in self._memory:
+            self._memory.move_to_end(key)
+            return self._memory[key]
+        path = self.cache / (key + ".npz") if self.cache else None
+        if not path or not path.is_file():
+            return None
+        try:
+            with path.open("rb") as stream, np.load(stream, allow_pickle=False) as stored:
+                item = {k: stored[k].copy() for k in ("features", "grid")}
+            validate_ink2_features(item, hidden_size=self.hidden_size)
+        except Exception:                                    # noqa: BLE001 - damaged cache entry is re-encoded
+            return None
+        self._remember(key, item)
+        return item
+
+    def _remember(self, key, item):
+        size = sum(v.nbytes for v in item.values())
+        while self._memory and self._memory_bytes + size > MEMORY_CACHE_BYTES:
+            _, old = self._memory.popitem(last=False)
+            self._memory_bytes -= sum(v.nbytes for v in old.values())
+        if size <= MEMORY_CACHE_BYTES:
+            self._memory[key] = item
+            self._memory_bytes += size
+
+    def _store(self, key, item):
+        if not self.cache:
+            return
+        path, tmp = self.cache / (key + ".npz"), None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=key[:16] + ".", suffix=".tmp")
+            with os.fdopen(fd, "wb") as stream:
+                np.savez(stream, **item)
+            os.replace(tmp, path)
+            tmp = None
+        except Exception as ex:                              # noqa: BLE001
+            print("note: the image cache was not written (%s)" % ex, file=sys.stderr, flush=True)
+        finally:
+            if tmp is not None:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+    def prepare(self, prompt, sources, fmt, max_tokens, max_ctx=None):
+        from .chat import RequestError
+        image_id = fmt.token_id(INK2_IMAGE_TOKEN)
+        if fmt.encode(INK2_IMAGE_TOKEN).tolist() != [image_id]:
+            raise RuntimeError("tokenizer does not encode %s as a single token" % INK2_IMAGE_TOKEN)
+        markers = sum(int(t) == image_id for t in prompt)
+        if markers != len(sources):
+            raise RequestError("the messages hold %d image markers for %d image(s); do not write %s as text"
+                               % (markers, len(sources), INK2_IMAGE_TOKEN))
+        with self._lock:
+            identity = self._fingerprint()
+            if identity != self._identity:
+                self.close()
+                self._identity = identity
+            items, pending_idx, pending_keys, pending_rgbs, pending_grids = [], [], [], [], []
+            total = 0
+            for i, source in enumerate(sources):
+                image = read_image(source, allow_local_files=self.allow_local_files, rgba_checkerboard=True)
+                image = _fit_ink2_image(image, self.max_image_tokens)
+                rgb = np.ascontiguousarray(np.asarray(image, dtype=np.uint8))
+                gh, gw = ink2_grid_size(image.width, image.height)
+                n = gh * gw
+                key = hashlib.sha256(identity + str(image.size).encode() + rgb.tobytes()).hexdigest()
+                del image
+                if n > MAX_IMAGE_TOKENS:
+                    raise RequestError("image %d needs %d image tokens; at most %d are allowed per image"
+                                       % (i + 1, n, MAX_IMAGE_TOKENS))
+                total += n
+                if total > self.max_request_image_tokens:
+                    raise RequestError("the images need %d image tokens or more; at most %d are allowed per request (server option "
+                                       "--vision-max-request-image-tokens; the images of earlier turns count too)"
+                                       % (total, self.max_request_image_tokens))
+                item = self._cached(key)
+                if item is None:
+                    pending_idx.append(i)
+                    pending_keys.append(key)
+                    pending_rgbs.append(rgb)
+                    pending_grids.append((gh, gw))
+                items.append(item)
+            _check_length(len(prompt) - len(sources) + total, max_tokens, max_ctx)
+            if pending_rgbs:
+                feats_all, grids_all = self.engine.encode_ink2_images(pending_rgbs)
+                off = 0
+                for k_i, idx in enumerate(pending_idx):
+                    gr, gc = map(int, grids_all[k_i])
+                    n_i = gr * gc
+                    item = dict(
+                        features=np.ascontiguousarray(feats_all[off:off + n_i]),
+                        grid=np.asarray([gr, gc], dtype=np.int32),
+                    )
+                    off += n_i
+                    validate_ink2_features(item, hidden_size=self.hidden_size)
+                    self._remember(pending_keys[k_i], item)
+                    self._store(pending_keys[k_i], item)
+                    items[idx] = item
+            return build_ink2_visual_prompt(prompt, items, image_id, max_tokens=max_tokens, max_ctx=max_ctx,
+                                            hidden_size=self.hidden_size)
+
+    def close(self):
+        with self._lock:
             self._memory.clear()
             self._memory_bytes = 0

@@ -221,8 +221,10 @@ def clean_messages(messages, *, images: bool = False, tool_ids: bool = False, vi
         msg = {"role": role, "content": _clean_content(m.get("content"), i, images, vision_parts)}
         if vision_parts:
             _check_vision_parts(msg, i, images, vision_problem)
-        elif role != "user" and isinstance(msg["content"], list) and any(p["type"] == "image_url" for p in msg["content"]):
-            raise RequestError("messages[%d]: images are supported only in user messages" % i)
+        else:
+            allowed_img_roles = ("user", "tool") if tool_ids else ("user",)
+            if role not in allowed_img_roles and isinstance(msg["content"], list) and any(p["type"] == "image_url" for p in msg["content"]):
+                raise RequestError("messages[%d]: images are supported only in %s messages" % (i, "user and tool" if tool_ids else "user"))
         if role == "assistant":
             if tool_ids and isinstance(m.get("name"), str) and m["name"]:
                 msg["name"] = m["name"]
@@ -313,10 +315,12 @@ class ChatRunner:
 
     def prepare(self, p: ChatParams):
         from .vision import split_images, PreparedVisual
-        messages, sources = split_images(p.messages)
+        is_ink2 = bool(getattr(self.fmt, "hf_inkling2", False) or getattr(self.fmt, "is_inkling2", False))
+        messages, sources = split_images(p.messages, is_inkling2=is_ink2)
         if sources and self.vision is None:
-            raise RequestError("only text content is supported: image input is not configured "
-                               "(start the server with --mmproj, --llama-dir and --vision-model)")
+            hint = ("(Inkling-2 built-in vision requires an engine library with yskn_ink2_encode_rgb)"
+                    if is_ink2 else "(start the server with --mmproj, --llama-dir and --vision-model)")
+            raise RequestError("only text content is supported: image input is not configured " + hint)
         kw = dict(p.template_kwargs)
         if p.tools:
             kw["tools"] = p.tools

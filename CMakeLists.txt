@@ -73,7 +73,7 @@ if(YSKN_WITH_INK2)
     message(FATAL_ERROR "YSKN_WITH_INK2 builds on Linux only (src/safetensors.hpp uses POSIX file calls). On Windows the Inkling-2 "
                         "engine is yskn_inkling2.dll (BUILDING.md).")
   endif()
-  target_sources(yskn PRIVATE src/engine_ink2.cpp src/ink2_kernels.cu)
+  target_sources(yskn PRIVATE src/engine_ink2.cpp src/ink2_kernels.cu src/ink2_vision.cu)
   target_compile_definitions(yskn PRIVATE YSKN_WITH_INK2=1)
   target_link_libraries(yskn PRIVATE CUDA::cublas)
 endif()
