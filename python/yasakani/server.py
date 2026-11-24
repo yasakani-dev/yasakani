@@ -18,7 +18,9 @@
   against the schema), and a reply cut by max_tokens before the call has none.
 * ``thinking_budget`` (a request field; the default comes from the environment variable YASAKANI_THINKING_BUDGET, 0 = no limit):
   when the thinking has taken that many tokens it is closed and the model goes on to the answer.
-* Optional still-image input through ``image_url`` (configure --mmproj, --llama-dir and --vision-model).
+* Optional still-image input through ``image_url`` (Qwen3.8: configure --mmproj, --llama-dir and --vision-model; Inkling-2 Mini:
+  on by itself when the model folder has its image tower, ``--vision off`` turns it off).  ``/v1/models`` says whether the model
+  reads images (``"vision"``); image tokens count as prompt tokens in ``usage``.
   Not supported (answered with 400): the old ``functions`` / ``function_call`` fields,
   ``n`` > 1, ``logprobs``.
 """
@@ -37,8 +39,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
 from ._native import YasakaniError
-from .chat import (REASONING_EFFORT_ALIASES, ChatParams, ChatRunner, RequestError, Usage, clean_messages, clean_tools,
-                   DEFAULT_TEMPERATURE, DEFAULT_TOP_K, DEFAULT_TOP_P)
+from .chat import (IMAGE_PART_TYPES, REASONING_EFFORT_ALIASES, ChatParams, ChatRunner, RequestError, Usage, clean_messages,
+                   clean_tools, DEFAULT_TEMPERATURE, DEFAULT_TOP_K, DEFAULT_TOP_P)
 
 MAX_BODY = 32 * 1024 * 1024
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
@@ -59,6 +61,8 @@ class ServerConfig:
         self.sampling_defaults = {}                       # the model's defaults (temperature, top_p, top_k); empty: those of Qwen3.8
         self.effort_aliases = None                        # accepted reasoning_effort values; None: REASONING_EFFORT_ALIASES
         self.keep_tool_ids = False                        # keep tool_call ids / tool_call_id / name of tool messages (Inkling-2)
+        self.vision_parts = False                         # image parts are checked by the model's runner (Inkling-2 model folders)
+        self.vision_problem = ""                          # why that model reads no images (the message of a refused image)
 
 
 class ApiState:
@@ -127,7 +131,8 @@ def parse_chat_request(body: dict, cfg: ServerConfig, images: bool = False) -> C
     rf = body.get("response_format")
     if isinstance(rf, dict) and rf.get("type") not in (None, "text"):
         raise RequestError("response_format %r is not supported" % rf.get("type"))
-    messages = clean_messages(body.get("messages"), images=images, tool_ids=bool(getattr(cfg, "keep_tool_ids", False)))
+    messages = clean_messages(body.get("messages"), images=images, tool_ids=bool(getattr(cfg, "keep_tool_ids", False)),
+                              vision_parts=bool(getattr(cfg, "vision_parts", False)), vision_problem=getattr(cfg, "vision_problem", ""))
     mt = body.get("max_completion_tokens", body.get("max_tokens"))
     max_tokens = cfg.default_max_tokens if mt is None else _num({"v": mt}, "v", None, 1, None, int)
     if cfg.max_tokens_cap:
@@ -189,6 +194,9 @@ def usage_json(u: Usage) -> dict:
     d = dict(prompt_tokens=u.prompt_tokens, completion_tokens=u.completion_tokens, total_tokens=u.prompt_tokens + u.completion_tokens,
              prompt_tokens_details=dict(cached_tokens=u.cached_tokens),
              completion_tokens_details=dict(reasoning_tokens=u.reasoning_tokens))
+    v = getattr(u, "vision", None)                        # a request with images (Inkling-2): they are prompt tokens already
+    if isinstance(v, dict) and v.get("images"):
+        d["prompt_tokens_details"].update(image_tokens=int(v.get("image_tokens", 0)), images=int(v["images"]))
     if u.loop_guard:
         d["loop_guard"] = u.loop_guard
     return d
@@ -244,8 +252,16 @@ def client_gone(sock: socket.socket) -> bool:
 
 
 def has_images(params: ChatParams) -> bool:
-    return any(isinstance(m.get("content"), list) and any(isinstance(q, dict) and q.get("type") == "image_url" for q in m["content"])
+    return any(isinstance(m.get("content"), list) and any(isinstance(q, dict) and q.get("type") in IMAGE_PART_TYPES for q in m["content"])
                for m in params.messages)
+
+
+def model_json(state: "ApiState") -> dict:
+    """The entry of /v1/models: the model id, and whether the loaded model reads images (the chat page shows its image button
+    only then)."""
+    runner = state.runner
+    return dict(id=state.cfg.model_id, object="model", owned_by="local",
+                vision=runner is not None and getattr(runner, "vision", None) is not None)
 
 
 def make_handler(state: ApiState):
@@ -352,9 +368,9 @@ def make_handler(state: ApiState):
             if self._unauthorized():
                 return
             if path in ("/v1/models", "/v1/models/"):
-                return self._json(200, dict(object="list", data=[dict(id=cfg.model_id, object="model", owned_by="local")]))
+                return self._json(200, dict(object="list", data=[model_json(state)]))
             if path == "/v1/models/" + cfg.model_id:
-                return self._json(200, dict(id=cfg.model_id, object="model", owned_by="local"))
+                return self._json(200, model_json(state))
             return self._error(404, "not found", "not_found")
 
         def do_POST(self):

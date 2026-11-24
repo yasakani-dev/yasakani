@@ -18,11 +18,20 @@ from . import __version__
 from . import inkling2 as ink
 from ._native import YasakaniError
 
+QWEN_VISION = ("--mmproj, --llama-dir and --vision-model are for Qwen3.8 model folders; Inkling-2 Mini reads images with the image "
+               "tower of its own folder (--vision auto|on|off)")
+QWEN_VISION_ENV = dict(mmproj="YASAKANI_MMPROJ", llama_dir="YASAKANI_LLAMA_DIR", vision_model="YASAKANI_VISION_MODEL")
 UNSUPPORTED = {
     "parallel": "--parallel (several requests at once) is not supported for Inkling-2 models yet",
     "concurrency": "--concurrency is not supported for Inkling-2 models yet",
     "edit": "--edit (the edit tasks of the speed tables) is not supported for Inkling-2 models yet",
-    "mmproj": "image input is not supported for Inkling-2 models yet",
+    "mmproj": QWEN_VISION,
+    "llama_dir": QWEN_VISION,
+    "vision_model": QWEN_VISION,
+    "vision_threads": "--vision-threads is for the CPU image encoder of Qwen3.8 model folders; Inkling-2 Mini encodes images on the GPU",
+    "vision_cache": "--vision-cache (a folder of image features) is for Qwen3.8 model folders; Inkling-2 Mini keeps the image vectors "
+                    "of recent images in memory",
+    "image": "--image is taken by yasakani chat only (serve reads the images inside the requests)",
     "write": "selfcheck --write is not supported for Inkling-2 models yet",
     "suppress_tokens": "--suppress-tokens is not supported for Inkling-2 models yet (it masks Qwen3.8 token IDs)",
     "yarn2": "--yarn2 is not supported for Inkling-2 models (it scales the rotary table of Qwen3.8 models)",
@@ -38,9 +47,18 @@ def _gb(n: float) -> str:
     return "%.2f GB" % (n / 1e9)
 
 
-def refuse_unsupported(args) -> None:
+def refuse_unsupported(args, images: bool = False) -> None:
+    """A YasakaniError for an option an Inkling-2 folder does not take.  ``images``: the command takes images (chat)."""
     for key, why in UNSUPPORTED.items():
+        if key == "image" and images:
+            continue
         v = getattr(args, key, None)
+        env = QWEN_VISION_ENV.get(key)
+        if env and v and v == os.environ.get(env):          # set for Qwen3.8 folders in the environment, not on this command line
+            if not getattr(args, "qwen_vision_env_noted", False):
+                args.qwen_vision_env_noted = True
+                _say("note: ignoring %s: the Qwen3.8 image encoder is not used for Inkling-2 models" % env)
+            continue
         if (v not in (None, 1)) if key in ("parallel", "concurrency") else bool(v):
             raise YasakaniError(why)
     if (os.environ.get("YASAKANI_SUPPRESS_TOKENS") or "").strip() and not getattr(args, "suppress_env_noted", False):
@@ -82,13 +100,16 @@ def auto_context(args, pack: ink.Ink2Pack, det=None, say=None) -> int:
     files = pack.weights.stat().st_size + (pack.drafter.stat().st_size if drafter else 0)
     per = gpus.ink2_bytes_per_position(ink.bytes_per_position(ink.read_config(pack.root), mxfp8=fast), drafter, fast=fast)
     rollback = ink.rollback_positions()
-    n = gpus.ink2_context(g.free_mib, files, per, default, rollback, fast=fast)
+    vmib = vision_mib(args, pack)
+    n = gpus.ink2_context(g.free_mib, files, per, default, rollback, fast=fast, vision_mib=vmib)
     if n <= 0:
         raise YasakaniError(
             "the model does not fit in the free GPU memory (%d of %d MiB free; with a context of %d tokens it needs about %d MiB).  "
             "Close other programs that use the GPU%s, or give a smaller --max-ctx to try anyway"
-            % (g.free_mib, g.total_mib, gpus.INK2_MIN_CONTEXT, gpus.ink2_need_mib(gpus.INK2_MIN_CONTEXT, files, per, rollback, fast=fast),
-               ", start with --draft off (the drafter needs memory too)" if drafter else ""))
+            % (g.free_mib, g.total_mib, gpus.INK2_MIN_CONTEXT,
+               gpus.ink2_need_mib(gpus.INK2_MIN_CONTEXT, files, per, rollback, fast=fast, vision_mib=vmib),
+               ", start with --draft off (the drafter needs memory too)" if drafter else "")
+            + ("; --vision off gives back the %d MiB of the image tower" % round(vmib) if vmib else ""))
     if n == default:
         say("context: %d tokens (the folder's default; %d of %d MiB of GPU memory free); --max-ctx sets it yourself"
             % (n, g.free_mib, g.total_mib))
@@ -107,14 +128,41 @@ def _select_gpu(args) -> None:
     _visible_gpu(gpus.detect(args.device), args.device)
 
 
+def vision_options(args):
+    """(mode, per-image cap, per-request limit) of the image options.  Commands without images (selfcheck, bench) run with "off";
+    chat and serve take --vision (else $YASAKANI_INK2_VISION, else auto), --vision-max-image-tokens and
+    --vision-max-request-image-tokens.  A wrong value fails here, before the long load."""
+    if not getattr(args, "ink2_images", False):
+        return "off", None, None
+    mode = ink.vision_mode_of(getattr(args, "vision", None))
+    cap, req = ink.vision_limits(getattr(args, "vision_max_image_tokens", None), getattr(args, "vision_max_request_image_tokens", None))
+    return mode, cap, req
+
+
+def vision_mib(args, pack: ink.Ink2Pack) -> float:
+    """GPU memory (MiB) the image tower will take with these options (0: it will not be loaded), for planning the context."""
+    mode, cap, req = vision_options(args)
+    if mode == "off":
+        return 0.0
+    return ink.vision_plan_mib(pack, mode, cap, req, dll=getattr(args, "dll", None))
+
+
 def draft_options(args):
     """(mode, depth) of --draft / --draft-depth, else $YASAKANI_DRAFT / $YASAKANI_DRAFT_DEPTH; a wrong value fails here."""
     return ink.draft_mode_of(getattr(args, "draft", None)), ink.draft_depth_of(getattr(args, "draft_depth", None))
 
 
-def open_stack(args, warm: bool = True):
-    refuse_unsupported(args)
+def open_stack(args, warm: bool = True, images: bool = False, image_option: bool = False):
+    """Folder -> (pack, engine, formatter, runner).  ``images``: the command reads images (chat, serve); the image tower is then
+    loaded by the --vision rule and one line says whether image input is on (and why not); else (selfcheck, bench) it is not
+    loaded.  ``image_option``: the command takes --image (chat)."""
+    refuse_unsupported(args, image_option)
+    args.ink2_images = images
+    vmode, vcap, vreq = vision_options(args)                                    # wrong image options fail before the long load
     pack = ink.Ink2Pack.load(args.model_dir_path)
+    if image_option and getattr(args, "image", None) and (vmode == "off" or not pack.has_vision):   # known before the long load
+        from . import inkling2_vision as V
+        raise YasakaniError("--image needs image input, which is off: %s" % (ink.VISION_OFF if vmode == "off" else V.NO_TOWER))
     ctx = context_of(args, pack)
     draft, depth = draft_options(args)
     fast = ink.fast_mode_of(getattr(args, "fast", None))
@@ -136,7 +184,8 @@ def open_stack(args, warm: bool = True):
     try:
         fmt, eng, runner = ink.open_runner(pack, ctx, dll=getattr(args, "dll", None), seed0=getattr(args, "seed0", 1), warm=warm,
                                            draft=draft, draft_depth=depth, copy=getattr(args, "copy", None),
-                                           copy_min=getattr(args, "copy_min", None), fast=fast, compute_cap=cap)
+                                           copy_min=getattr(args, "copy_min", None), fast=fast, compute_cap=cap,
+                                           vision=vmode, vision_max_image_tokens=vcap, vision_max_request_tokens=vreq)
     except YasakaniError as ex:
         raise YasakaniError("%s  (a smaller --max-ctx needs less GPU memory)" % ex) if "memory" in str(ex).lower() else ex
     dm = eng.device_memory()
@@ -149,6 +198,11 @@ def open_stack(args, warm: bool = True):
     _say(eng.fast_note)
     _say(eng.draft_note)
     _say(eng.copy_note)
+    if images:
+        _say(eng.vision_note)
+        allow = getattr(args, "vision_allow_local_files", None)
+        if allow:
+            runner.vision_allow_local_files = str(Path(allow).resolve())
     return pack, eng, fmt, runner
 
 
@@ -177,7 +231,8 @@ def cmd_info(args) -> int:
                                                                              for n in ink.DRAFT_CALLS) else "no, drafting not available"))
         caps = int(getattr(lib, "caps", 0) or 0)
         names = [n for bit, n in ((1, "packed dense matrices"), (2, "drafter"), (4, "converted drafter files"),
-                                  (8, "3-bit drafter matrices")) if caps & bit]
+                                  (8, "3-bit drafter matrices"), (16, "8-bit key/value cache"),
+                                  (32, "image input")) if caps & bit]
         print("         engine capabilities: %s" % (", ".join(names) if names else "none"))
     except (YasakaniError, OSError, AttributeError) as ex:
         print("engine   NOT FOUND:", ex)
@@ -203,6 +258,7 @@ def cmd_info(args) -> int:
                                                    ", version %s, scheme %s" % (d.get("version", 2), d.get("scheme"))
                                                    if pack.drafter_format == "yskn" else "",
                                                    "  PROBLEM: " + pack.drafter_problem if pack.drafter_problem else ""))
+        print("  images     %s" % vision_line(pack))
         print("  sampling   temperature %g, top_p %g, top_k %d (generation_config.json); stop ids %s"
               % (pack.sampling["temperature"], pack.sampling["top_p"], pack.sampling["top_k"], pack.stop_ids))
         print("  checksums  %d files listed in yasakani.json" % len(pack.sha256))
@@ -214,6 +270,19 @@ def cmd_info(args) -> int:
         print("model    PROBLEM:", ex)
         ok = False
     return 0 if ok else 1
+
+
+def vision_line(pack: ink.Ink2Pack) -> str:
+    """What `yasakani info` says about the folder's image tower."""
+    from .cli import _human
+    if pack.vision_entry:
+        f = pack.vision_file
+        if f is None or not f.is_file():
+            return "the image tower %s is listed in yasakani.json but missing (text only until it is there)" % pack.vision_entry["file"]
+        return "image tower %s  %s  (still images; chat and serve read them unless --vision off)" % (f.name, _human(f.stat().st_size))
+    if pack.has_vision:
+        return "image tower inside %s  (still images; chat and serve read them unless --vision off)" % pack.weights.name
+    return "none (text only: this folder has no image tower)"
 
 
 def cmd_verify(args) -> int:
@@ -282,7 +351,56 @@ def cmd_selfcheck(args) -> int:
 # ---- chat -------------------------------------------------------------------------------------------------------------------------
 CHAT_HELP = """commands:  /exit  quit      /reset  forget the conversation      /think on|off  thinking on or off (default on)
            /effort none|minimal|low|medium|high|xhigh|max  how long the model thinks (default: the template's 0.9)
+           /image PATH  an image for the next message (when image input is on)
            /help  this text      Ctrl+C while it writes: stop the answer"""
+
+
+def read_image_file(path) -> tuple:
+    """--image PATH or /image PATH -> (file bytes, name).  A missing, unreadable or too large file is a YasakaniError naming it.
+    Only the file the user names is read."""
+    from . import inkling2_vision as V
+    f = Path(str(path).strip().strip('"'))
+    if not f.is_file():
+        raise YasakaniError("image file not found: %s" % f)
+    try:
+        with f.open("rb") as fh:
+            data = fh.read(V.MAX_IMAGE_BYTES + 1)
+    except OSError as ex:
+        raise YasakaniError("cannot read the image file %s (%s)" % (f, ex.strerror or type(ex).__name__))
+    if len(data) > V.MAX_IMAGE_BYTES:
+        raise YasakaniError("the image file %s is larger than %d MiB" % (f, V.MAX_IMAGE_BYTES >> 20))
+    if not data:
+        raise YasakaniError("the image file %s is empty" % f)
+    return data, f.name
+
+
+def prepare_image(runner, data: bytes, name: str):
+    """File bytes -> the content part of one image for the next user message ({"type": "image", "image": PreparedImage}).  The
+    image is decoded and checked here (and shrunk when it has more image tokens than the per-image cap; one line says so).
+    A YasakaniError when image input is off or the file is not a usable still image."""
+    from . import inkling2_vision as V
+    st = getattr(runner, "vision", None)
+    if st is None:
+        raise YasakaniError("--image needs image input, which is off: %s"
+                            % (getattr(runner.engine, "vision_problem", "") or V.NO_TOWER))
+    try:
+        im = V.prepare_image(data, st.max_image_tokens)
+    except V.VisionError as ex:
+        raise YasakaniError("image %s: %s" % (name, ex)) from None
+    except ImportError as ex:                       # Pillow is missing
+        raise YasakaniError("image %s: %s" % (name, ex)) from None
+    if im.shrunk:
+        _say("%s: %s" % (name, im.describe(st.max_image_tokens)))
+    else:
+        _say("%s: image %dx%d, %d image tokens" % (name, im.width, im.height, im.tokens))
+    return {"type": "image", "image": im}
+
+
+def user_message(text: str, images: list) -> dict:
+    """The user message of the chat: the images first (in the order given), then the text; without images a plain string."""
+    if not images:
+        return {"role": "user", "content": text}
+    return {"role": "user", "content": list(images) + [{"type": "text", "text": text}]}
 
 
 def _chat_params(args, pack, messages, kw):
@@ -297,7 +415,13 @@ def _chat_params(args, pack, messages, kw):
 def cmd_chat(args) -> int:
     from .chat import RequestError
     from .cli import _use_color
-    pack, eng, fmt, runner = open_stack(args, warm=True)
+    pending = [read_image_file(x) for x in (getattr(args, "image", None) or [])]     # a bad file fails before the long load
+    pack, eng, fmt, runner = open_stack(args, warm=True, images=True, image_option=True)
+    try:
+        pending = [prepare_image(runner, data, name) for data, name in pending]
+    except YasakaniError:
+        eng.close()
+        raise
     color = _use_color()
     dim = (lambda s: "\x1b[2m%s\x1b[0m" % s) if color else (lambda s: s)
     kw = {}
@@ -336,10 +460,18 @@ def cmd_chat(args) -> int:
                     elif cmd == "effort" and rest in ink.EFFORTS:
                         kw["reasoning_effort"] = rest
                         print("(reasoning effort %s)" % rest)
+                    elif cmd == "image" and line[1:].partition(" ")[2].strip():
+                        try:
+                            data, name = read_image_file(line[1:].partition(" ")[2])
+                            pending.append(prepare_image(runner, data, name))
+                            print("(%d image%s for the next message)" % (len(pending), "" if len(pending) == 1 else "s"))
+                        except YasakaniError as ex:
+                            print("cannot do that: %s" % ex)
                     else:
                         print(CHAT_HELP)
                     continue
-            messages.append({"role": "user", "content": line})
+            messages.append(user_message(line, pending))
+            sent, pending = pending, []
             params = _chat_params(args, pack, messages, kw)
             parts = {"reasoning": [], "content": []}
             last = [None]
@@ -361,6 +493,7 @@ def cmd_chat(args) -> int:
             except KeyboardInterrupt:
                 print("\n[stopped]")
                 messages.pop()
+                pending = sent
                 eng.reset()
                 if one_shot:
                     return 130
@@ -368,6 +501,8 @@ def cmd_chat(args) -> int:
             except RequestError as ex:
                 print("cannot do that: %s" % ex)
                 messages.pop()
+                if sent:                                 # a refused image is not sent again
+                    print("(the image of that message was dropped)" if len(sent) == 1 else "(the images of that message were dropped)")
                 if one_shot:
                     return 1
                 continue
@@ -375,9 +510,10 @@ def cmd_chat(args) -> int:
                 print(dim("\n(the limit of %d tokens was reached while the model was still thinking, so no answer was written.  "
                           "/effort low shortens the thinking, /think off skips it, --max-tokens raises the limit)" % args.max_tokens))
             tps = (u.completion_tokens / (u.gen_ms / 1000.0)) if u.gen_ms > 0 else 0.0
-            print(dim("\n\n[%d tokens, %.1f tokens/s%s, prompt %d tokens in %.2f s%s, %s]" % (
+            vis = getattr(u, "vision", None) or {}
+            print(dim("\n\n[%d tokens, %.1f tokens/s%s, prompt %d tokens%s in %.2f s%s, %s]" % (
                 u.completion_tokens, tps, ", %.2f tokens per pass" % u.spec["tokens_per_pass"] if u.spec else "",
-                u.prompt_tokens, u.prompt_ms / 1000.0,
+                u.prompt_tokens, " (%d image tokens)" % vis["image_tokens"] if vis.get("image_tokens") else "", u.prompt_ms / 1000.0,
                 " (%d kept from the last turn)" % u.cached_tokens if u.cached_tokens else "",
                 "complete" if u.finish == "stop" else "hit the length limit")))
             if one_shot:
@@ -398,6 +534,8 @@ def cmd_serve(args) -> int:
     local = args.host in ("127.0.0.1", "localhost", "::1")
     if not local and not args.api_key:
         raise YasakaniError("refusing to listen on %s without --api-key: anyone who can reach this computer could use the GPU" % args.host)
+    args.ink2_images = True
+    vision_options(args)                         # wrong image options fail before the server starts
     pack = ink.Ink2Pack.load(args.model_dir_path)
     context_of(args, pack)
     cfg = ServerConfig(host=args.host, port=args.port, api_key=args.api_key, model_id=pack.model_id,
@@ -405,6 +543,7 @@ def cmd_serve(args) -> int:
     cfg.sampling_defaults = dict(pack.sampling)
     cfg.effort_aliases = dict(ink.EFFORT_ALIASES)
     cfg.keep_tool_ids = True                     # the chat template finds the function of a tool result through its tool_call_id
+    cfg.vision_parts = True                      # image parts go to the runner, which checks them (and refuses them without the tower)
     state = ApiState(cfg)
     state.version = __version__
     try:
@@ -419,10 +558,12 @@ def cmd_serve(args) -> int:
     _say("listening on %s  (answers /health while the model loads)" % base)
     eng = None
     try:
-        pack, eng, fmt, runner = open_stack(args, warm=not args.no_warmup)
+        pack, eng, fmt, runner = open_stack(args, warm=not args.no_warmup, images=True)
+        cfg.vision_problem = getattr(eng, "vision_problem", "") or ""
         state.runner = runner
-        _say("ready: OpenAI-compatible API at %s/v1   (model id %r%s; one request at a time, text and tool calls)"
-             % (base, cfg.model_id, ", API key required" if cfg.api_key else ""))
+        _say("ready: OpenAI-compatible API at %s/v1   (model id %r%s; one request at a time, text, tool calls%s)"
+             % (base, cfg.model_id, ", API key required" if cfg.api_key else "",
+                " and images" if runner.vision is not None else ""))
         _say("stop with Ctrl+C")
         while True:
             time.sleep(0.5)

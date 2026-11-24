@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 the YASAKANI authors
-"""ctypes wrapper of the native Inkling-2 Mini engine (text only).
+"""ctypes wrapper of the native Inkling-2 Mini engine.
 
     eng = Ink2Native().load(model_dir, backend="cuda", max_positions=4096)
     eng.feed(token_id)                    # a prompt token whose prediction is not needed
@@ -14,6 +14,11 @@
     eng = Ink2Native().load(model_dir, backend="cuda", checkpoint=reader)
         # reader: info() says "NVFP4" / "MXFP8" for a dense matrix, parts() gives its stored parts (ready bytes)
     eng = Ink2Native().load(model_dir, backend="cuda", dense_dir="packed_q4g4un4")   # folder of ink2_pack_dense.py
+  DLL ABI version 4 with CAP_VISION (eng.has_vision()): still-image input (ink2_vision_api.h)
+    eng.vision_load(weights, max_image_tokens=1024, max_feature_rows=8192)   # the image tower, after load()
+    eng.vision_encode(prepared_image, row0)       # its image vectors into the feature rows [row0, row0 + tokens)
+    eng.vision_set_rows(bf16_rows, row0)          # image vectors kept from an earlier encode
+    eng.feed_many_img(ids, img_rows)              # img_rows[i] = -1 for text, else the feature row of an image position
 
 Needs numpy only (jinja2 and tokenizers for the chat helpers); no torch.
 The checkpoint is read through yasakani/_ink2_ckpt.py (memory map) and handed to
@@ -38,6 +43,8 @@ CAP_PACKED_DENSE = 1       # bit of ink2_capabilities()
 CAP_DRAFTER = 2            # bit of ink2_capabilities(): the drafter calls of ink2_drafter_api.h
 CAP_DRAFTER_PACKED = 4     # bit: the drafter takes packed matrices and a packed folded head (ink2_draft_abi() >= 2)
 CAP_Q3 = 8                 # bit: the 3-bit format q3 for the drafter matrices
+CAP_VISION = 32            # bit: the image tower and ink2_feed_many_img (ink2_vision_api.h, DLL version 4)
+IMAGE_TOKEN = 200054       # the placeholder id of one image position
 PACKED_ENCODINGS = {"NVFP4": "nvfp4", "MXFP8": "mxfp8"}  # info() dtype of a packed dense matrix -> its encoding
 
 FULL_WEIGHTS = "model-00001-of-00001.safetensors"
@@ -67,6 +74,21 @@ class Ink2Config(ctypes.Structure):
         + [(n, ctypes.c_float) for n in ("eps", "qk_thr", "rel_thr", "alpha", "route_scale", "gate_cap", "up_cap", "logit_cap")]
         + [("sliding", ctypes.c_int * 64)]
     )
+
+
+class Ink2VisionConfig(ctypes.Structure):
+    _fields_ = (
+        [(n, ctypes.c_int) for n in ("hidden", "layers", "heads", "head_dim", "inter", "patch", "merge", "temporal", "grid",
+                                     "proj_hidden", "text_hidden", "projector_bias")]
+        + [("eps", ctypes.c_float), ("rope_theta", ctypes.c_float), ("max_image_tokens", ctypes.c_int),
+           ("max_feature_rows", ctypes.c_int)]
+    )
+
+
+def image_position(p):
+    """The entry of seen_ids for an image position p: a negative number unique to the position (-1 - p).  Code that reads
+    seen_ids as token ids (copy decoding) never matches it with text or with another image position."""
+    return -1 - int(p)
 
 
 def text_config(config):
@@ -242,6 +264,26 @@ def open_dll(path):
     if hasattr(lib, "ink2_nvfp4_prompt"):  # the NVFP4 tensor-core prompt products (0.3.3)
         lib.ink2_nvfp4_prompt.restype = ci
         lib.ink2_nvfp4_prompt.argtypes = []
+    lib.has_vision = False
+    if lib.abi >= 4 and lib.caps & CAP_VISION and hasattr(lib, "ink2_vision_create") and hasattr(lib, "ink2_feed_many_img"):
+        pcll = ctypes.POINTER(cll)
+        for name, args in (("ink2_vision_create", [vp, ctypes.POINTER(Ink2VisionConfig)]),
+                           ("ink2_vision_set_tensor", [vp, ctypes.c_char_p, vp, cll]),
+                           ("ink2_vision_finalize", [vp]),
+                           ("ink2_vision_encode", [vp, vp, ci, ci, cll, ci, ci, ci]),
+                           ("ink2_vision_set_rows", [vp, vp, ci, ci, cll]),
+                           ("ink2_vision_get_rows", [vp, vp, ci, ci, cll]),
+                           ("ink2_vision_stage", [vp, ci, vp, cll]),
+                           ("ink2_vision_memory", [vp, pcll, pcll, pcll]),
+                           ("ink2_vision_unload", [vp]),
+                           ("ink2_feed_many_img", [vp, vp, vp, ci])):
+            f = getattr(lib, name)
+            f.argtypes = args
+            f.restype = ci
+        if hasattr(lib, "ink2_vision_set_tensor_shaped"):  # the dtype and shape checked by the library too
+            lib.ink2_vision_set_tensor_shaped.argtypes = [vp, ctypes.c_char_p, ctypes.c_char_p, pcll, ci, vp, cll]
+            lib.ink2_vision_set_tensor_shaped.restype = ci
+        lib.has_vision = True
     return lib
 
 
@@ -548,6 +590,8 @@ class Ink2Native:
         """Prompt tokens whose predictions are not needed, in passes of several rows (same results as feed())."""
         self._need(2, "feed_many")
         ids = np.ascontiguousarray(np.asarray(ids, dtype=np.int32).reshape(-1))
+        if ids.size and int(ids.min()) < 0:
+            raise RuntimeError("feed_many: negative token id (an image position cannot be fed as text; use feed_many_img)")
         if ids.size:
             self._check(self.lib.ink2_feed_many(self.h, ctypes.c_void_p(ids.ctypes.data), int(ids.size)), "feed_many")
         self.num_seen += int(ids.size)
@@ -582,8 +626,123 @@ class Ink2Native:
             del self.seen_ids[n:]
         else:
             keep = self.seen_ids[:n]
+            if any(t < 0 for t in keep):  # image vectors cannot be fed again from ids: the caller reads the prompt again
+                raise RuntimeError("cannot drop %d positions: more than the %d the engine can drop without reading the kept positions "
+                                   "again, and they hold image positions" % (self.num_seen - n, self.rollback))
             self.reset()
             self.feed_many(keep)
+
+    # -- image input (DLL version 4, CAP_VISION) -----------------------------------------------------------
+    def has_vision(self):
+        """The library has the image tower and ink2_feed_many_img, and this is the cuda backend."""
+        return bool(getattr(self.lib, "has_vision", False)) and getattr(self, "backend", "") == "cuda"
+
+    def vision_load(self, weights, max_image_tokens=1024, max_feature_rows=8192, log=None):
+        """Loads the image tower after load(): ``weights`` = the model folder or an inkling2_vision.VisionWeights (the separate
+        .yskn file of a converted folder, or the model.visual.* range of the published safetensors file).  Every tensor is
+        checked against the table before the first is sent; a refusal of the library raises RuntimeError with its message and
+        leaves no tower loaded.  -> (weights, scratch, feature buffer) bytes on the device."""
+        from . import inkling2_vision as V
+        if not self.has_vision():
+            raise RuntimeError("this engine library has no image input (capability %d missing, or not the cuda backend)" % CAP_VISION)
+        c = Ink2VisionConfig()
+        c.hidden, c.layers, c.heads, c.head_dim, c.inter = V.HIDDEN, V.LAYERS, V.HEADS, V.HEAD_DIM, V.INTER
+        c.patch, c.merge, c.temporal, c.grid = V.NATIVE_PATCH, 2, 2, V.POS_GRID
+        c.proj_hidden, c.text_hidden, c.projector_bias = V.PROJ_HIDDEN, V.TEXT_HIDDEN, 0
+        c.eps, c.rope_theta = 1e-5, 10000.0
+        c.max_image_tokens, c.max_feature_rows = int(max_image_tokens), int(max_feature_rows)
+        self._check(self.lib.ink2_vision_create(self.h, ctypes.byref(c)), "vision_create")
+        try:
+            sent = 0
+            shaped = hasattr(self.lib, "ink2_vision_set_tensor_shaped")
+            for name, view in V.iter_vision_tensors(weights):  # names, dtypes and shapes checked before the first one
+                a = np.frombuffer(view, dtype=np.uint8)
+                if shaped:
+                    dims = V.VISION_TENSORS[name]
+                    shape = (ctypes.c_longlong * len(dims))(*dims)
+                    rc = self.lib.ink2_vision_set_tensor_shaped(self.h, name.encode(), b"BF16", shape, len(dims),
+                                                                ctypes.c_void_p(a.ctypes.data), a.nbytes)
+                else:
+                    rc = self.lib.ink2_vision_set_tensor(self.h, name.encode(), ctypes.c_void_p(a.ctypes.data), a.nbytes)
+                self._check(rc, name)
+                sent += a.nbytes
+                del a
+            self._check(self.lib.ink2_vision_finalize(self.h), "vision_finalize")
+        except BaseException:
+            self.lib.ink2_vision_unload(self.h)
+            raise
+        if log is not None:
+            log("  image tower sent, %.2f GB" % (sent / 1e9))
+        self.vision_rows = int(max_feature_rows)
+        self.vision_tokens = int(max_image_tokens)
+        return self.vision_memory()
+
+    def vision_memory(self):
+        """(weights, scratch, feature buffer) bytes the image tower holds on the device."""
+        w, s, f = ctypes.c_longlong(), ctypes.c_longlong(), ctypes.c_longlong()
+        self._check(self.lib.ink2_vision_memory(self.h, ctypes.byref(w), ctypes.byref(s), ctypes.byref(f)), "vision_memory")
+        return w.value, s.value, f.value
+
+    def vision_unload(self):
+        if self.h and getattr(self.lib, "has_vision", False):
+            self._check(self.lib.ink2_vision_unload(self.h), "vision_unload")
+        self.vision_rows = self.vision_tokens = 0
+
+    def vision_encode(self, image, row0=0):
+        """One prepared image (inkling2_vision.PreparedImage: rgb uint8 [H, W, 3], rows, cols) -> its image vectors in the
+        feature rows [row0, row0 + rows * cols).  The library recomputes the grid and checks every size."""
+        rgb = np.ascontiguousarray(image.rgb, dtype=np.uint8)
+        if rgb.ndim != 3 or rgb.shape[2] != 3:
+            raise ValueError("vision_encode: the image must be uint8 [height, width, 3]")
+        h, w = int(rgb.shape[0]), int(rgb.shape[1])
+        self._check(self.lib.ink2_vision_encode(self.h, ctypes.c_void_p(rgb.ctypes.data), w, h, rgb.nbytes, int(image.rows),
+                                                int(image.cols), int(row0)), "vision_encode")
+
+    def vision_set_rows(self, rows, row0=0):
+        """Image vectors kept from an earlier encode (bfloat16 bits, uint16 [n, 2304]) into the feature rows [row0, row0 + n)."""
+        a = np.ascontiguousarray(rows)
+        if a.dtype != np.uint16 or a.ndim != 2 or a.shape[0] < 1:
+            raise ValueError("vision_set_rows: the image vectors must be bfloat16 bits (uint16) [n, hidden]")
+        self._check(self.lib.ink2_vision_set_rows(self.h, ctypes.c_void_p(a.ctypes.data), int(row0), int(a.shape[0]), a.nbytes),
+                    "vision_set_rows")
+
+    def vision_get_rows(self, row0, n):
+        """Feature rows [row0, row0 + n) as float32 [n, hidden]."""
+        out = np.empty((int(n), self.hidden_size), dtype=np.float32)
+        self._check(self.lib.ink2_vision_get_rows(self.h, ctypes.c_void_p(out.ctypes.data), int(row0), int(n), out.size),
+                    "vision_get_rows")
+        return out
+
+    def vision_rows_bf16(self, row0, n):
+        """Feature rows as bfloat16 bits (uint16 [n, hidden]); exact, since the buffer holds bfloat16 values."""
+        f = self.vision_get_rows(row0, n)
+        return (f.view(np.uint32) >> 16).astype(np.uint16)
+
+    def vision_stage(self, stage, count):
+        """One intermediate result of the last encode (ink2_vision_stage), float32 [count] (for tests)."""
+        out = np.empty(int(count), dtype=np.float32)
+        self._check(self.lib.ink2_vision_stage(self.h, int(stage), ctypes.c_void_p(out.ctypes.data), out.size), "vision_stage")
+        return out
+
+    def feed_many_img(self, ids, img_rows):
+        """As feed_many, with img_rows[i] = -1 for a text position, else the feature row of an image position (ids[i] must
+        then be IMAGE_TOKEN and the row written since the last reset; the rows of one call increase).  seen_ids gets
+        image_position(p) for an image position p."""
+        if not getattr(self.lib, "has_vision", False):
+            raise RuntimeError("feed_many_img: this engine library has no image input")
+        ids = np.ascontiguousarray(np.asarray(ids, dtype=np.int32).reshape(-1))
+        rows = np.ascontiguousarray(np.asarray(img_rows, dtype=np.int32).reshape(-1))
+        if rows.size != ids.size:
+            raise ValueError("feed_many_img: %d ids and %d image rows" % (ids.size, rows.size))
+        if ids.size and int(ids.min()) < 0:
+            raise RuntimeError("feed_many_img: negative token id")
+        if ids.size:
+            self._check(self.lib.ink2_feed_many_img(self.h, ctypes.c_void_p(ids.ctypes.data), ctypes.c_void_p(rows.ctypes.data),
+                                                    int(ids.size)), "feed_many_img")
+        p0 = self.num_seen
+        self.num_seen += int(ids.size)
+        self.seen_ids.extend(int(t) if r < 0 else image_position(p0 + i)
+                             for i, (t, r) in enumerate(zip(ids.tolist(), rows.tolist())))
 
     def position(self):
         return int(self.lib.ink2_position(self.h)) if self.abi >= 2 else self.num_seen

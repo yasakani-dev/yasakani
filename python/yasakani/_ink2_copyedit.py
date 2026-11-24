@@ -123,7 +123,9 @@ class Spec(base.CopySpec):
             if p < 0 or ln < base.N:
                 return None
         end = min(F, p + self.max_w)
-        chain = seen[p + 1:end + 1] if end < F else seen[p + 1:F] + [anchor]
+        chain = base.text_chain(seen[p + 1:end + 1] if end < F else seen[p + 1:F] + [anchor])
+        if not chain:
+            return None
         return p + 1, chain, ln, cursor
 
 
@@ -338,7 +340,7 @@ def calibrate(native, reps=2):
             continue
         ts = []
         for k in range(reps + 1):
-            ids = (list(native.seen_ids[-R:]) * R)[:R]
+            ids = ([t if t >= 0 else 0 for t in native.seen_ids[-R:]] * R)[:R]   # image positions: any text id (timing only)
             t0 = time.perf_counter()
             native.step_many(ids, logits=False)
             native.truncate(pos)

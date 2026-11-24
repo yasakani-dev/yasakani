@@ -622,7 +622,7 @@ the command passed 12 of 12 times, but if a case fails, run the command once mor
 
 New in 0.3.1. The package also runs [Inkling-2 Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) by Thinking Machines Lab
 (Apache-2.0, with the [Model Acceptable Use Policy](https://thinkingmachines.ai/model-acceptable-use-policy/) named on its model card).
-Text only, one request at a time, tested on the RTX 5090 under Windows 11 only. It runs on a second engine library, not on `yskn.dll`;
+Text, and since {{VISION_VERSION}} still images ([Image input](#inkling-2-mini-image-input)); one request at a time, tested on the RTX 5090 under Windows 11 only. It runs on a second engine library, not on `yskn.dll`;
 the Qwen3.8-27B commands, settings and numbers in the rest of this document do not change. Since 0.3.2 the quickstart offers our converted
 folder as the fourth model of its model question (`START.cmd --model inkling2`; about 15.3 GB from Hugging Face, no conversion); the steps
 below stay for a folder of your own.
@@ -643,8 +643,9 @@ every file.
 
 **Making the folder.** `tools/convert/inkling2_convert.py` makes it from a downloaded copy of the published model (Hugging Face layout).
 Nothing is downloaded, and nothing in the source folder is run or changed. With the default scheme `published` the weights file is
-the published one: a hard link when both folders are on the same drive, else a copy (`--copy` always copies). The image part of the
-download is not used. With the default scheme the drafter (`mtp.safetensors`, 0.64 GB) is placed next to the weights in the same way (hard link or copy); with `--scheme quality` the converter writes it again in 4 bits (`mtp_d4.yskn`, 0.21 GB; `--drafter-scheme d8` for 8 bits, `published` for the published file). Either is listed in `yasakani.json` and checked by `yasakani verify` (a converted drafter file also part by part with its CRC-32); a source without it gives a folder that generates without drafting. With `--scheme quality` it writes the weights again in fewer bits, in one `.yskn` file of
+the published one: a hard link when both folders are on the same drive, else a copy (`--copy` always copies). A folder of this
+scheme reads the image tower from that file ([Image input](#inkling-2-mini-image-input)); with `--scheme quality` it is written to a
+separate file only with `--vision`. With the default scheme the drafter (`mtp.safetensors`, 0.64 GB) is placed next to the weights in the same way (hard link or copy); with `--scheme quality` the converter writes it again in 4 bits (`mtp_d4.yskn`, 0.21 GB; `--drafter-scheme d8` for 8 bits, `published` for the published file). Either is listed in `yasakani.json` and checked by `yasakani verify` (a converted drafter file also part by part with its CRC-32); a source without it gives a folder that generates without drafting. With `--scheme quality` it writes the weights again in fewer bits, in one `.yskn` file of
 15.05 GB (`"format": "yskn"` in the `weights` entry; [FORMAT](../docs/FORMAT.md)); the numbers are in the [README](../README.md#inkling-2-mini).
 The engine library multiplies the packed dense matrices of that file as they are stored; `YASAKANI_INK2_DENSE=bf16` makes the package
 decode them to bfloat16 instead (slower and larger, for comparisons only).
@@ -674,7 +675,7 @@ itself or a folder that holds it, and `YASAKANI_INK2_DLL` names it directly. Its
 | `yasakani info --model-dir D:\models\inkling2-mini --dll D:\yasakani\yskn.dll` | Python and its three libraries, the engine library and its binding, the GPU, and the folder: source and revision, weights, sampling, stop token, the tokenizer and the chat template |
 | `yasakani verify --model-dir D:\models\inkling2-mini` | compares every file with the SHA-256 in `yasakani.json` (reads about 20 GB), and for a `.yskn` file every tensor with its CRC-32 |
 | `yasakani selfcheck --model-dir D:\models\inkling2-mini --dll D:\yasakani\yskn.dll` | the prompt of the official text test of the model's code in the transformers library, greedy, compared with the 30 tokens that test expects (a folder of `--scheme quality`: three prompts, in English, Japanese and code, 48 tokens each, compared with the tokens that the converter writes when its `.yskn` file equals our conversion; a file that differs gets none) |
-| `yasakani chat --model-dir D:\models\inkling2-mini --dll D:\yasakani\yskn.dll` | chat in the terminal. `/think on\|off`, `/effort none\|minimal\|low\|medium\|high\|xhigh\|max`, `/reset`, `/exit`; `--no-think`, `--effort low\|medium\|xhigh` at start |
+| `yasakani chat --model-dir D:\models\inkling2-mini --dll D:\yasakani\yskn.dll` | chat in the terminal. `/think on\|off`, `/effort none\|minimal\|low\|medium\|high\|xhigh\|max`, `/reset`, `/exit`; `--no-think`, `--effort low\|medium\|xhigh` at start; with image input `--image PATH` and `/image PATH` |
 | `yasakani serve --model-dir D:\models\inkling2-mini --dll D:\yasakani\yskn.dll` | the OpenAI-compatible server, model id `inkling-2-mini`; `reasoning_effort` and `chat_template_kwargs` `{"enable_thinking": false}` as for the Qwen models |
 | `yasakani bench --model-dir D:\models\inkling2-mini --dll D:\yasakani\yskn.dll` | generation speed: greedy, thinking off, 256 tokens per test (`--n` changes it, `--think` turns thinking on), `--json` |
 
@@ -691,7 +692,55 @@ and name `--max-ctx`. The rule counts the weights file, the drafter file when it
 folder. Without an answer of nvidia-smi the default stays. One line at start says what was chosen.
 
 `--max-ctx` (256 to the model's limit), `--device` and `--seed` work as for the Qwen models. These stop with a message instead: `--parallel` and `--concurrency`
-above 1, `bench --edit`, image input (`--mmproj`) and `selfcheck --write`.
+above 1, `bench --edit`, the image options of the Qwen models (`--mmproj`, `--llama-dir`, `--vision-model`, `--vision-cache`,
+`--vision-threads`) and `selfcheck --write`.
+
+<a name="inkling-2-mini-image-input"></a>
+
+**Image input** (new in {{VISION_VERSION}}). Inkling-2 Mini reads still images, as the published model does: its image tower turns an
+image into image tokens that take places in the prompt like text tokens. In this package the image tower runs on the GPU inside
+`yskn_inkling2.dll`; the Qwen3.8 image input above (llama.cpp on the CPU) is not used.
+
+* **The folder.** A converted folder needs one more file, `inkling_2_mini_vision.yskn` (637,136,896 bytes: the 422 tensors of the published
+  image tower, unchanged), listed as `"vision"` in `yasakani.json`. `tools/convert/inkling2_convert.py ... --vision` writes it with a new
+  conversion; for a folder converted before, `tools/convert/inkling2_vision_convert.py --src <downloaded folder> --dst <model folder>`
+  adds it (it reads only the image part of the published weights file and does not touch the text weights). A folder of
+  the published weights file (`"format": "hf-safetensors"`) reads the image tower from that file and needs no extra file. `yasakani info`
+  shows whether the folder has it (`images` line) and whether the engine library reads images (`engine capabilities: ... image input`).
+* **On and off.** `chat` and `serve` take `--vision auto|on|off` (default `auto`, or `YASAKANI_INK2_VISION`). `auto` loads the image
+  tower when the folder has it and the engine library reads images, else the model works as before, text only; `on` stops with the
+  reason instead; `off` does not load it. One start-up line says `image input: on (...)` or `image input: off (reason)`.
+  `selfcheck` and `bench` never load it.
+* **Tokens.** An image of H × W pixels takes ceil(H / 40) × ceil(W / 40) image tokens: 576 for 1280 × 720, 192 for 640 × 480. Up to the
+  per-image cap (default **1,024**, `--vision-max-image-tokens N` from 64 to 4,096) the image is used at its own size, exactly as the
+  official method does. An image above the cap is shrunk, keeping its shape, until it fits; this shrink is our choice, not part of the
+  official method, and loses detail (`chat` prints one line when it happens). At most 8,192 image tokens per request (8 × the per-image
+  cap; `--vision-max-request-image-tokens N`), at most 16 images, each file at most 24 MiB, 40 million pixels and an aspect ratio of 200:1.
+  Image tokens count as prompt tokens (`usage.prompt_tokens`; `usage.prompt_tokens_details.image_tokens` says how many) and must fit the
+  context with the text.
+* **GPU memory.** With the defaults (1,024 per image, 8,192 per request) the image tower takes 636,512,256 bytes of weights, 88,821,760 bytes
+  of work memory and 37,748,736 bytes for the image vectors of a request; the free GPU memory dropped by 773,849,088 bytes (about 0.77 GB)
+  on the RTX 5090. With 4,096 / 32,768 it dropped by 1,153,433,600 bytes. Without `--max-ctx` the context is chosen with this memory
+  counted; `--vision off` gives it back.
+* **Time.** Encoding an image on the RTX 5090: 7.2 ms for 192 image tokens, 12.5 ms for 576, 24.6 ms for 1,024, 189 ms for 4,096. An
+  image seen in the last request is not encoded again (its places in the prompt are kept), and the vectors of recent images stay in
+  memory (up to 512 MiB).
+* **Formats.** PNG, JPEG, WebP, GIF, BMP and TIFF (one frame); other files, such as EPS, WMF or PDF, are refused unread.
+* **serve.** Images as OpenAI content parts in user and tool messages: `{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}`
+  (also `input_image`). Only `data:image/...;base64` URIs are read; remote URLs are refused, local paths only with
+  `--vision-allow-local-files DIR` (files inside DIR). `/v1/models` says `"vision": true` when the model reads images. These are answered
+  with 400 and a message: an image when image input is off (the message says why), an image in a system or assistant message, video,
+  animated or multi-frame files, a file that cannot be decoded, the limits above, and a request longer than the context
+  (`context_length_exceeded`, naming the image tokens).
+* **chat.** `--image PATH` (repeatable) puts images before the text of the first message, in the order given; `/image PATH` adds one to
+  the next message. A missing or unreadable file stops before the model loads.
+* **The quickstart page** shows an image button when the model reads images (paste and drop work too): up to 4 images per message, each
+  file up to 11 MB (the launcher takes request bodies up to 16 MiB), sent as the original bytes.
+* **Checks.** With the published image tower on the RTX 5090, the first 64 greedy tokens of four image prompts equal those of a float32
+  reference run (the image vectors of the official image code, the original text weights), with the fast path off and on; the answers name the total of a table row (126) and the text in an image. Requests
+  without images give the same tokens and logits as without image input.
+* **Not supported:** video, several frames of one file, images in system or assistant messages, image input on the CPU (host) build of the
+  engine library, and images in `selfcheck` and `bench`.
 
 **Tool calls** (new in 0.3.1). `serve` accepts `tools` and `tool_choice` (`auto`, `none`, `required` or the name of a function) and returns
 `tool_calls` (finish reason `tool_calls`), with and without streaming; `chat` has no tools. The model writes each call as a block of its own

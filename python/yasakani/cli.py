@@ -193,6 +193,11 @@ def _add_wide_args(sp: argparse.ArgumentParser) -> None:
 
 def _add_vision_args(sp: argparse.ArgumentParser) -> None:
     g = sp.add_argument_group("image input (optional)")
+    g.add_argument("--vision", choices=("auto", "on", "off"), default=None,
+                   help="Inkling-2 Mini: image input with the image tower of the model folder.  auto (default): on when the folder "
+                        "has the tower and the engine library reads images, else text only; on: stop with the reason when it "
+                        "cannot be on; off: the tower is not loaded (its GPU memory stays free).  Default: $YASAKANI_INK2_VISION "
+                        "or auto.  Qwen3.8 folders use --mmproj, --llama-dir and --vision-model instead")
     g.add_argument("--mmproj", default=os.environ.get("YASAKANI_MMPROJ"),
                    help="projector of Qwen3.8-27B (mmproj-Qwen3.8-27B-BF16.gguf); with --llama-dir and --vision-model it turns on image input")
     g.add_argument("--llama-dir", default=os.environ.get("YASAKANI_LLAMA_DIR"),
@@ -208,11 +213,27 @@ def _add_vision_args(sp: argparse.ArgumentParser) -> None:
                    help="CPU threads for encoding an image (default: one per physical CPU core)")
     g.add_argument("--vision-max-image-tokens", type=int, default=1024, metavar="N",
                    help="downsize every image to at most N image tokens, 64 to 4096 (default 1024; the encode time grows with the "
-                        "square of N: about 15 s for 1024 on a 16-core CPU)")
+                        "square of N: about 15 s for 1024 on a 16-core CPU for Qwen3.8; Inkling-2 Mini encodes on the GPU, and "
+                        "an image within N tokens is not resized)")
     g.add_argument("--vision-max-request-image-tokens", type=int, default=None, metavar="N",
                    help="at most N image tokens in one request, the images of earlier turns included (default: 8 x the per-image limit)")
     g.add_argument("--vision-allow-local-files", metavar="DIR", default=None,
                    help="also accept local file paths in image_url, for files inside DIR only (default: only data:image URIs)")
+
+
+def _add_ink2_vision_args(sp: argparse.ArgumentParser) -> None:
+    """The image options of yasakani chat: Inkling-2 Mini only (a Qwen3.8 chat refuses them; serve has the full set)."""
+    g = sp.add_argument_group("image input (Inkling-2 Mini model folders)")
+    g.add_argument("--vision", choices=("auto", "on", "off"), default=None,
+                   help="image input with the image tower of the model folder.  auto (default): on when the folder has the tower "
+                        "and the engine library reads images, else text only; on: stop with the reason when it cannot be on; off: "
+                        "the tower is not loaded (its GPU memory stays free).  Default: $YASAKANI_INK2_VISION or auto")
+    g.add_argument("--vision-max-image-tokens", type=int, default=None, metavar="N",
+                   help="shrink an image with more than N image tokens to N, 64 to 4096 (default 1024; an image within N tokens "
+                        "is not resized)")
+    g.add_argument("--vision-max-request-image-tokens", type=int, default=None, metavar="N",
+                   help="at most N image tokens in the conversation, the images of earlier turns included (default: 8 x the "
+                        "per-image limit)")
 
 
 def _vision(args):
@@ -261,6 +282,9 @@ def _open_stack(args, *, warm: bool = True, parallel: int = 1, allow_suppress: b
     if yarn2 and args.max_ctx is not None and args.max_ctx > gpus.YARN2_MAX_CTX:
         raise YasakaniError("--yarn2 supports at most %d context tokens (got %d)" % (gpus.YARN2_MAX_CTX, args.max_ctx))
     pack = ModelPack.load(_model_dir(args), hf_inkling2=True)    # a folder of the #28 engine: the library is checked below
+    if getattr(args, "vision", None):
+        raise YasakaniError("--vision is for Inkling-2 Mini model folders; Qwen3.8 image input uses --mmproj, --llama-dir and "
+                            "--vision-model")
     if pack.is_hf_inkling2:                      # Qwen3.8 options this engine does not have: refused, not silently ignored
         if yarn2:
             raise YasakaniError("--yarn2 is for Qwen3.8 model folders only (not for Inkling-2)")
@@ -744,6 +768,16 @@ CHAT_HELP = """commands:  /exit  quit      /reset  forget the conversation      
            /effort low|medium|xhigh  how long the model thinks      /help  this text      Ctrl+C while it writes: stop the answer"""
 
 
+def _refuse_chat_images(args) -> None:
+    """chat --image and the image options are for Inkling-2 Mini folders; a Qwen3.8 chat reads text only."""
+    given = [o for o, k in (("--image", "image"), ("--vision", "vision"), ("--vision-max-image-tokens", "vision_max_image_tokens"),
+                            ("--vision-max-request-image-tokens", "vision_max_request_image_tokens"))
+             if getattr(args, k, None) is not None]
+    if given:
+        raise YasakaniError("%s: image input in yasakani chat is for Inkling-2 Mini model folders; for Qwen3.8 use yasakani serve "
+                            "with --mmproj, --llama-dir and --vision-model" % ", ".join(given))
+
+
 def cmd_chat(args) -> int:
     from .chat import ChatParams, RequestError
     if args.ask is not None:
@@ -752,6 +786,7 @@ def cmd_chat(args) -> int:
     for k, v in (("temperature", 1.0), ("top_p", 0.95), ("top_k", 20)):     # the defaults of Qwen3.8 (generation_config.json)
         if getattr(args, k, None) is None:
             setattr(args, k, v)
+    _refuse_chat_images(args)                    # before the long load
     pack, eng, fmt, runner = _open_stack(args, warm=True)
     if pack.is_hf_inkling2:                      # an Inkling-2 folder of #28: the model's own defaults (top_k off)
         for k in unset:
@@ -1248,6 +1283,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--effort", choices=("low", "medium", "xhigh"), help="how long the model thinks (default xhigh)")
     sp.add_argument("--hide-thinking", action="store_true", help="do not print the thinking")
     sp.add_argument("--no-loop-guard", action="store_true")
+    sp.add_argument("--image", action="append", default=None, metavar="PATH",
+                    help="an image file for the first message (repeatable: the images go first, in the order given, then the "
+                         "text); /image PATH in the chat adds one to the next message.  Inkling-2 Mini model folders only")
+    _add_ink2_vision_args(sp)
     sp.set_defaults(func=cmd_chat)
 
     sp = sub.add_parser("selfcheck", help="run a few fixed greedy prompts and compare the output with the reference file "

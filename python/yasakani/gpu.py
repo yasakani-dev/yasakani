@@ -29,7 +29,7 @@ KV_BYTES_PER_TOKEN = 22400            # KV5 cache 22,144 B + position table 256 
 CONTEXT_STEP = 16384                  # a chosen context is a multiple of this
 MIN_CONTEXT = 16384                   # below this the model is not opened
 HEAD_OFF_BELOW = 65536                # under this, the draft model's output head is left out to make room
-MARGIN_MIB = 512                      # the desktop's drift, CUDA graphs, image input (at most about 84 MiB), rounding
+MARGIN_MIB = 512                      # the desktop's drift, CUDA graphs, Qwen3.8 image input (at most about 84 MiB), rounding
 OVERHEAD_MIB = {"fastest": 2100, "quality": 2300}    # GPU memory above the three model files (measured 2,090 and 2,291 MiB)
 QUALITY_WEIGHTS_MIB = 11000           # weights larger than this are counted with the overhead of the quality model (also the
                                       # max-quality model: after load it used 3,182 MiB more than the quality model on the
@@ -788,17 +788,38 @@ INK2_CONTEXT_STEP = 4096                  # a context chosen from the free memor
 INK2_MIN_CONTEXT = 8192                   # below this the model is not loaded (give --max-ctx to try a smaller one)
 
 
+# The image tower of Inkling-2 Mini, loaded after the model when image input is on.  Measured on the RTX 5090: the
+# weights are the 422 bfloat16 tensors (636,512,256 B); the encoder's scratch is reserved at load for the per-image cap
+# (88,821,760 B at 1,024 image tokens, 355,225,600 B at 4,096: 20,480 B + 86,720 B per image token); the feature buffer holds
+# the image vectors of one request (bfloat16, 2,304 values per image token).
+INK2_VISION_WEIGHTS_BYTES = 636_512_256
+INK2_VISION_SCRATCH_BYTES = 20_480
+INK2_VISION_SCRATCH_BYTES_PER_TOKEN = 86_720
+INK2_VISION_FEATURE_BYTES_PER_ROW = 2304 * 2
+
+
+def ink2_vision_mib(max_image_tokens: int, max_feature_rows: int, weights: bool = True) -> float:
+    """GPU memory of the image tower: its weights (``weights`` False when the caller already counts them in the files, as for
+    the published safetensors file, which holds them), the scratch of ``max_image_tokens`` per image and the feature buffer of
+    ``max_feature_rows`` image tokens per request."""
+    n = (INK2_VISION_WEIGHTS_BYTES if weights else 0) + INK2_VISION_SCRATCH_BYTES
+    n += INK2_VISION_SCRATCH_BYTES_PER_TOKEN * int(max_image_tokens) + INK2_VISION_FEATURE_BYTES_PER_ROW * int(max_feature_rows)
+    return n / MIB
+
+
 def ink2_rollback_mib(rollback: int) -> float:
     """GPU memory of ``rollback`` rollback positions beyond the engine's own (0 = the engine's own 64)."""
     return max(0, int(rollback) - INK2_ENGINE_ROLLBACK) * INK2_ROLLBACK_MIB_PER_POSITION if rollback else 0.0
 
 
-def ink2_context(free_mib: float, files_bytes: int, bytes_per_position: int, default_ctx: int, rollback: int, fast: bool = False) -> int:
+def ink2_context(free_mib: float, files_bytes: int, bytes_per_position: int, default_ctx: int, rollback: int, fast: bool = False,
+                 vision_mib: float = 0.0) -> int:
     """The context of an Inkling-2 folder for ``free_mib`` MiB of free GPU memory: ``default_ctx`` (the folder's) when it fits, else
     the longest multiple of INK2_CONTEXT_STEP that fits, 0 when not even INK2_MIN_CONTEXT fits.  ``files_bytes`` = the weights and,
     when it is loaded, the drafter; ``bytes_per_position`` = the engine's per position of context (ink2_bytes_per_position);
-    ``fast``: the fast path of 0.3.3 (INK2_FAST_OVERHEAD_MIB more)."""
-    room = free_mib - files_bytes / MIB - ink2_overhead_mib(fast) - ink2_rollback_mib(rollback) - MARGIN_MIB
+    ``fast``: the fast path of 0.3.3 (INK2_FAST_OVERHEAD_MIB more); ``vision_mib``: the image tower when it will be loaded
+    (ink2_vision_mib; 0 when image input is off or the folder has none)."""
+    room = free_mib - files_bytes / MIB - ink2_overhead_mib(fast) - ink2_rollback_mib(rollback) - MARGIN_MIB - float(vision_mib)
     n = max(0, int(room * MIB // bytes_per_position))
     if n >= default_ctx:
         return int(default_ctx)
@@ -818,6 +839,8 @@ def ink2_bytes_per_position(cache_bytes: int, drafter: bool, fast: bool = False)
     return int(cache_bytes) + extra + (INK2_DRAFT_BYTES_PER_POSITION if drafter else 0)
 
 
-def ink2_need_mib(ctx: int, files_bytes: int, bytes_per_position: int, rollback: int, fast: bool = False) -> int:
+def ink2_need_mib(ctx: int, files_bytes: int, bytes_per_position: int, rollback: int, fast: bool = False,
+                  vision_mib: float = 0.0) -> int:
     """The free GPU memory a context of ``ctx`` positions needs by the rule of ink2_context (for the message when it does not fit)."""
-    return int(files_bytes / MIB + ink2_overhead_mib(fast) + ink2_rollback_mib(rollback) + MARGIN_MIB + ctx * bytes_per_position / MIB) + 1
+    return int(files_bytes / MIB + ink2_overhead_mib(fast) + ink2_rollback_mib(rollback) + MARGIN_MIB + float(vision_mib)
+               + ctx * bytes_per_position / MIB) + 1

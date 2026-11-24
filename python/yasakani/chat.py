@@ -111,10 +111,32 @@ class StopFilter:
         return out
 
 
-def _clean_content(c, i: int, images: bool = False):
+IMAGE_PART_TYPES = ("image_url", "input_image", "image")      # content parts that carry a still image
+VIDEO_PART_TYPES = ("video", "video_url", "input_video")      # content parts that carry a video (never accepted)
+
+
+def _image_part(p, i: int) -> dict:
+    """An image or video part of a model that checks its parts itself (Inkling-2): the shape is checked here, the image later."""
+    t = p["type"]
+    if t == "image_url":
+        value = p.get("image_url")
+        if isinstance(value, str) and value:                   # a bare string, as some clients send it
+            value = {"url": value}
+        if not isinstance(value, dict) or not isinstance(value.get("url"), str) or not value["url"]:
+            raise RequestError("messages[%d]: image_url needs a nonempty url string" % i)
+        if value.get("detail", "auto") not in ("auto", "low", "high"):
+            raise RequestError("messages[%d]: invalid image detail" % i)
+        return {"type": "image_url", "image_url": dict(value)}
+    return dict(p)
+
+
+def _clean_content(c, i: int, images: bool = False, vision_parts: bool = False):
     if isinstance(c, list):
         parts = []
         for p in c:
+            if vision_parts and isinstance(p, dict) and p.get("type") in IMAGE_PART_TYPES + VIDEO_PART_TYPES:
+                parts.append(_image_part(p, i))
+                continue
             if images and isinstance(p, dict) and p.get("type") == "image_url":
                 value = p.get("image_url")
                 if not isinstance(value, dict) or not isinstance(value.get("url"), str) or not value["url"]:
@@ -161,12 +183,32 @@ def _clean_tool_calls(calls, i: int, *, tool_ids: bool = False) -> List[dict]:
     return out
 
 
-def clean_messages(messages, *, images: bool = False, tool_ids: bool = False) -> List[dict]:
+def _check_vision_parts(msg: dict, i: int, images: bool, problem: str) -> None:
+    """The rules of an Inkling-2 message with image or video parts that need no image to be read (the same messages as the runner's)."""
+    content = msg["content"]
+    if not isinstance(content, list):
+        return
+    kinds = [p.get("type") for p in content if isinstance(p, dict)]
+    if any(k in VIDEO_PART_TYPES for k in kinds):
+        raise RequestError("messages[%d]: video is not supported (only still images)" % i)
+    if not any(k in IMAGE_PART_TYPES for k in kinds):
+        return
+    if msg["role"] not in ("user", "tool"):
+        raise RequestError("messages[%d]: images are supported only in user and tool messages" % i)
+    if not images:
+        raise RequestError("image input is not available: %s" % (problem or "this model does not read images"))
+
+
+def clean_messages(messages, *, images: bool = False, tool_ids: bool = False, vision_parts: bool = False,
+                   vision_problem: str = "") -> List[dict]:
     """Validate OpenAI-style messages and return plain dicts.  ``developer`` is read as
     ``system``; an assistant message may carry ``tool_calls`` and a ``tool`` message carries the result of one call.
     ``image_url`` parts are kept only with ``images`` (image input configured); otherwise they are refused as in 0.1.1.
     ``tool_ids`` (Inkling-2 model folders): the ``id`` of each tool call, and ``tool_call_id`` and ``name`` of a tool message, are
-    kept for the chat template (the Qwen3.8 template does not read them, so they are left out there as before)."""
+    kept for the chat template (the Qwen3.8 template does not read them, so they are left out there as before).
+    ``vision_parts`` (Inkling-2 model folders): image parts (``image_url``, ``input_image``, ``image``) are kept in user and tool
+    messages and checked by the model's runner; a video part, an image in a system or assistant message, and (without
+    ``images``) any image are refused here with the reason ``vision_problem``."""
     if not isinstance(messages, list) or not messages:
         raise RequestError("messages must be a non-empty list")
     out = []
@@ -176,8 +218,10 @@ def clean_messages(messages, *, images: bool = False, tool_ids: bool = False) ->
             role = "system"
         if role not in ("system", "user", "assistant", "tool"):
             raise RequestError("messages[%d]: role must be system, user, assistant or tool" % i)
-        msg = {"role": role, "content": _clean_content(m.get("content"), i, images)}
-        if role != "user" and isinstance(msg["content"], list) and any(p["type"] == "image_url" for p in msg["content"]):
+        msg = {"role": role, "content": _clean_content(m.get("content"), i, images, vision_parts)}
+        if vision_parts:
+            _check_vision_parts(msg, i, images, vision_problem)
+        elif role != "user" and isinstance(msg["content"], list) and any(p["type"] == "image_url" for p in msg["content"]):
             raise RequestError("messages[%d]: images are supported only in user messages" % i)
         if role == "assistant":
             if tool_ids and isinstance(m.get("name"), str) and m["name"]:

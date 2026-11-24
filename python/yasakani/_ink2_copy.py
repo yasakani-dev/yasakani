@@ -8,6 +8,10 @@ else the place with the longest backward match (up to 64 ids), the newest on tie
 cursor: while the output follows a source, the next proposal goes on from there.  The index keeps exact 4-gram keys (no hash
 buckets), so a candidate never fails the 4-id check.
 
+Image positions: the binding writes a negative number unique to the position into seen_ids for each image position (an image
+vector has no token id).  Such an entry never equals another entry, so no 4-gram window and no backward match spans it, and a
+proposed chain stops before it (``text_chain``): ids are never proposed for image positions and image positions never match text.
+
 Costs (CopyCtl): copied ids per pass W from the ladder maximising expected tokens per ms, 1 + q1 (1 - qn^W) / (1 - qn) over the
 pass time of W + 1 rows, against the measured ms per token of the other steps (drafter or plain) times a margin.  q1: share of
 first proposed ids the output followed (by backward-match length 4-7 / 8-15 / 16-31 / 32-64; a cursor continuation uses qn),
@@ -33,6 +37,14 @@ Q_NEXT_PRIOR = 0.85
 
 def prior_ms(R):
     return PRIOR_MS[R] if R in PRIOR_MS else PRIOR_MS[8] + 0.9 * (R - 8)
+
+
+def text_chain(chain):
+    """The chain up to its first image position (a negative entry of seen_ids)."""
+    for j, t in enumerate(chain):
+        if t < 0:
+            return chain[:j]
+    return chain
 
 
 def bucket_of(length):
@@ -241,7 +253,9 @@ class CopySpec:
             if p < 0 or ln < N:
                 return None
         end = min(F, p + MAX_W)                      # S[F] is the anchor
-        chain = seen[p + 1:end + 1] if end < F else seen[p + 1:F] + [anchor]
+        chain = text_chain(seen[p + 1:end + 1] if end < F else seen[p + 1:F] + [anchor])
+        if not chain:
+            return None
         return p + 1, chain, ln, cursor
 
     def follow(self, src, seen_after, nxt, F_old, ne):

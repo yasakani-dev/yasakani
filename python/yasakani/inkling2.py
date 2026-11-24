@@ -3,7 +3,7 @@
 """Inkling-2 Mini (``"architecture": "inkling2"`` in ``yasakani.json``): model folder, chat template, output stream, sampling and
 the chat runner on the Inkling-2 engine library.
 
-Text only, one request at a time.  The engine library is a separate DLL (``yskn_inkling2.dll``, next to ``yskn.dll`` in the engine
+One request at a time.  The engine library is a separate DLL (``yskn_inkling2.dll``, next to ``yskn.dll`` in the engine
 zip) with its own C API; its ctypes binding is the package module ``_ink2_native.py`` (with the safetensors reader ``_ink2_ckpt.py``).
 The library is found as ``find_dll`` says.  Model folders are made by ``tools/convert/inkling2_convert.py``.
 
@@ -65,6 +65,18 @@ model writes its own block header: it may think briefly (the model card: the low
 then answers or calls.  The answer block is not opened for it as without tools (that would rule out a call); masking only the
 thinking opener after ``<|message_model|>`` was tried and made the model call a tool for 1 + ... + 5 in 1 of 7 runs (greedy and
 6 seeds), the effort-0 start in none of the same 7.
+
+Still images (``--vision auto | on | off`` / ``$YASAKANI_INK2_VISION``, see ``Ink2Engine.set_vision``): the image tower
+(yasakani/inkling2_vision.py reads and checks it) runs inside the engine library.  It needs the library's capability bit
+CAP_VISION (interface version 4) and a folder with the tower: the separate file of the manifest's ``vision`` entry, or the
+published safetensors weights file, which holds ``model.visual.*``.  auto (default) loads it when both are there.  A request gives
+images as content parts of user and tool messages; the template writes one placeholder (id 200054) per image, which ``prepare``
+replaces by one id per 40 x 40 pixel tile of the image (rows x cols), so every image vector is one ordinary prompt position.
+The prompt that ``prepare`` returns (``PromptIds``) carries its images and their positions.  ``Ink2Engine.read_prompt`` compares
+positions by (id, image key, index in the image), so a new request goes on from the positions of the last one only where the
+same images are at the same places; the vectors of an image whose positions must be read are computed once by the tower (or
+taken from the host cache of earlier images, ``FeatureCache``) into the engine's feature rows and read with
+``ink2_feed_many_img``.  A request without images takes exactly the path of a text-only engine.
 """
 from __future__ import annotations
 
@@ -84,6 +96,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from ._native import YasakaniError
+
+IMAGE_TOKEN = 200054                   # the image placeholder of the template (<|unused_200054|>): one id per image position
 
 ARCHITECTURE = "inkling2"
 MANIFEST = "yasakani.json"
@@ -182,6 +196,86 @@ def fast_choice(mode: str, compute_cap, nvfp4: bool, has_fast: bool, backend: st
     return False, False, "fast path: off (auto turns it on for RTX 30, 40 and 50 cards; --fast on turns it on here)"
 
 
+VISION_MODES = ("auto", "on", "off")
+VISION_ENV = "YASAKANI_INK2_VISION"
+CAP_VISION = 32                        # ink2_capabilities() bit: the image tower and ink2_feed_many_img (interface version 4)
+VISION_OFF = "image input is off (--vision off)"
+VISION_NO_LIBRARY = "this engine library has no image input (an older yskn_inkling2.dll: the library of this release has it)"
+VISION_NO_GPU = "image input runs on the GPU only (cuda backend)"
+
+
+def vision_mode_of(value: Optional[str] = None, environ=None) -> str:
+    """auto | on | off: ``value`` (--vision), else ``$YASAKANI_INK2_VISION``, else auto."""
+    env = os.environ if environ is None else environ
+    v = value if value not in (None, "") else env.get(VISION_ENV, "")
+    v = (v or "auto").strip().lower()
+    if v not in VISION_MODES:
+        raise YasakaniError("%s / --vision must be one of %s, not %r" % (VISION_ENV, ", ".join(VISION_MODES), v))
+    return v
+
+
+def vision_limits(max_image_tokens=None, max_request_tokens=None) -> Tuple[int, int]:
+    """(image tokens per image, per request) of --vision-max-image-tokens (64 .. 4,096; default 1,024) and
+    --vision-max-request-image-tokens (the per-image value .. 65,536; default 8 x the per-image value)."""
+    from . import inkling2_vision as V
+    cap = V.DEFAULT_IMAGE_TOKENS if max_image_tokens is None else max_image_tokens
+    try:
+        cap = V.check_image_cap(cap)
+    except V.VisionError as ex:
+        raise YasakaniError("--vision-max-image-tokens: %s" % ex) from None
+    try:
+        return cap, V.request_token_limit(cap, max_request_tokens)
+    except V.VisionError as ex:
+        raise YasakaniError("--vision-max-request-image-tokens: %s" % ex) from None
+
+
+def library_has_vision(dll: Optional[str] = None) -> bool:
+    """The engine library find_dll(dll) names reports image input (CAP_VISION) and is a cuda build.  Never raises."""
+    try:
+        from . import _ink2_native as mod
+        path = find_dll(dll)
+        lib = mod.open_dll(str(path))
+        if not getattr(lib, "has_vision", False):
+            return False
+        return backend_of(lib.ink2_build_info().decode("utf-8", "replace")) == "cuda"
+    except Exception:
+        return False
+
+
+def vision_plan_mib(pack: "Ink2Pack", mode: Optional[str] = None, max_image_tokens=None, max_request_tokens=None,
+                    dll: Optional[str] = None, has_library: Optional[bool] = None) -> float:
+    """GPU memory (MiB) the image tower will take when the model is opened with these options, for planning the context
+    (gpu.ink2_context(..., vision_mib=...)): 0 when the mode is off, the folder has no tower, or (auto) the library has no image
+    input (``has_library``: known already; None = ask the library).  The weights count only for a separate tower file: the
+    published safetensors file holds them and is counted with the weights."""
+    from . import gpu as gpus
+    mode = vision_mode_of(mode)
+    if mode == "off" or not pack.has_vision:
+        return 0.0
+    if mode == "auto" and not (library_has_vision(dll) if has_library is None else has_library):
+        return 0.0
+    cap, req = vision_limits(max_image_tokens, max_request_tokens)
+    return gpus.ink2_vision_mib(cap, req, weights=bool(pack.vision_entry))
+
+
+@dataclass
+class Ink2VisionState:
+    """Image input of a loaded engine (Ink2Engine.vision; the runner's ``vision``)."""
+    kind: str                          # where the tower came from: "yskn" (separate file) or "hf-safetensors"
+    max_image_tokens: int              # per image (an image above it is shrunk)
+    max_request_tokens: int            # per request = feature rows of the engine
+    memory: Tuple[int, int, int]       # (weights, scratch, feature buffer) bytes on the device
+    cache: object                      # inkling2_vision.FeatureCache of image vectors in host memory
+    load_seconds: float = 0.0
+
+
+class PromptIds(list):
+    """Prompt ids with the images of the prompt: ``images`` = [(first position, inkling2_vision.PreparedImage)], one entry per
+    image in prompt order, each over ``image.tokens`` positions of id IMAGE_TOKEN; ``image_tokens`` = their sum."""
+    images: Tuple = ()
+    image_tokens: int = 0
+
+
 MAX_DRAFT_DEPTH = 7
 DRAFTER_FORMATS = ("hf-safetensors", "yskn")   # the published mtp.safetensors, or a converted drafter file (.yskn version 2)
 CAP_DRAFTER_PACKED = 4                 # ink2_capabilities() bit: the engine multiplies a converted drafter file as stored
@@ -253,6 +347,7 @@ class Ink2Pack:
     drafter_entry: dict = field(default_factory=dict)       # the "drafter" entry of yasakani.json ({} when there is none)
     drafter: Optional[Path] = None                          # its file, when it is there and of a known format
     drafter_problem: str = ""                               # why an entry that is listed is not used
+    vision_entry: dict = field(default_factory=dict)        # the "vision" entry of yasakani.json ({} when there is none)
 
     @classmethod
     def load(cls, root) -> "Ink2Pack":
@@ -272,7 +367,9 @@ class Ink2Pack:
         if fmt not in WEIGHTS_FORMATS or (fmt == "yskn" and int(w.get("version") or 2) != 2):
             raise YasakaniError("weights format %r is not supported by this version of the package" % fmt)
         dr = meta.get("drafter")
-        named = [("weights", w.get("file")), ("drafter", dr.get("file") if isinstance(dr, dict) else None)]
+        vi = meta.get("vision")
+        named = [("weights", w.get("file")), ("drafter", dr.get("file") if isinstance(dr, dict) else None),
+                 ("vision", vi.get("file") if isinstance(vi, dict) else None)]
         sums = meta.get("sha256")
         named += [("sha256", k) for k in sums] if isinstance(sums, dict) else []
         for what, f in named:                               # every file the manifest names must be inside the model folder
@@ -296,7 +393,8 @@ class Ink2Pack:
                 problem = "the drafter file %s is missing" % d["file"]
             else:
                 drafter = root / d["file"]
-        return cls(root=root, drafter_entry=d, drafter=drafter, drafter_problem=problem, meta=meta, weights=root / w["file"], weights_format=fmt, model_id=str(meta.get("model_id") or "inkling-2"),
+        vision_entry = dict(vi) if isinstance(vi, dict) and vi.get("file") else {}
+        return cls(root=root, drafter_entry=d, drafter=drafter, drafter_problem=problem, vision_entry=vision_entry, meta=meta, weights=root / w["file"], weights_format=fmt, model_id=str(meta.get("model_id") or "inkling-2"),
                    max_ctx=max_ctx, default_ctx=min(int(meta.get("default_ctx") or max_ctx), max_ctx),
                    sampling=dict(temperature=float(s.get("temperature", 1.0)), top_p=float(s.get("top_p", 1.0)),
                                  top_k=int(s.get("top_k", 0) or 0)),
@@ -307,11 +405,11 @@ class Ink2Pack:
         """Size, then SHA-256 of every listed file (the weights file is about 20 GB: a minute or so)."""
         res = {}
         sums, sizes = dict(self.sha256), dict(self.sizes)
-        d = self.drafter_entry
-        if d.get("sha256") and d["file"] not in sums:            # the drafter entry carries its own checksum
-            sums[d["file"]] = str(d["sha256"])
-            if d.get("size") is not None:
-                sizes[d["file"]] = int(d["size"])
+        for d in (self.drafter_entry, self.vision_entry):
+            if d.get("sha256") and d["file"] not in sums:        # the drafter / vision entry carries its own checksum
+                sums[d["file"]] = str(d["sha256"])
+                if d.get("size") is not None:
+                    sizes[d["file"]] = int(d["size"])
         for name, want in sorted(sums.items(), key=lambda kv: (sizes.get(kv[0], 0), kv[0])):
             p = self.root / name
             ok = p.is_file() and (name not in sizes or p.stat().st_size == sizes[name])
@@ -333,6 +431,25 @@ class Ink2Pack:
         from .ink2_yskn import YsknFile
         with YsknFile(self.weights) as yf:
             return sorted({n for n, _ in yf.check(threads=threads)})
+
+    @property
+    def vision_file(self) -> Optional[Path]:
+        """The separate image-tower file of the ``vision`` entry (None without one; it may be missing on disk)."""
+        return self.root / self.vision_entry["file"] if self.vision_entry else None
+
+    @property
+    def has_vision(self) -> bool:
+        """The folder has an image tower: the file of its ``vision`` entry is there, or its weights are the published safetensors
+        file and config.json has a ``vision_config``.  Reads no tensor (inkling2_vision.vision_weights checks them)."""
+        if self.vision_entry:
+            return self.vision_file.is_file()
+        if self.weights_format != "hf-safetensors" or not self.weights.is_file():
+            return False
+        try:
+            config = json.loads((self.root / "config.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(config, dict) and isinstance(config.get("vision_config"), dict)
 
     @property
     def drafter_format(self) -> str:
@@ -877,6 +994,10 @@ class Ink2Engine:
         self.copying = False                                 # copy decoding on (set_copy)
         self.copy_note = "copy: off"
         self.copy_mode, self.copy_min = "off", None
+        self.vision: Optional[Ink2VisionState] = None        # image input loaded (set_vision)
+        self.vision_note = "image input: not set up"
+        self.vision_problem = "image input is not set up"
+        self.last_vision: dict = {}                          # the images of the last prompt read (read_prompt)
 
     def _fast_options(self, lib) -> None:
         """The engine options of the fast path after the load (FAST_ENGINE_OPTIONS), the arg-max on the GPU for greedy steps
@@ -979,6 +1100,56 @@ class Ink2Engine:
         except RuntimeError:
             pass
         return " (converted, scheme %s, %d matrices multiplied as stored)" % (pack.drafter_entry.get("scheme") or "?", n)
+
+    # -- image input --------------------------------------------------------------------------------------------------------
+    def set_vision(self, pack: "Ink2Pack", mode: Optional[str] = None, max_image_tokens=None, max_request_tokens=None,
+                   cache_mib=None, log=None) -> str:
+        """Load the folder's image tower (mode auto or on; None: $YASAKANI_INK2_VISION, else auto) -> the line for the start-up
+        output.  auto loads it when the folder has the tower and the library has image input (cuda backend); otherwise text works
+        as before and ``vision_problem`` says why images are refused.  ``on``: anything missing is a YasakaniError.  Feature rows
+        = the per-request limit (at most the context).  ``cache_mib``: host cache of image vectors (None: 512 MiB; 0: none)."""
+        from . import inkling2_vision as V
+        self.vision = None
+        mode = vision_mode_of(mode)
+        cap, req = vision_limits(max_image_tokens, max_request_tokens)
+        req = max(cap, min(req, self.max_ctx))
+
+        def off(problem: str) -> str:
+            if mode == "on":
+                raise YasakaniError("image input could not be turned on: %s" % problem)
+            self.vision_problem = problem
+            self.vision_note = "image input: off (%s)" % ("--vision off" if problem == VISION_OFF else problem)
+            return self.vision_note
+
+        if mode == "off":
+            return off(VISION_OFF)
+        if not pack.has_vision:
+            return off(V.NO_TOWER)
+        if self.backend != "cuda":
+            return off(VISION_NO_GPU)
+        has = getattr(self.native, "has_vision", None)
+        if not callable(has) or not has():
+            return off(VISION_NO_LIBRARY)
+        t0 = time.perf_counter()
+        try:
+            vw = V.vision_weights(pack.root)
+            if vw is None:
+                return off(V.NO_TOWER)
+            memory = tuple(int(x) for x in self.native.vision_load(vw, cap, req, log=log))
+        except V.VisionError as ex:
+            return off(str(ex))
+        except (RuntimeError, OSError, ValueError) as ex:
+            return off("the image tower could not be loaded: %s" % ex)
+        cache_bytes = V.MEMORY_CACHE_BYTES if cache_mib is None else max(0, int(cache_mib)) * (1 << 20)
+        self.vision = Ink2VisionState(kind=vw.kind, max_image_tokens=cap, max_request_tokens=req, memory=memory,
+                                      cache=V.FeatureCache(cache_bytes), load_seconds=time.perf_counter() - t0)
+        self.vision_problem = ""
+        mib = lambda n: (n + (1 << 20) - 1) >> 20
+        self.vision_note = ("image input: on (image tower from %s, %d MiB, loaded in %.1f s; scratch %d MiB for %s image tokens per "
+                            "image; feature buffer %d MiB for %s per request; host cache %d MiB)"
+                            % (vw.path.name, mib(memory[0]), self.vision.load_seconds, mib(memory[1]), format(cap, ","),
+                               mib(memory[2]), format(req, ","), cache_bytes >> 20))
+        return self.vision_note
 
     # -- copy decoding ------------------------------------------------------------------------------------------------------
     def set_copy(self, mode: Optional[str] = None, min_match=None) -> str:
@@ -1151,7 +1322,10 @@ class Ink2Engine:
         next turn of a chat) only the new ids are read; when it shares only a first part, the positions after that part are dropped
         (``truncate``, up to the engine's rollback) and the rest is read.  All ids but the last are read in passes of several rows
         (``feed_many``), the last one in a step that gives the logits."""
+        images = tuple(getattr(ids, "images", None) or ())
         ids = [int(i) for i in ids]
+        if images:
+            return self._read_prompt_images(ids, images)
         if not ids:
             self.reset()
             return None, 0
@@ -1184,6 +1358,101 @@ class Ink2Engine:
             raise YasakaniError("engine step failed: %s" % ex) from ex
         self.fed = ids
         self.last_logits = logits
+        return logits, common
+
+    def _read_prompt_images(self, ids: List[int], images) -> Tuple[np.ndarray, int]:
+        """read_prompt of a prompt with images (PromptIds.images).  A position is compared as its id, an image position as (id,
+        image key, index in the image): the ids already read are kept as far as the same text and the same images are at the
+        same places.  The images with positions to read get feature rows from row 0 on, in prompt order; their vectors come
+        from the host cache or from the tower (then kept in the cache).  The positions are read with ink2_feed_many_img; the
+        last id (text: the end of a message) in a step.  Truncation and reset as for text (the engine's rollback; deeper: the
+        prompt is read again from the start, images included)."""
+        st = self.vision
+        if st is None:
+            raise YasakaniError("image input: %s" % self.vision_problem)
+        if len(ids) > self.max_ctx:
+            raise YasakaniError("the context of %d positions is full" % self.max_ctx)
+        pos: List[object] = list(ids)
+        owner: Dict[int, int] = {}
+        for n, (start, im) in enumerate(images):
+            start, cnt = int(start), int(im.tokens)
+            if start < 0 or start + cnt > len(ids) - 1 or any(ids[start + k] != IMAGE_TOKEN for k in range(cnt)):
+                raise YasakaniError("the prompt does not hold image %d at positions %d to %d (or ends inside it)" % (n + 1, start,
+                                                                                                                start + cnt - 1))
+            for k in range(cnt):
+                if start + k in owner:
+                    raise YasakaniError("images %d and %d of the prompt overlap" % (owner[start + k] + 1, n + 1))
+                pos[start + k] = (IMAGE_TOKEN, im.key, k)
+                owner[start + k] = n
+        fed = self.fed
+        common = 0
+        if fed is not None:
+            limit = min(len(fed), len(pos) - 1)              # the last id is always read: its logits are needed
+            while common < limit and fed[common] == pos[common]:
+                common += 1
+        stats = dict(images=len(images), image_tokens=sum(int(im.tokens) for _, im in images), encoded=0, from_cache=0, reused=0,
+                     encode_ms=0.0, upload_ms=0.0)
+        try:
+            if fed is None or common == 0:
+                self.reset()
+                common = 0
+            elif common < len(fed):
+                if len(fed) - common <= int(getattr(self.native, "rollback", 0)):
+                    self.native.truncate(common)
+                else:                                        # too far back for the caches: read again from the start
+                    self.reset()
+                    common = 0
+        except (RuntimeError, ValueError) as ex:
+            self.fed = None
+            raise YasakaniError("engine step failed: %s" % ex) from ex
+        need = [n for n, (start, im) in enumerate(images) if int(start) + int(im.tokens) > common]
+        stats["reused"] = len(images) - len(need)
+        row_of: Dict[int, int] = {}
+        r = 0
+        for n in need:
+            row_of[n] = r
+            r += int(images[n][1].tokens)
+        self.fed = None                                      # state unknown until the reading ends (truncated or reset above)
+        if r > st.max_request_tokens:
+            raise YasakaniError("the images of this prompt need %d feature rows; the engine holds %d (the image token limit per "
+                                "request)" % (r, st.max_request_tokens))
+        self.last_logits = None
+        self.last_vision = {}
+        for n in need:
+            im, r0 = images[n][1], row_of[n]
+            t0 = time.perf_counter()
+            feats = st.cache.get(im.key, int(im.tokens)) if st.cache is not None else None
+            try:
+                if feats is not None:
+                    self.native.vision_set_rows(feats, r0)
+                    stats["from_cache"] += 1
+                    stats["upload_ms"] += (time.perf_counter() - t0) * 1000.0
+                    continue
+                self.native.vision_encode(im, r0)
+                stats["encoded"] += 1
+                stats["encode_ms"] += (time.perf_counter() - t0) * 1000.0
+                if st.cache is not None and st.cache.max_bytes:
+                    st.cache.put(im.key, self.native.vision_rows_bf16(r0, int(im.tokens)))
+            except (RuntimeError, ValueError) as ex:
+                raise YasakaniError("image encode failed: %s" % ex) from ex
+        rest = ids[common:]
+        rows = [-1] * (len(rest) - 1)
+        for j in range(len(rest) - 1):
+            n = owner.get(common + j)
+            if n is not None:
+                rows[j] = row_of[n] + (common + j - int(images[n][0]))
+        try:
+            if len(rest) > 1:
+                if any(x >= 0 for x in rows):
+                    self.native.feed_many_img(rest[:-1], rows)
+                else:
+                    self.native.feed_many(rest[:-1])
+            logits = self.native.step(rest[-1])
+        except (RuntimeError, ValueError) as ex:
+            raise YasakaniError("engine step failed: %s" % ex) from ex
+        self.fed = pos
+        self.last_logits = logits
+        self.last_vision = stats
         return logits, common
 
     # -- information ----------------------------------------------------------------------------------------------------------------
@@ -1315,11 +1584,27 @@ def _spec_delta(a: dict, b: dict) -> Tuple[int, int]:
 
 
 # ---- chat runner --------------------------------------------------------------------------------------------------------------------
+IMAGE_PARTS = ("image", "input_image", "image_url")       # content parts that are images (the template's names)
+VIDEO_PARTS = ("video", "input_video", "video_url")
+PREPARED_KEEP = 8                                           # images read and prepared, kept by the hash of their file bytes
+
+
+def _part_kind(q) -> str:
+    t = q.get("type") if isinstance(q, dict) else None
+    return "image" if t in IMAGE_PARTS else ("video" if t in VIDEO_PARTS else "")
+
+
 class Ink2Runner:
     """Chat requests on one Inkling-2 engine, one at a time; the same calls as yasakani.chat.ChatRunner (prepare_checked, run,
-    close), so the server and the terminal chat use it unchanged."""
+    close), so the server and the terminal chat use it unchanged.  ``vision``: the engine's Ink2VisionState when it reads
+    images, else None; ``vision_allow_local_files``: False (data URIs and bytes only), True, or the folder local image files
+    must be in."""
 
-    vision = None
+    vision_allow_local_files = False
+
+    @property
+    def vision(self):
+        return getattr(self.engine, "vision", None)
 
     def __init__(self, engine: Ink2Engine, fmt: Ink2Formatter, pack: Ink2Pack, seed0: int = 1):
         self.engine = engine
@@ -1328,6 +1613,7 @@ class Ink2Runner:
         self._seed = int(seed0)
         self._seed_lock = threading.Lock()
         self.stop_ids = frozenset(pack.stop_ids or [fmt.ids[T_STOP]])
+        self._prepared: Dict[Tuple[str, int], object] = {}
 
     def next_seed(self) -> int:
         with self._seed_lock:
@@ -1351,6 +1637,8 @@ class Ink2Runner:
         """-> (prompt ids, the reply starts inside the answer) for a request without tools, as before; with ``p.tools``
         (prompt ids, start, plan) where plan says which call must be made and which ids are masked first (Ink2Formatter.tool_prompt)."""
         from .chat import RequestError
+        if any(isinstance(m.get("content"), list) and any(_part_kind(q) for q in m["content"]) for m in p.messages):
+            return self._prepare_images(p)
         for i, m in enumerate(p.messages):
             if isinstance(m.get("content"), list):
                 if any(isinstance(q, dict) and q.get("type") not in ("text", None) for q in m["content"]):
@@ -1385,10 +1673,139 @@ class Ink2Runner:
         except YasakaniError as ex:
             raise RequestError(str(ex))
 
+    def _prepare_images(self, p):
+        """prepare() of a request with image parts: the messages are rendered with their parts in order (an image part becomes
+        the template's placeholder), every image is read, checked and, above the per-image cap, shrunk; then each placeholder
+        is replaced by the image's rows x cols ids.  Nothing is encoded here.  -> as prepare, the ids being a PromptIds."""
+        from .chat import RequestError
+        from . import inkling2_vision as V
+        messages, sources = [], []
+        for i, m in enumerate(p.messages):
+            content = m.get("content")
+            if isinstance(content, list) and any(_part_kind(q) for q in content):
+                if any(_part_kind(q) == "video" for q in content):
+                    raise RequestError("messages[%d]: video is not supported (only still images)" % i)
+                if m.get("role") not in ("user", "tool"):
+                    raise RequestError("messages[%d]: images are supported only in user and tool messages" % i)
+                parts = []
+                for q in content:
+                    if _part_kind(q) == "image":
+                        sources.append((i, q))
+                        parts.append({"type": "image"})
+                    elif isinstance(q, str):
+                        parts.append({"type": "text", "text": q})
+                    elif isinstance(q, dict) and q.get("type") in ("text", "input_text", None):
+                        parts.append({"type": "text", "text": str(q.get("text", ""))})
+                    else:
+                        raise RequestError("messages[%d]: content part %s is not supported for this model"
+                                           % (i, repr(q.get("type") if isinstance(q, dict) else type(q).__name__)[:60]))
+                m = dict(m, content=parts)
+            elif isinstance(content, list):
+                if any(isinstance(q, dict) and q.get("type") not in ("text", None) for q in content):
+                    raise RequestError("messages[%d]: only text content is supported for this model" % i)
+                m = dict(m, content="".join(str(q.get("text", "")) for q in content if isinstance(q, dict)))
+            if m.get("tool_calls"):
+                calls = []
+                for k, c in enumerate(m["tool_calls"]):
+                    f = c.get("function") if isinstance(c, dict) else None
+                    args = f.get("arguments") if isinstance(f, dict) else None
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args) if args.strip() else {}
+                        except ValueError:
+                            raise RequestError("messages[%d].tool_calls[%d]: arguments is not valid JSON" % (i, k))
+                        c = dict(c, function=dict(f, arguments=args))
+                    calls.append(c)
+                m = dict(m, tool_calls=calls)
+            messages.append(m)
+        st = self.vision
+        if st is None:
+            raise RequestError("image input is not available: %s" % getattr(self.engine, "vision_problem", V.NO_TOWER))
+        if len(sources) > V.MAX_IMAGES:
+            raise RequestError("image input: at most %d images are supported per request (got %d)" % (V.MAX_IMAGES, len(sources)))
+        images = []
+        for i, q in sources:
+            try:
+                images.append(self._read_image(q, st.max_image_tokens))
+            except V.VisionError as ex:
+                raise RequestError("messages[%d]: image input: %s" % (i, ex)) from None
+            except ImportError as ex:
+                raise YasakaniError(str(ex)) from ex
+        try:
+            total = V.check_request(images, st.max_image_tokens, st.max_request_tokens)
+        except V.VisionError as ex:
+            raise RequestError("image input: %s" % ex) from None
+        try:
+            from jinja2.exceptions import TemplateError
+            if not p.tools:
+                out = self.fmt.prompt(messages, p.template_kwargs)
+            else:
+                call = None
+                if getattr(p, "tool_choice", None) == "required":
+                    call = p.tools[0]["function"]["name"] if len(p.tools) == 1 else ""
+                ids, start, ban_first = self.fmt.tool_prompt(messages, p.tools, p.template_kwargs, call)
+                trie = self.fmt.name_trie(p.tools) if call == "" else None
+                out = (ids, start, dict(call=call, ban_first=ban_first, trie=trie))
+        except TemplateError as ex:
+            raise RequestError("the chat template does not accept these messages: %s" % ex)
+        except YasakaniError as ex:
+            raise RequestError(str(ex))
+        ids = out[0]
+        if sum(1 for t in ids if t == IMAGE_TOKEN) != len(images):
+            raise RequestError("the text of the messages contains the image placeholder <|unused_200054|>, which is reserved for "
+                               "images")
+        expanded = PromptIds()
+        placed = []
+        k = 0
+        for t in ids:
+            if t == IMAGE_TOKEN:
+                im = images[k]
+                k += 1
+                placed.append((len(expanded), im))
+                expanded.extend([IMAGE_TOKEN] * int(im.tokens))
+            else:
+                expanded.append(int(t))
+        expanded.images = tuple(placed)
+        expanded.image_tokens = total
+        return (expanded,) + tuple(out[1:])
+
+    def _read_image(self, q: dict, cap: int):
+        """One image part -> inkling2_vision.PreparedImage (shrunk to ``cap`` tokens when it has more)."""
+        from . import inkling2_vision as V
+        t = q.get("type")
+        x = q.get("image_url") if t == "image_url" else (q.get("image_url", q.get("image")) if t == "input_image"
+                                                          else q.get("image", q.get("image_url")))
+        if isinstance(x, dict):
+            x = x.get("url")
+        if isinstance(x, V.PreparedImage):
+            return x if x.tokens <= cap else V.prepare_rgb(x.rgb, cap)
+        if isinstance(x, (bytes, bytearray, memoryview)):
+            data = bytes(x)
+        elif isinstance(x, str) and x:
+            data = V.source_bytes(x, allow_local_files=self.vision_allow_local_files)
+        else:
+            raise V.VisionError("an image part needs its image: a data:image/...;base64 URI, file bytes, or a local path (with %s)"
+                                % V.LOCAL_FILES_HINT)
+        key = (hashlib.sha256(data).hexdigest(), int(cap))
+        im = self._prepared.pop(key, None)
+        if im is None:
+            im = V.prepare_image(data, cap)
+        self._prepared[key] = im                             # the newest last; the oldest goes first
+        while len(self._prepared) > PREPARED_KEEP:
+            self._prepared.pop(next(iter(self._prepared)))
+        return im
+
     def prepare_checked(self, p):
         from .chat import context_length_error
         prepared = self.prepare(p)
         if len(prepared[0]) >= self.engine.max_ctx - CONTEXT_MARGIN:
+            images = getattr(prepared[0], "images", ())
+            if images:
+                from .chat import ContextLengthError
+                raise ContextLengthError("the input is too long: %d tokens (%d of them image tokens of %d image%s) exceeds the "
+                                         "model's maximum context length of %d tokens (input, thinking and answer together)"
+                                         % (len(prepared[0]), prepared[0].image_tokens, len(images), "" if len(images) == 1 else "s",
+                                            self.engine.max_ctx))
             raise context_length_error(len(prepared[0]), self.engine.max_ctx)
         return prepared
 
@@ -1440,6 +1857,8 @@ class Ink2Runner:
         logits, usage.cached_tokens = eng.read_prompt(prompt)
         t1 = time.perf_counter()
         usage.prefill_ms = usage.prompt_ms = (t1 - t0) * 1000.0
+        if getattr(prompt, "images", None):
+            usage.vision = dict(eng.last_vision)
         st0 = eng.draft_stats()
         pick_at = None if sample.t <= 0.0 else sampler_picks(sample)     # greedy: arg-max on the device, no logits copied
         if plan is not None and plan["ban_first"]:
@@ -1529,13 +1948,18 @@ class Ink2Runner:
 
 def open_runner(pack: Ink2Pack, max_ctx: int, dll: Optional[str] = None, seed0: int = 1, say=None, warm: bool = True,
                 draft: str = "auto", draft_depth: Optional[int] = None, copy: Optional[str] = None, copy_min=None,
-                fast: Optional[str] = None, compute_cap=None):
+                fast: Optional[str] = None, compute_cap=None, vision: Optional[str] = None, vision_max_image_tokens=None,
+                vision_max_request_tokens=None, vision_cache_mib=None):
     """Model folder -> (formatter, engine, runner).  ``fast`` / ``compute_cap``: see Ink2Engine (without ``compute_cap``, auto asks
     nvidia-smi for the GPU the engine opens, as the command line does).  The tokenizer and template are read first, so a broken folder fails before
-    the load.  ``draft``: auto | on | off (see the module text); ``eng.draft_note`` says what became of the drafter."""
+    the load.  ``draft``: auto | on | off (see the module text); ``eng.draft_note`` says what became of the drafter.  ``vision``:
+    auto | on | off with its limits and host cache (Ink2Engine.set_vision); ``eng.vision_note`` says what became of it."""
     fmt = Ink2Formatter(pack.root)
+    vision = vision_mode_of(vision)
+    vision_limits(vision_max_image_tokens, vision_max_request_tokens)  # wrong values fail before the long load
     eng = Ink2Engine(pack, max_ctx, dll=dll, fast=fast, compute_cap=compute_cap)
     try:
+        eng.set_vision(pack, vision, vision_max_image_tokens, vision_max_request_tokens, vision_cache_mib)
         eng.set_drafter(pack, draft, draft_depth)
         eng.set_copy(copy, copy_min)                         # off unless --copy / $YASAKANI_INK2_COPY says auto
         runner = Ink2Runner(eng, fmt, pack, seed0=seed0)
