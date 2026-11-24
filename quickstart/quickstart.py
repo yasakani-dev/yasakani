@@ -102,8 +102,9 @@ INK2_FOLDER_SIZES = {
 # THE SWITCH.  None: the launcher is that of 0.3.4 (text only; images are never mentioned).  On (since 0.3.5): the commit of the
 # repository that adds the image file, and name: (bytes, sha256) of every file of that commit that is new or differs from the pinned
 # folder above (the image file, yasakani.json with its "vision" entry, NOTICE and README.md).  A new download gets the folder of that
-# commit (the image file included), and a folder of 0.3.2 to 0.3.4 is offered only these files (about 0.64 GB; the text weights are
-# kept and not read again).  START.cmd --image-file asks again after a no.  It needs an engine zip with image input (ENGINE_IMAGE).
+# commit (the image file included), and a folder of 0.3.2 to 0.3.4 is offered only these files once, Enter alone is yes (about
+# 0.64 GB; the text weights are kept and not read again).  START.cmd --image-file gets them later after a no.  It needs an engine
+# zip with image input (ENGINE_IMAGE).
 INK2_IMAGE = {"revision": "e186e163e6d140f767a0fd1f1d31ed93e1a3e1a8",
               "files": {"inkling_2_mini_vision.yskn": (637136896, "858a5a5cacf28c1fdae0dcee23350565ac3eba77d86bc02057ce6c3bb249eabb"),
                         "yasakani.json": (3162, "e201cb7f0c1247565b07dd583ca335ded8352ef09b335344fb1481570fbe28fb"),
@@ -333,13 +334,19 @@ T = {
     "picked": {"ja": "モデル: {m}", "en": "Model: {m}"},
     # image input of Inkling-2 Mini: said only while INK2_IMAGE is on
     "img_ask": {
-        "ja": "Inkling-2 Mini で画像を読むには、ファイルがもう 1 つ要ります（約 {g} GB）。いまダウンロードしますか？ [y/N]: ",
-        "en": "Image input for Inkling-2 Mini needs one more file (about {g} GB). Download it now? [y/N]: ",
+        "ja": "Inkling-2 Mini で画像を読むには、ファイルがもう 1 つ要ります（約 {g} GB）。いまダウンロードしますか？ [Y/n]: ",
+        "en": "Image input for Inkling-2 Mini needs one more file (about {g} GB). Download it now? [Y/n]: ",
     },
     "img_later": {
         "ja": "Inkling-2 Mini は文章だけで使います。画像も使う時は START.cmd --image-file（約 {g} GB）。",
         "en": "Inkling-2 Mini runs with text only. For image input: START.cmd --image-file (about {g} GB).",
     },
+    "img_have": {"ja": "--image-file: 画像用のファイルはもう入っています。ダウンロードはしません。",
+                 "en": "--image-file: the file for image input is already there. Nothing is downloaded."},
+    "img_not_dir": {"ja": "--image-file: --model-dir のフォルダーは変えません。画像用のファイルはダウンロードしません。",
+                    "en": "--image-file: a --model-dir folder is never changed. The file for image input is not downloaded."},
+    "img_not_model": {"ja": "--image-file: 画像用のファイルは Inkling-2 Mini だけのものです。このモデルでは何もしません。",
+                      "en": "--image-file: the file for image input is for Inkling-2 Mini only. Nothing to do for this model."},
     "img_get": {"ja": "画像用のファイルをダウンロードします（約 {g} GB）。", "en": "Downloading the file for image input (about {g} GB)."},
     "img_done": {"ja": "画像用のファイルを確かめて入れました。画像も使えます。",
                  "en": "The file for image input was checked and put in place. Images work now."},
@@ -901,25 +908,64 @@ def fetch_image_files(ui, vpy, env, image, ddir, call=subprocess.call, environ=N
     return rc
 
 
-def install_image_files(ddir, image, mdir):
+IMAGE_OLD_SUFFIX = ".before-image"                     # a file of the folder while install_image_files() replaces it
+
+
+def install_image_files(ddir, image, mdir, replace=os.replace):
     """Moves the checked files of ``image`` from ``ddir`` into ``mdir``: yasakani.json last, so that the folder names the image
-    file only once it is there.  The download notes of Hugging Face for the replaced files are removed (a later download of the
-    folder then fetches only those again)."""
+    file only once it is there.  All or nothing: a file of the folder is first moved aside (+ IMAGE_OLD_SUFFIX, in the same
+    folder), and when a move fails (on Windows a file another program holds open cannot be renamed or replaced, and a folder on
+    another drive cannot be moved into) the files moved in go back to ``ddir`` and the old ones back to their names, in reverse
+    order, before the OSError is raised: yasakani.json then still matches the files it lists.  After the last move the old
+    files and the download notes of Hugging Face for the replaced files are removed (a later download of the folder then fetches
+    only those again).  ``replace``: os.replace (tests: a stand-in that fails)."""
     names = sorted(image["files"], key=lambda n: n == "yasakani.json")
-    for name in names:
-        os.replace(os.path.join(ddir, name), os.path.join(mdir, name))
-        note = os.path.join(mdir, ".cache", "huggingface", "download", name + ".metadata")
-        if os.path.isfile(note):
-            os.remove(note)
+    done = []                                           # [name, an old file was moved aside, the new file was moved in]
+    try:
+        for name in names:
+            dst = os.path.join(mdir, name)
+            done.append([name, False, False])
+            if os.path.isfile(dst):
+                replace(dst, dst + IMAGE_OLD_SUFFIX)
+                done[-1][1] = True
+            replace(os.path.join(ddir, name), dst)
+            done[-1][2] = True
+    except OSError as e:
+        left = []
+        for name, had, moved in reversed(done):
+            dst = os.path.join(mdir, name)
+            try:
+                if moved:
+                    replace(dst, os.path.join(ddir, name))
+                if had:
+                    replace(dst + IMAGE_OLD_SUFFIX, dst)
+            except OSError:
+                left.append(name)
+        if left:
+            raise OSError("%s; not put back: %s" % (e, ", ".join(left))) from e
+        raise
+    for name, had, _moved in done:
+        old = [os.path.join(mdir, name + IMAGE_OLD_SUFFIX)] if had else []
+        for p in old + [os.path.join(mdir, ".cache", "huggingface", "download", name + ".metadata")]:
+            try:
+                if os.path.isfile(p):
+                    os.remove(p)
+            except OSError:
+                pass
 
 
-def offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now, forced, image=None, call=subprocess.call, environ=None):
-    """Step 5 for an Inkling-2 Mini folder without the image file while the switch is on: asks once whether to get it (``forced``:
-    START.cmd --image-file, no question).  A no is kept in the state: later starts say one line.  When the question cannot be
-    asked (``ask_now`` False, or no keyboard) the line is said and nothing is kept.  Every failure leaves the folder as it was
-    (text only).  -> True when the image file was put in place."""
+def offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now, forced, image=None, call=subprocess.call, environ=None,
+                     yes=False):
+    """Step 5 for an Inkling-2 Mini folder without the image file while the switch is on: asks once whether to get it, Enter
+    alone is yes (``forced``: START.cmd --image-file, no question; ``yes``: --yes answers it).  A no is kept in the state: later
+    starts say one line.  When the question cannot be asked (``ask_now`` False, or no keyboard) the line is said and nothing is
+    kept.  Every failure leaves the folder as it was (text only).  -> True when the image file was put in place."""
     image = INK2_IMAGE if image is None else image
-    if not image or ink2_has_image(mdir) or not is_inkling2_dir(mdir):
+    if not image or not is_inkling2_dir(mdir):
+        return False
+    if ink2_has_image(mdir):
+        if forced:
+            ui.say("img_have")
         return False
     size = image["files"][INK2_IMAGE_FILE][0]
     gb = "%.2f" % (sum(s for s, _ in image["files"].values()) / 1e9)
@@ -927,7 +973,7 @@ def offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now, forced, image=
         if not ask_now or st.get("ink2_image_no") == image["revision"]:
             ui.say("img_later", g=gb)
             return False
-        ans = ask(ui.t("img_ask", g=gb), "n", eof="")
+        ans = "y" if yes else ask(ui.t("img_ask", g=gb), "y", eof="")
         if not ans:
             ui.say("img_later", g=gb)
             return False
@@ -2493,7 +2539,8 @@ def parse_args(argv=None):
     ap.add_argument("--web-test", action="store_true",
                     help="start the page in the browser, wait for the model, check the page once and stop")
     ap.add_argument("--lang", choices=("ja", "en"), help="language of the messages (default: the Windows display language)")
-    ap.add_argument("--yes", action="store_true", help="answer yes to questions (the update question only with --action update)")
+    ap.add_argument("--yes", action="store_true", help="answer yes to questions (the update question only with --action update)"
+                    + ("; also the question about the image file of Inkling-2 Mini" if INK2_IMAGE else ""))
     ap.add_argument("--skip-checks", action="store_true", help="do not run info / verify / selfcheck")
     ap.add_argument("--skip-driver-check", action="store_true",
                     help="do not stop when the NVIDIA driver is older than 580 (the engine will most likely not start)")
@@ -2640,19 +2687,22 @@ def main(argv=None):
             d = {name: key for key, name in MODEL_KEYS.items()}.get(prev, "1")
             model = MODEL_KEYS.get(ask(ui.t("pick", d=d), d), "quality")
 
-    def context_note(used):
+    def context_note(used, quiet=None):
         """On cards that do not keep the full context: the context the package will choose with ``used`` MiB in use.  Inkling-2
-        Mini on every card, when its context would be shorter than the folder's 32,768 tokens or it does not fit."""
+        Mini on every card, when its context would be shorter than the folder's 32,768 tokens or it does not fit.  -> the context
+        of Inkling-2 Mini (``quiet`` = that one: said only when it differs), else None."""
         if gpu["total"] is None or used is None or a.model_dir:
-            return
+            return None
         if model == "inkling2":                 # the context of chat and serve: the fast path on RTX 30 / 40 / 50 cards (0.3.4)
             n_ctx = estimate_ink2_context(gpu["total"] - used, fast=ink2_fast_expected(gpu.get("cc")),
                                           vision=ink2_vision_planned(os.path.join(home, "models", model), INK2_IMAGE))
-            if n_ctx <= 0:
+            if n_ctx == quiet:
+                pass
+            elif n_ctx <= 0:
                 ui.say("ctx_short", u=used)
             elif n_ctx < INK2_DEFAULT_CONTEXT:
                 ui.say("ctx_ink", n="{:,}".format(n_ctx))
-            return
+            return n_ctx
         if gpu["total"] >= FULL_CONTEXT_MIN_TOTAL_MIB:
             return
         n_ctx, head_off = estimate_context(gpu["total"] - used, model)
@@ -2664,7 +2714,7 @@ def main(argv=None):
                 ui.say("ctx_head")
 
     ui.say("picked", m=ui.t("m_" + model))
-    context_note(gpu["used"])
+    noted = context_note(gpu["used"])
     mdir = os.path.abspath(a.model_dir) if a.model_dir else os.path.join(home, "models", model)
     try:
         mdir.encode("ascii")
@@ -2740,13 +2790,9 @@ def main(argv=None):
     # 5. model files
     ui.step(5, n, "s_dl")
     got = st.setdefault("models_downloaded", {})
-    if a.model_dir or (got.get(model) and have_model):
+    fresh = not (a.model_dir or (got.get(model) and have_model))
+    if not fresh:
         ui.say("model_have", p=mdir)
-        if model == "inkling2" and INK2_IMAGE and not a.model_dir:
-            # a folder of 0.3.2 to 0.3.4: the image file is offered once (not when the page's update started this run: the
-            # page waits for the server and nobody looks at this window)
-            offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now=not (a.action == "web" and a.web_port),
-                             forced=a.image_file)
     else:
         rc = fetch_model(ui, vpy, env, model, mdir)
         if rc != 0:
@@ -2754,6 +2800,15 @@ def main(argv=None):
             return 5
         got[model] = True
         save_state(state_path, st)
+    if a.image_file and (a.model_dir or model != "inkling2"):
+        ui.say("img_not_dir" if a.model_dir else "img_not_model")
+    elif model == "inkling2" and INK2_IMAGE and not a.model_dir and (a.image_file or not fresh):
+        # a folder of 0.3.2 to 0.3.4: the image file is offered once (not when the page's update started this run: the
+        # page waits for the server and nobody looks at this window).  Once it is in place the server loads it too: the
+        # context note of step 2 is said again when it changes.
+        if offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now=not (a.action == "web" and a.web_port),
+                            forced=a.image_file, yes=a.yes):
+            context_note(gpu["used"], quiet=noted)
 
     def yk(cmd, *extra):
         args = [vpy, "-m", "yasakani", cmd, "--model-dir", mdir]
