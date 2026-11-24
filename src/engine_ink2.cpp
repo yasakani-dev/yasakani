@@ -811,6 +811,7 @@ EngineInk2::EngineInk2(const std::string& path, int max_ctx, int /*flags*/) {
     }
   }
   prefill_chunk_ = std::min(kPrefillChunk, ring_rows_ - max_swa_);
+  if (prefill_chunk_ <= 0) throw std::runtime_error("inkling2: the sliding window does not fit in the key/value ring");
 
   // KV caches (BF16 default, FP32 opt-in via YSKN_INK2_KV=fp32) & contiguous short-conv history across 48 visits
   const size_t nv = cfg_.schedule.size();
