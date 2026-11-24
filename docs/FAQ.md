@@ -685,7 +685,8 @@ quickstart of 0.3.5 downloads the image file with the folder, and for a folder o
 (about 0.64 GB; Enter alone downloads it, `n` keeps text only; later `START.cmd --image-file`). With the file, the quickstart page shows an image button, `yasakani serve` takes OpenAI `image_url` parts with `data:image/...;base64` URIs, and
 `yasakani chat` takes `--image PATH`.
 Images also need the Pillow library in the Python that runs `yasakani`. The quickstart of 0.3.5 installs it into its environment; if that
-fails, it says so and prints the command that adds it later (in the quickstart folder: `venv\Scripts\python -m pip install Pillow`);
+fails, it says so and prints the command that adds it later (with the full path; in the default quickstart folder it is
+`venv\Scripts\python -m pip install Pillow`);
 until then text works and a request with an image fails. With an
 install of your own, use `pip install ".[vision]"`. The error `image input needs Pillow` means that this Python has no Pillow.
 

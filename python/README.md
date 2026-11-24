@@ -438,7 +438,7 @@ once, without waiting for a running generation.
 | `--mmproj` | the projector of Qwen3.8-27B: `mmproj-Qwen3.8-27B-BF16.gguf` from [ggml-org/Qwen3.8-27B-GGUF](https://huggingface.co/ggml-org/Qwen3.8-27B-GGUF) (931,145,888 bytes, sha256 `de2a49866988ea272c43dc2a43ee2662c25725a717ca5b9059ea420a97f53fe8`) |
 | `--llama-dir` | Windows: a folder with the unpacked `llama-b10488-bin-win-cpu-x64.zip` of the [llama.cpp release b10488](https://github.com/ggml-org/llama.cpp/releases/tag/b10488) (18,490,962 bytes, sha256 `6c938f6d79aac96cb90fda673aade20cff9b1b6c1e97de04f4d5d60bca107082`); its multimodal library turns the image into features. Only this CPU build is accepted: at start the server compares its `llama.dll`, `mtmd.dll`, `ggml.dll` and `ggml-base.dll` by SHA-256 and refuses a folder with GPU backends (`ggml-cuda.dll` and the like). Linux: a folder with the shared libraries of llama.cpp b10488 built from source ([below](#image-input-on-linux)) |
 | `--vision-model` | a Qwen3.8-27B GGUF. Only its settings and vocabulary are read, never its weights. We tested `Qwen3.8-27B-Q4_K_M.gguf` of [bartowski/Qwen3.8-27B-GGUF](https://huggingface.co/bartowski/Qwen3.8-27B-GGUF) (17,442,399,968 bytes); other GGUF files of this model should work the same way, but we have not tried them |
-| Pillow | install the package with `pip install ".[vision]"` instead of `pip install .`, or add Pillow to the Python that runs `yasakani` with `pip install Pillow` (in a quick-start folder: `venv\Scripts\python -m pip install Pillow`) |
+| Pillow | install the package with `pip install ".[vision]"` instead of `pip install .`, or add Pillow to the Python that runs `yasakani` with `pip install Pillow` (in a quickstart folder: `venv\Scripts\python -m pip install Pillow`) |
 
 ```bat
 pip install ".[vision]"
@@ -735,7 +735,7 @@ image into image tokens that take places in the prompt like text tokens. In this
   at 32,768 tokens on the RTX 5090, the GPU memory in use rose by 720 MiB (754,974,720 bytes, about 0.75 GB): 20,156 MiB against
   19,436 MiB with `--vision off`. Without `--max-ctx` the context of a converted folder is chosen with this memory counted; `--vision off`
   gives it back.
-* **Time.** Encoding one 1280 × 720 image (576 image tokens) took about 12.7 ms on the RTX 5090 (median of 6 encodes in one job). An
+* **Time.** Encoding one 1280 × 720 image (576 image tokens) took about 12.7 ms on the RTX 5090 (6 encodes in one job, 12.59 to 12.72 ms). An
   image seen in the last request is not encoded again (its places in the prompt are kept), and the vectors of recent images stay in
   memory (up to 512 MiB).
 * **Formats.** PNG, JPEG, WebP, GIF, BMP and TIFF (one frame); other files, such as EPS, WMF or PDF, are refused unread.

@@ -546,7 +546,7 @@ Qwen のモデルの速度表は、このモデルには当てはまりません
 （約 0.64 GB）。Enter だけで取得します。`n` なら文章だけのままです。後からは `START.cmd --image-file` で足せます。このファイルがあれば、クイックスタートのページに画像のボタンが出ます。`yasakani serve` は OpenAI の `image_url`（`data:image/...;base64` の URI）を、
 `yasakani chat` は `--image パス` を受け付けます。
 画像には、`yasakani` を動かす Python に Pillow のライブラリーも要ります。0.3.5 の起動ファイルは、これを自分の環境に入れます。
-入れられなかった時はそう表示し、後から足すコマンドも出します（起動ファイルのフォルダーでは `venv\Scripts\python -m pip install Pillow`）。足すまでは、文章は使えて、画像つきの依頼は失敗します。
+入れられなかった時はそう表示し、後から足すコマンドも、環境の場所を含めて出します（標準の起動ファイルのフォルダーでは `venv\Scripts\python -m pip install Pillow`）。足すまでは、文章は使えて、画像つきの依頼は失敗します。
 自分で入れたパッケージでは `pip install ".[vision]"` を使います。`image input needs Pillow` のエラーは、その Python に Pillow が無いという意味です。
 
 縦 H・横 W ピクセルの画像は、ceil(H / 40) × ceil(W / 40) 個の画像トークンになります。たとえば 1280 × 720 なら 576 です。
