@@ -183,8 +183,8 @@ chooses there; `yasakani report` names both in its table (it follows the two var
 
 | `--prefill` / `YASAKANI_PREFILL` | prompt reading |
 |---|---|
-| `auto` (default) | the new reading on a card with 30,000 MiB or more (nvidia-smi's total); since 0.3.4 also on a card of 22,000 to 30,000 MiB when `--max-ctx` is given and at least 1,800 MiB of memory stays free beside it for the work area (the line at start names the free memory, below); on a smaller card, or when nvidia-smi cannot tell the memory, the reading of 0.1.7 |
-| `new` | the new reading on any card; under 30,000 MiB (or of unknown memory) with the pass sizes of 0.1.7. Experimental there: measured on one real 24 GB card by a user ([#24](https://github.com/yasakani-dev/yasakani/issues/24)) |
+| `auto` (default) | the new reading on a card with 30,000 MiB or more (nvidia-smi's total); since 0.3.4 also on a card of 22,000 to 30,000 MiB when `--max-ctx` is given and at least 1,800 MiB of memory stays free beside it for the work area (the line at start names the free memory, below); since 0.3.5 also with `serve --parallel N` and `--max-ctx`, where the 1,800 MiB must stay free beside the N + 1 contexts and the N slots ([#34](https://github.com/yasakani-dev/yasakani/pull/34) by @Albrod); on a smaller card, or when nvidia-smi cannot tell the memory, the reading of 0.1.7 |
+| `new` | the new reading on any card; under 30,000 MiB (or of unknown memory) with the pass sizes of 0.1.7. Experimental there: measured by users on an RTX 3090 Ti and an RTX 3090 ([#24](https://github.com/yasakani-dev/yasakani/issues/24)) |
 | `old` | the reading of 0.1.7 on any card, also the passes of 64 tokens as in 0.1.7 |
 
 **The new prompt reading** computes the first read of a prompt layer by layer in larger pieces, computes the output layer only where it
@@ -249,7 +249,18 @@ note: --prefill new: the new prompt reading needs about 2169 MiB free in nvidia-
 ```
 
 With `serve --parallel N` the same room is left free, and the line that lowers N says `(besides 1800 MiB kept for the new prompt
-reading)`. With `--parallel N` and no `--max-ctx`, on any card, the contexts take the free GPU memory, so the engine may find no room for
+reading)`. With `--prefill auto` and `--max-ctx` given, `serve --parallel N` on a card of 22,000 to 30,000 MiB uses the new reading when
+at least 1,800 MiB stay free beside the model, the N + 1 contexts and about 256 MiB per request (the terms of the context of several
+requests, [below](#several-requests-at-once-experimental)); since 0.3.5 ([#34](https://github.com/yasakani-dev/yasakani/pull/34) by @Albrod; 0.3.4 read as 0.1.7 did there,
+and its line said `no --max-ctx`). The 1,800 MiB are not multiplied by N: the engine keeps one work area for all requests. Its author ran it
+on an RTX 3090 (24,576 MiB, Linux, quality model, `--parallel 2 --max-ctx 65536`): the line said `new`, `selfcheck --parallel 2` gave the
+same result as with 0.3.4, and through the server two prompts of about 8K tokens at once were read at 1,375 and 1,447 tokens/s and one of
+about 32K at 1,275, against 1,054 to 1,104 and 947 to 957 with 0.3.4 (the author's numbers; we have not run it on such a card).
+With our RTX 5090 shown to the package as a 24,576 MiB card the choice followed the rule: with 24,574 MiB free,
+`--parallel 2 --max-ctx 65536` took the new reading (2,800 MiB of room); with 23,100 MiB free, as on a card that also drives a
+desktop, it kept the reading of 0.1.7 there (1,326 MiB of room) and took the new one at `--max-ctx 40960` (2,901 MiB);
+`selfcheck --parallel 2` passed with both.
+With `--parallel N` and no `--max-ctx`, on any card, the contexts take the free GPU memory, so the engine may find no room for
 the work area and read prompts without it; this has not been measured.
 
 What `--prefill new` did on the RTX 5090 set up to look like a smaller card in both ways (what the package sees, and only the free GPU
@@ -260,7 +271,11 @@ the work area. As a 16 GB card (16,384 MiB, fastest model) keeping the room woul
 98,304, and the engine found no room and read without the work area. So at the automatic context a 16 GB card does not use the new reading; a
 smaller `--max-ctx` leaves room for it (not measured). We have not measured a real card under 30,000 MiB; a user's RTX 3090 Ti
 measurement is in [#24](https://github.com/yasakani-dev/yasakani/issues/24) (the reporter's numbers: 1.39 to 1.40 times as fast with
-`--max-ctx` given, the work area made up to a context of 131,072, not at 262,144). How much free memory the driver reports differs
+`--max-ctx` given, the work area made up to a context of 131,072, not at 262,144). With 0.3.4 and `--prefill auto`, two users reported
+the new reading on real cards in [#24](https://github.com/yasakani-dev/yasakani/issues/24) (the reporters' numbers, against the reading of 0.1.7): an RTX 3090 (Linux, quality model,
+`--max-ctx 65536`) read prompts 1.37 times as fast at 8K tokens and 1.31 times at 32K, and an RTX 3090 Ti (Windows 11, quality model,
+`--max-ctx 40960`) 1.28 times at 8,192 and 1.36 times at 32,768 tokens; with the max-quality model and `--max-ctx` from 114,688 to
+147,456 the RTX 3090 Ti kept the reading of 0.1.7 (166 to 1,330 MiB free, under 1,800). How much free memory the driver reports differs
 between PCs.
 
 **Edit copy** (`--edit-copy on|off`, `YASAKANI_EDIT_COPY`, default `on`). When an answer copies the input with the same short replacement

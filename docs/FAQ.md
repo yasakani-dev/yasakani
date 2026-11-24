@@ -242,7 +242,7 @@ fastest model and about 21.2 GiB for the quality model (about 14.3 GiB and 16.4 
 
 On a GPU with less than 32 GB, the context is chosen from the free GPU memory each time the model starts (at most 262,144 tokens;
 `--max-ctx` sets it yourself). On 16 GB cards only the fastest model fits. The max-quality model used 25,977 MiB after loading on the RTX 5090
-(quality model: 22,795 MiB); on a 24 GB card the package would choose a context of 163,840 tokens when the desktop uses 500 MiB (196,608 with nothing else on the GPU; a calculation, not checked by us on such a card). A user ran it on an RTX 3090 Ti (Windows 11, 0.3.2) with the desktop using about 1.1 GB: the package chose 147,456 tokens, the wide-pass check was bit for bit at 463 positions, the self-check passed, and it generated at 0.95 times the speed of the quality model ([#24](https://github.com/yasakani-dev/yasakani/issues/24); the reporter's numbers). If the start-up line of the wide copy passes shows little free memory (that report: 153 MiB with the max-quality model on a 24 GB card), a `--max-ctx` one step shorter (16,384 tokens) leaves about 350 MiB more. The rule is in
+(quality model: 22,795 MiB); on a 24 GB card the package would choose a context of 163,840 tokens when the desktop uses 500 MiB (196,608 with nothing else on the GPU; a calculation, not checked by us on such a card). A user ran it on an RTX 3090 Ti (Windows 11, 0.3.2) with the desktop using about 1.1 GB: the package chose 147,456 tokens, the wide-pass check was bit for bit at 463 positions, the self-check passed, and it generated at 0.95 times the speed of the quality model ([#24](https://github.com/yasakani-dev/yasakani/issues/24); the reporter's numbers). If the start-up line of the wide copy passes shows little free memory (that report: 153 MiB with the max-quality model on a 24 GB card), a `--max-ctx` one step shorter (16,384 tokens) leaves about 350 MiB more, as long as the output head of the draft model (`bdraft2_k8.shead`, 1.3 GiB) stays loaded, or stays out. Where the shorter context lets the head be loaded, the free memory goes down instead: in a later report on the same RTX 3090 Ti (0.3.4, desktop about 1.4 GB), 147,456 tokens left the head out with 1,676 MiB free after the graphs, and 139,264 loaded it with 421 MiB free (1,255 MiB less); from 131,072 to 114,688 tokens, with the head loaded, 366 MiB more were free ([#24](https://github.com/yasakani-dev/yasakani/issues/24); the reporter's numbers). A note at start says when the head is left out. The rule is in
 [python/README.md](../python/README.md#gpus-other-than-the-rtx-5090).
 
 ## It is much slower than the tables
@@ -341,7 +341,11 @@ prompt reading: as in 0.1.7 (setting auto: 24564 MiB card and no --max-ctx; --pr
 * `auto` (the default): the new reading on a card with 30,000 MiB or more, else the reading of 0.1.7. Since 0.3.4 also on a card of
   22,000 to 30,000 MiB when the context is given with `--max-ctx` and at least 1,800 MiB of GPU memory stays free beside it for the work area
   (from a user's measurement in
-  [#24](https://github.com/yasakani-dev/yasakani/issues/24); we have not run it on a real 24 GB card). A card whose memory nvidia-smi
+  [#24](https://github.com/yasakani-dev/yasakani/issues/24); we have not run it on a real 24 GB card, two users have: [below](#prompt-reading-smaller-cards)).
+  Since 0.3.5 the same holds for `serve --parallel N` with `--max-ctx`: the 1,800 MiB must stay free beside the N + 1 contexts and the
+  N slots ([#34](https://github.com/yasakani-dev/yasakani/pull/34) by @Albrod; 0.3.4 read as 0.1.7 did there). On a 24 GB card that also drives a
+  desktop, two requests of 65,536 tokens leave less than that and 40,960 leave more (our run with the RTX 5090 shown to the
+  package as a 24 GB card with 23,100 MiB free). A card whose memory nvidia-smi
   cannot tell also reads as 0.1.7 did.
 * `new`: the new reading on any card. Under 30,000 MiB this is experimental ([below](#prompt-reading-smaller-cards)).
 * `old`: the reading of 0.1.7 on any card, including its passes of 64 tokens. On the RTX 5090, `--prefill old` gave the tokens, the
@@ -362,7 +366,11 @@ took 9.04 s (24,564 MiB) and 9.05 s (16,384 MiB) against 9.00 s and 9.02 s with 
 and number of saved states. For the rule of 0.3.4 we set the RTX 5090 up as a 24,564 MiB card again (quality model): with
 `--max-ctx 131072` `auto` took the new reading, `selfcheck` gave the same lines as with `--prefill old`, and a prompt of 32,000 tokens
 was read in 7.2 s against 8.5 s with the same 16 output ids (one run each); with `--max-ctx 262144` `auto` stayed with the reading of
-0.1.7. The
+0.1.7. Two users ran this rule of 0.3.4 on real 24 GB cards ([#24](https://github.com/yasakani-dev/yasakani/issues/24); the reporters' numbers, against the reading of 0.1.7):
+an RTX 3090 (Linux, quality model, `--max-ctx 65536`) read prompts 1.37 times as fast at 8K tokens and 1.31 times at 32K, with 0.6 GB
+more at the peak; an RTX 3090 Ti (Windows 11, quality model, `--max-ctx 40960`) 1.28 times at 8,192 and 1.36 times at 32,768 tokens,
+and generated as fast as with `--prefill old`. With the max-quality model and `--max-ctx` from 114,688 to 147,456, `auto` kept the
+reading of 0.1.7 there (166 to 1,330 MiB free, under 1,800). The
 [edit copy](#edit-copy-020) is used on every card; we measured it on the RTX 5090 only.
 
 `--prefill new` (or `YASAKANI_PREFILL=new`) on such a card is experimental:
