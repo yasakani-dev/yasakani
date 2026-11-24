@@ -403,15 +403,17 @@ T = {
     },
     "pillow_none": {
         "ja": "画像の入力に使う Pillow を入れられませんでした。文章はこれまで通り使えます。画像も使う時は、"
-              "コマンドプロンプトで次を実行してください:\n  \"{p}\" -m pip install Pillow",
+              "コマンドプロンプトで次を実行してください（PowerShell では先頭に & と空白を付けます）:\n"
+              "  \"{p}\" -m pip install Pillow",
         "en": "Pillow (needed for image input) could not be installed. Text works as before. For images, run this in a "
-              "command prompt:\n  \"{p}\" -m pip install Pillow",
+              "command prompt (in PowerShell, put & and a space in front):\n  \"{p}\" -m pip install Pillow",
     },
     "pillow_need": {
         "ja": "Python の環境に Pillow が無いので、画像はまだ使えません（文章は使えます）。"
-              "コマンドプロンプトで次を実行すると使えます:\n  \"{p}\" -m pip install Pillow",
+              "コマンドプロンプトで次を実行すると使えます（PowerShell では先頭に & と空白を付けます）:\n"
+              "  \"{p}\" -m pip install Pillow",
         "en": "Image input will not work until Pillow is added to the Python environment (text works). Run this in a "
-              "command prompt:\n  \"{p}\" -m pip install Pillow",
+              "command prompt (in PowerShell, put & and a space in front):\n  \"{p}\" -m pip install Pillow",
     },
     "pillow_add": {"ja": "画像の入力に使う Pillow を Python の環境に入れます。",
                    "en": "Adding Pillow (needed for image input) to the Python environment."},

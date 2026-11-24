@@ -12,6 +12,7 @@ launcher goes to a stand-in that answers the pip and Python commands.
 """
 import json
 import os
+import re
 import sys
 import unittest
 from unittest import mock
@@ -51,6 +52,19 @@ class CommandTests(unittest.TestCase):
     def test_the_extras_are_read_from_one_plain_line(self):
         with open(QS.__file__, encoding="utf-8") as f:
             self.assertIn('\nENGINE_EXTRAS = "vision"\n', f.read())
+
+    def test_the_package_has_these_extras(self):
+        """pip installs a folder with an extra it does not have and only warns, so a wrong name here would leave the
+        environment without Pillow silently."""
+        toml = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pyproject.toml")
+        if not os.path.isfile(toml):
+            self.skipTest("pyproject.toml is not next to tests/")
+        with open(toml, encoding="utf-8") as f:
+            text = f.read()
+        part = text.split("[project.optional-dependencies]", 1)[1].split("\n[", 1)[0]
+        extras = dict(re.findall(r'^([A-Za-z0-9_-]+)\s*=\s*\[(.*?)\]', part, re.M))
+        self.assertIn(QS.ENGINE_EXTRAS, extras)
+        self.assertEqual(re.findall(r'"([^"]+)"', extras[QS.ENGINE_EXTRAS]), [QS.PILLOW_REQ])
 
     def test_one_pip_call_with_the_extras(self):
         got, calls, said = self.run_install(0)
@@ -236,6 +250,12 @@ class MainTests(IV.OfferTests):
 
     def test_qwen_models_are_never_checked(self):
         h = self.home(checked=("quality",))
+        q = h / "models" / "quality"                                       # a folder that names an image file, like Inkling-2's
+        man = json.loads((q / "yasakani.json").read_text(encoding="utf-8")) if (q / "yasakani.json").is_file() else {}
+        man["vision"] = {"file": "v.yskn", "size": 3}
+        (q / "yasakani.json").write_text(json.dumps(man), encoding="utf-8")
+        (q / "v.yskn").write_bytes(b"abc")
+        self.assertTrue(QS.ink2_has_image(str(q)))
         self.fresh_env(h)
         s = self.pip(full=1, pil=1)
         self.assertEqual(self.run_main(h, "--action", "none"), 0)
