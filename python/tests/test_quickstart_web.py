@@ -217,6 +217,25 @@ def request(port, method, path, headers=None, body=None, timeout=20):
         c.close()
 
 
+def too_long(port, path, headers, n, timeout=20):
+    """A POST that says it has n bytes of body and sends none.  -> the status.  The server refuses a body over its limit from
+    Content-Length alone and closes the connection without reading it; a body that was sent would still wait unread there, and on
+    Windows closing a socket with unread data resets the connection, which can drop the answer before it is read
+    (ConnectionAbortedError, WinError 10053, under load).  The answer to the header is what is checked here."""
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        c.putrequest("POST", path, skip_host=True, skip_accept_encoding=True)
+        for k, v in dict({"Host": "127.0.0.1:%d" % port}, **(headers or {})).items():
+            c.putheader(k, v)
+        c.putheader("Content-Length", str(n))
+        c.endheaders()
+        r = c.getresponse()
+        r.read()
+        return r.status
+    finally:
+        c.close()
+
+
 def get_json(port, path):
     """The JSON of a GET, or None while nothing answers at that port."""
     try:
@@ -646,7 +665,7 @@ class ControlTests(Base):
         self.assertEqual(self.post("/webchat/shutdown", dict(own, **{self.H: "0" * 64}))[0], 403)           # a wrong token
         self.assertEqual(self.post("/webchat/shutdown", dict(own, **{self.H: self.tok[:-1]}))[0], 403)
         self.assertEqual(self.post("/webchat/shutdown", {self.H: self.tok})[0], 403)                        # no Origin
-        self.assertEqual(self.post("/webchat/shutdown", dict(own, **{self.H: self.tok}), b"x" * 4097)[0], 413)
+        self.assertEqual(too_long(self.port, "/webchat/shutdown", dict(own, **{self.H: self.tok}), 4097), 413)
         self.assertEqual(request(self.port, "GET", "/webchat/shutdown", dict(own, **{self.H: self.tok}))[0], 404)
         self.assertFalse(self.control.event.is_set())
         self.assertEqual(get_json(self.port, "/webchat/status")["state"], "loading")
@@ -668,7 +687,7 @@ class ControlTests(Base):
                 self.assertEqual(self.post("/webchat/switch_model", h, body)[0], 400)                       # not a model name
         self.assertEqual(self.post("/webchat/switch_model", h, b'{"model": "max"}')[0], 409)                # not downloaded here
         self.assertEqual(self.post("/webchat/switch_model", h, b'{"model": "quality"}')[0], 409)            # in use already
-        self.assertEqual(self.post("/webchat/switch_model", h, b"x" * 4097)[0], 413)
+        self.assertEqual(too_long(self.port, "/webchat/switch_model", h, 4097), 413)
         self.assertEqual(self.control.token, self.tok)                                                      # still valid
         self.assertFalse(self.control.event.is_set())
         own = self.own(self.port)

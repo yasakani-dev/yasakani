@@ -3,9 +3,9 @@
 
 Switch on (as shipped since 0.3.5: the published commit with the image file, and an engine zip with image input; the cases below
 use a stand-in entry): a new download gets the folder of the new revision with the image file; a folder of 0.3.2 to 0.3.4 is
-offered the extra files once (yes: they are fetched, checked and put in place, the text weights are not fetched or read; no: text
-only and one line per start); a wrong file is refused and the folder stays as it was.  The context note counts the image part (the
-rule of yasakani/gpu.py).  Switch off (INK2_IMAGE None and ENGINE_IMAGE False, patched or as a module of its own): the launcher
+offered the extra files once (Enter alone, y or --yes: they are fetched, checked and put in place all or nothing, the text
+weights are not fetched or read; n: text only and one line per start); a wrong file is refused and the folder stays as it was.
+The context note counts the image part (the rule of yasakani/gpu.py), and is said again after the install when it changes.  Switch off (INK2_IMAGE None and ENGINE_IMAGE False, patched or as a module of its own): the launcher
 is that of 0.3.4.
 
 No GPU and no network: the launcher runs with the stand-ins of test_quickstart_web.LauncherTests, and the files come from a folder
@@ -337,7 +337,7 @@ class OfferTests(W.LauncherTests):
         self.assertEqual(len(self.prompts), 1, self.prompts)
         gb = "%.2f" % (sum(len(b) for b in self.files.values()) / 1e9)
         self.assertEqual(self.prompts[0], "Image input for Inkling-2 Mini needs one more file (about %s GB). Download it now? "
-                                          "[y/N]: " % gb)
+                                          "[Y/n]: " % gb)
         self.assertIn("The file for image input was checked and put in place. Images work now.", out)
         for n, b in self.files.items():
             self.assertEqual((m / n).read_bytes(), b, n)                           # the new manifest and NOTICE replace the old ones
@@ -379,22 +379,219 @@ class OfferTests(W.LauncherTests):
         self.assertTrue(QS.ink2_has_image(str(m)))
         self.assertNotIn("ink2_image_no", self.state(h))
 
-    def test_enter_is_no_and_no_keyboard_keeps_nothing(self):
+    def test_enter_is_yes_and_no_keyboard_keeps_nothing(self):
+        """Since 0.3.5 the model with image input is the standard: Enter alone fetches the file.  Without a keyboard nothing is
+        fetched and nothing is kept (asked again at the next start)."""
         h, m = self.ink_home()
+        before = self.snapshot(m)
         self.answers = []                                                          # the end of the input (no keyboard)
         self.assertEqual(self.run_on(h), 0)
         self.assertEqual(len(self.prompts), 1)
         self.assertNotIn("ink2_image_no", self.state(h))
         self.assertIn("For image input: START.cmd --image-file", self.out.getvalue())
-        self.answers = [""]                                                        # Enter alone: the default no
+        self.assertEqual(self.snapshot(m), before)
+        self.assertEqual(self.hashed, [])
+        self.answers = [""]                                                        # Enter alone: the default yes
         self.assertEqual(self.run_on(h), 0)
-        self.assertEqual(self.state(h)["ink2_image_no"], REV)
-        self.assertFalse(QS.ink2_has_image(str(m)))
+        self.assertEqual(len(self.prompts), 2)
+        self.assertIn("The file for image input was checked and put in place. Images work now.", self.out.getvalue())
+        self.assertTrue(QS.ink2_has_image(str(m)))
+        self.assertNotIn("ink2_image_no", self.state(h))
+
+    def test_prompts_say_enter_is_yes(self):
+        for lang, want in (("ja", "Inkling-2 Mini で画像を読むには、ファイルがもう 1 つ要ります（約 0.64 GB）。"
+                                  "いまダウンロードしますか？ [Y/n]: "),
+                           ("en", "Image input for Inkling-2 Mini needs one more file (about 0.64 GB). Download it now? [Y/n]: ")):
+            self.assertEqual(QS.Ui(lang).t("img_ask", g="0.64"), want)
+        self.assertEqual("%.2f" % (sum(s for s, _ in QS.INK2_IMAGE["files"].values()) / 1e9), "0.64")
+
+    def test_explicit_no_is_kept_and_a_newer_upload_asks_again(self):
+        h, m = self.ink_home()
+        for no in ("n", "N", "no"):
+            self.prompts.clear()
+            self.answers = [no]
+            st = self.state(h)
+            st.pop("ink2_image_no", None)
+            (h / "quickstart_state.json").write_text(json.dumps(st), encoding="utf-8")
+            self.assertEqual(self.run_on(h), 0)
+            self.assertEqual(len(self.prompts), 1)
+            self.assertEqual(self.state(h)["ink2_image_no"], REV, no)
+            self.assertFalse(QS.ink2_has_image(str(m)))
         h2_rev = dict(entry(self.files), revision="f" * 40)                        # a newer upload asks once more
         self.prompts.clear()
         self.answers = ["n"]
         self.assertEqual(self.run_on(h, image=h2_rev), 0)
         self.assertEqual(len(self.prompts), 1)
+
+    def test_yes_flag_answers_the_question(self):
+        h, m = self.ink_home()
+        self.assertEqual(self.run_on(h, "--yes"), 0)
+        self.assertEqual(self.prompts, [])                                         # no waiting for input
+        self.assertTrue(QS.ink2_has_image(str(m)))
+        self.assertIn("The file for image input was checked and put in place.", self.out.getvalue())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            QS.parse_args(["--help"])
+        self.assertIn("also the question about the image file of Inkling-2 Mini", " ".join(out.getvalue().split()))
+
+    def test_yes_flag_keeps_an_earlier_no_and_the_page_update_asks_nothing(self):
+        """--yes answers the question; after a kept no there is no question (START.cmd --image-file gets the file).  The run the
+        page's update starts (--web-port, and --yes when the run before had it) says the line only."""
+        h, m = self.ink_home()
+        self.answers = ["n"]
+        self.assertEqual(self.run_on(h), 0)
+        self.prompts.clear()
+        self.assertEqual(self.run_on(h, "--yes"), 0)
+        self.assertEqual(self.prompts, [])
+        self.assertFalse(QS.ink2_has_image(str(m)))
+        st, out = {}, io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertFalse(QS.offer_image_part(QS.Ui("en"), st, lambda: None, "py", {}, str(h), str(m), False, False,
+                                                 image=entry(self.files), environ={}, yes=True,
+                                                 call=lambda *a, **k: self.fail("net")))
+        self.assertEqual(st, {})
+        self.assertIn("For image input: START.cmd --image-file", out.getvalue())
+
+    def test_image_file_flag_says_why_it_does_nothing(self):
+        h, m = self.ink_home()
+        mine = self.tmp / "mine"                                                   # for --model-dir below: without the file
+        shutil.copytree(str(m), str(mine))
+        for n, b in self.files.items():                                            # the file is there already
+            (m / n).write_bytes(b)
+        before = self.snapshot(m)
+        self.assertEqual(self.run_on(h, "--image-file"), 0)
+        self.assertEqual(self.out.getvalue().count(
+            "--image-file: the file for image input is already there. Nothing is downloaded."), 1)
+        self.assertEqual(self.prompts, [])
+        self.assertEqual(self.snapshot(m), before)
+        self.assertEqual(self.run_on(h), 0)                                        # without the flag: nothing said
+        self.assertNotIn("image", self.out.getvalue().lower())
+        mine_before = self.snapshot(mine)
+        self.assertEqual(self.run_on(h, "--model-dir", str(mine), "--skip-checks", "--image-file"), 0)
+        self.assertIn("--image-file: a --model-dir folder is never changed. The file for image input is not downloaded.",
+                      self.out.getvalue())
+        self.assertEqual(self.snapshot(mine), mine_before)
+        self.assertEqual(self.prompts, [])
+        shutil.rmtree(str(h))                                                      # another model
+        hq = self.home(checked=("quality",), downloaded=("quality",), model="quality")
+        self.assertEqual(self.run_on(hq, "--image-file"), 0)
+        self.assertIn("--image-file: the file for image input is for Inkling-2 Mini only. Nothing to do for this model.",
+                      self.out.getvalue())
+        self.assertEqual(self.hashed, [])
+        self.assertEqual(tuple(QS.Ui("ja").t(k) for k in ("img_have", "img_not_dir", "img_not_model")),
+                         ("--image-file: 画像用のファイルはもう入っています。ダウンロードはしません。",
+                          "--image-file: --model-dir のフォルダーは変えません。画像用のファイルはダウンロードしません。",
+                          "--image-file: 画像用のファイルは Inkling-2 Mini だけのものです。このモデルでは何もしません。"))
+
+    def test_note_after_the_install_names_the_context_with_the_image_part(self):
+        """Step 2 counts no image part for a folder without the file; once the file is in place the server loads it, so the note
+        is said again with the context it then chooses (and only when that differs)."""
+        used = 24564 - 19300
+        card = dict(index=0, uuid="GPU-b", name="NVIDIA GeForce RTX 4090", cc=(8, 9), total=24564, used=used, driver="616.92")
+        h, m = self.ink_home()
+        with mock.patch.object(QS, "query_gpus", lambda run=None: [dict(card)]), \
+                mock.patch.dict(os.environ, {"YASAKANI_INK2_FAST": ""}):
+            self.answers = ["y"]
+            self.assertEqual(self.run_on(h), 0)
+        out = self.out.getvalue()
+        done = out.index("The file for image input was checked and put in place.")
+        note = "(12,288 tokens with what is free now; at most 32,768)"
+        self.assertEqual(out.count(note), 1)
+        self.assertGreater(out.index(note), done)                                  # after the install, not in step 2
+        shutil.rmtree(str(h))                                                      # a card with room for both: no note at all
+        h, m = self.ink_home()
+        self.answers = ["y"]
+        self.assertEqual(self.run_on(h), 0)                                        # the RTX 5090 of LauncherTests, 1,200 MiB used
+        self.assertTrue(QS.ink2_has_image(str(m)))
+        self.assertNotIn("tokens with what is free now", self.out.getvalue())
+        shutil.rmtree(str(h))                                                      # the same note before and after: said once
+        h, m = self.ink_home()
+        card2 = dict(card, used=24564 - 16000)
+        self.assertEqual({QS.estimate_ink2_context(16000, fast=True, vision=v) for v in (False, True)}, {0})
+        with mock.patch.object(QS, "query_gpus", lambda run=None: [dict(card2)]), \
+                mock.patch.dict(os.environ, {"YASAKANI_INK2_FAST": ""}):
+            self.answers = ["y"]
+            self.assertEqual(self.run_on(h), 0)
+        self.assertTrue(QS.ink2_has_image(str(m)))
+        self.assertEqual(self.out.getvalue().count("There is not enough free GPU memory now"), 1)
+
+    def install_case(self):
+        """A folder of 0.3.4 and a download folder with the 4 checked files (README.md too, as in the published entry)."""
+        for d in ("home", "dl"):
+            shutil.rmtree(str(self.tmp / d), True)
+        h, m = self.ink_home()
+        (m / "README.md").write_bytes(b"old readme\n")
+        files = dict(self.files, **{"README.md": b"new readme\n"})
+        ddir = self.tmp / "dl"
+        ddir.mkdir()
+        for n, b in files.items():
+            (ddir / n).write_bytes(b)
+        return m, ddir, entry(files), files
+
+    def tree(self, d):
+        return {str(p.relative_to(d)): p.read_bytes() for p in sorted(d.rglob("*")) if p.is_file()}
+
+    def test_install_is_all_or_nothing(self):
+        """Every replace can fail (a file held open by another program: PermissionError on Windows): the folder is then as it was
+        (the old NOTICE, README.md and yasakani.json, no image file, no file moved aside), the new files are back in the download
+        folder and the error goes on (img_fail, text only)."""
+        m, ddir, img, files = self.install_case()
+        before, dl = self.tree(m), self.tree(ddir)
+        seen = []
+        QS.install_image_files(str(ddir), img, str(m), replace=lambda a, b: seen.append(1) or os.replace(a, b))
+        self.assertEqual(len(seen), 7)                                             # the image file, then 3 x (aside, in)
+        for n, b in files.items():
+            self.assertEqual((m / n).read_bytes(), b)
+        self.assertEqual([p.name for p in m.iterdir() if p.name.endswith(QS.IMAGE_OLD_SUFFIX)], [])
+        self.assertFalse((m / ".cache" / "huggingface" / "download" / "yasakani.json.metadata").exists())
+        self.assertTrue(QS.ink2_has_image(str(m)))
+        for fail_at in range(1, len(seen) + 1):
+            m, ddir, img, files = self.install_case()
+            calls = []
+
+            def failing(a, b, fail_at=fail_at):
+                calls.append((os.path.basename(a), os.path.basename(b)))
+                if len(calls) == fail_at:
+                    raise PermissionError(13, "The process cannot access the file because it is being used by another process", a)
+                os.replace(a, b)
+            with self.assertRaises(PermissionError, msg=fail_at):
+                QS.install_image_files(str(ddir), img, str(m), replace=failing)
+            self.assertEqual(self.tree(m), before, (fail_at, calls))
+            self.assertEqual(self.tree(ddir), dl, fail_at)
+            self.assertFalse(QS.ink2_has_image(str(m)))
+
+    def test_install_says_what_could_not_be_put_back(self):
+        m, ddir, img, files = self.install_case()
+        calls = []
+
+        def failing(a, b):
+            calls.append(1)
+            if len(calls) >= 4:                                                    # README.md aside fails, then every way back
+                raise PermissionError(13, "in use", a)
+            os.replace(a, b)
+        with self.assertRaises(OSError) as cm:
+            QS.install_image_files(str(ddir), img, str(m), replace=failing)
+        self.assertIn("; not put back: NOTICE, " + QS.INK2_IMAGE_FILE, str(cm.exception))   # README.md is still in place
+
+    def test_failing_install_in_main_keeps_the_folder_and_asks_again(self):
+        h, m = self.ink_home()
+        before = self.tree(m)
+        real = QS.install_image_files
+        calls = []
+
+        def failing(a, b):
+            calls.append(1)
+            if len(calls) == 3:                                                    # NOTICE was moved aside, the new one cannot go in
+                raise PermissionError(13, "in use", a)
+            os.replace(a, b)
+        self.answers = ["y"]
+        with mock.patch.object(QS, "install_image_files", lambda d, i, md: real(d, i, md, replace=failing)):
+            self.assertEqual(self.run_on(h), 0)
+        self.assertIn("The file for image input could not be downloaded (PermissionError: ", self.out.getvalue())
+        self.assertIn("Going on with text only.", self.out.getvalue())
+        self.assertEqual(self.tree(m), before)
+        self.assertFalse((h / "downloads" / "inkling2_image").exists())
+        self.assertNotIn("ink2_image_no", self.state(h))
 
     def test_wrong_file_is_refused_and_text_only_goes_on(self):
         h, m = self.ink_home()

@@ -94,7 +94,8 @@ class EndpointTests(CheckNowBase):
             h = {k: v for k, v in h.items() if v is not None}
             code, data, _ = W.request(port, "POST", "/webchat/check_update", h)
             self.assertEqual(code, want, headers)
-        self.assertEqual(self.press(port, body=b"x" * (QS.CONTROL_MAX_BODY + 1))[0], 413)
+        h = dict(self.own(port), **{H: self.control.token})
+        self.assertEqual(W.too_long(port, "/webchat/check_update", h, QS.CONTROL_MAX_BODY + 1), 413)   # see W.too_long
         self.assertEqual(W.request(port, "GET", "/webchat/check_update", {"Origin": own, H: tok})[0], 404)
         self.assertEqual((self.gh.requests, self.checks, self.st, self.update.rel), ([], 0, {}, None))
         self.assertEqual(self.control.token, tok)                                   # nothing was used up
