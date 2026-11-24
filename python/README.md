@@ -726,10 +726,10 @@ image into image tokens that take places in the prompt like text tokens. In this
   Image tokens count as prompt tokens (`usage.prompt_tokens`; `usage.prompt_tokens_details.image_tokens` says how many) and must fit the
   context with the text.
 * **GPU memory.** With the defaults (1,024 per image, 8,192 per request) the image tower takes 636,512,256 bytes of weights, 88,821,760 bytes
-  of work memory and 37,748,736 bytes for the image vectors of a request; the free GPU memory dropped by 773,849,088 bytes (about 0.77 GB)
-  on the RTX 5090. With 4,096 / 32,768 it dropped by 1,153,433,600 bytes. Without `--max-ctx` the context of a converted folder is chosen
+  of work memory and 37,748,736 bytes for the image vectors of a request; at 32,768 tokens on the RTX 5090 the GPU memory in use was
+  754,974,720 bytes (about 0.75 GB) higher than with `--vision off` (20,156 against 19,436 MiB). Without `--max-ctx` the context of a converted folder is chosen
   with this memory counted; `--vision off` gives it back.
-* **Time.** Encoding an image on the RTX 5090: 7.2 ms for 192 image tokens, 12.5 ms for 576, 24.6 ms for 1,024, 189 ms for 4,096. An
+* **Time.** Encoding one 1280 × 720 image (576 image tokens) took about 12.7 ms on the RTX 5090 (one run). An
   image seen in the last request is not encoded again (its places in the prompt are kept), and the vectors of recent images stay in
   memory (up to 512 MiB).
 * **Formats.** PNG, JPEG, WebP, GIF, BMP and TIFF (one frame); other files, such as EPS, WMF or PDF, are refused unread.
@@ -743,8 +743,8 @@ image into image tokens that take places in the prompt like text tokens. In this
   the next message. A missing or unreadable file stops before the model loads.
 * **The quickstart page** shows an image button when the model reads images (paste and drop work too): up to 4 images per message, each
   file up to 11 MB (the launcher takes request bodies up to 16 MiB), sent as the original bytes.
-* **Checks.** With the published image tower on the RTX 5090, the first 64 greedy tokens of four image prompts equal those of a float32
-  reference run (the image vectors of the official image code, the original text weights), with the fast path and the drafter each off and on; the answers name the total of a table row (126) and the text in an image. Requests
+* **Checks.** With the published image tower on the RTX 5090, the first 64 greedy tokens of four image prompts equal those of our float32
+  reference (our code of the text model in float32 with the original weights, fed the image vectors of the official image code), with the fast path and the drafter each off and on; the answers name the total of a table row (126) and the text in an image. Requests
   without images give the same tokens and logits as without image input.
 * **Not supported:** video, several frames of one file, images in system or assistant messages, image input on the CPU (host) build of the
   engine library, and images in `selfcheck` and `bench`.

@@ -685,8 +685,8 @@ quickstart of 0.3.5 downloads it with the folder, and for a folder of 0.3.2 to 0
 
 An image of H × W pixels becomes ceil(H / 40) × ceil(W / 40) image tokens, for example 576 for 1280 × 720. Images above 1,024 image
 tokens (`--vision-max-image-tokens`) are shrunk to fit; that shrink is this project's choice, not part of the official method. The
-image tower takes about 0.77 GB more GPU memory with the defaults (measured on the RTX 5090); `--vision off` does not load it, and then
-the model is text only as before. Encoding one 1280 × 720 image took 12.5 ms on the RTX 5090. Requests without images give the same
+image tower takes about 0.75 GB more GPU memory with the defaults (measured on the RTX 5090 at 32,768 tokens); `--vision off` does not load it, and then
+the model is text only as before. Encoding one 1280 × 720 image took about 12.7 ms on the RTX 5090. Requests without images give the same
 output as before. Not supported: video, several frames of one file, images in system or assistant messages, and images from URLs (they are never fetched).
 Details: [python/README.md](../python/README.md#inkling-2-mini-image-input).
 

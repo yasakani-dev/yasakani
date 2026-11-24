@@ -146,7 +146,7 @@ the table above (Visual C++ 19.44, CUDA Toolkit 13.2) by `build.cmd cuda`. Like 
 prompt products; the CUDA runtime is linked statically. It
 also uses the OpenMP library of Visual C++ (`vcomp140.dll`, part of the Visual C++ 2015-2022 x64 runtime). Only the RTX 5090 has been
 tested. At a context of 32,768 tokens the engine allocates about 23 GB of GPU memory for the published weights (24 GB with the drafter)
-and about 19 GB for the weights of `--scheme quality` (19.5 GB with their 4-bit drafter), so cards with less than 24 GB cannot run it. The image tower takes about 0.77 GB more with the defaults (`--vision off` does not load it).
+and about 19 GB for the weights of `--scheme quality` (19.5 GB with their 4-bit drafter), so cards with less than 24 GB cannot run it. The image tower takes about 0.75 GB more with the defaults (`--vision off` does not load it).
 With the fast path (its 8-bit key/value cache) the weights of `--scheme quality` with their drafter took 17.9 GB at 32,768 tokens and
 20.5 GB at 131,072 tokens (the engine's allocations, RTX 5090).
 
@@ -377,7 +377,7 @@ release, and the released Windows `yskn.dll` does not contain it:
   * GPU memory at the default context of 32,768 tokens (the peak of `bench --n 32` minus the 1,640 MiB in use before): 22,105 MiB. With
     `YSKN_INK2_KV=fp32` it was 23,593 MiB (measured with #30 alone, where the default also gave 22,105 MiB).
   * Images: four image prompts (a table, shapes and colours, the text in a picture) gave the same prompt tokens and the same first 64
-    greedy tokens as the reference run of the published model that the Windows check uses. A 4032 × 3024 photo was shrunk to 999 image
+    greedy tokens as our float32 reference that the Windows check uses. A 4032 × 3024 photo was shrunk to 999 image
     tokens, as on Windows. In the second turn of a conversation 144 of the 264 prompt tokens came from the prefix cache.
   * `yasakani serve`: all three kinds of image part were answered. A video part and an image in a system message got 400 with the
     messages of Windows. A copy of the folder with another `native_patch_size` in `config.json` opened with text only and the reason,
