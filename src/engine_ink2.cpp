@@ -385,11 +385,15 @@ int ink2_accept_tokens(int32_t* out_accepted_and_next, const int32_t* draft_toke
     }
 
     // Rejected: draw residual max(0, p(x) - q(x)) using independent residual salt distinct from draft & u_acc.
+    // q is looked up through a dense table: q.prob() searches linearly, and with top_k off both rows hold the whole
+    // vocabulary, which made this loop quadratic in V.  Same values, same order: the draw does not change.
+    std::vector<double> q_dense(size_t(V), 0.0);
+    for (const auto& kv : q.items) q_dense[size_t(kv.first)] = kv.second;
     std::vector<std::pair<int32_t, double>> res;
     res.reserve(p.items.size());
     double rsum = 0.0;
     for (const auto& kv : p.items) {
-      const double r = kv.second - q.prob(kv.first);
+      const double r = kv.second - q_dense[size_t(kv.first)];
       if (r > 0.0) {
         res.emplace_back(kv.first, r);
         rsum += r;

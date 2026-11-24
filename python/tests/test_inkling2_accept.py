@@ -148,6 +148,27 @@ class TestInkling2Accept(unittest.TestCase):
             self.assertEqual(a, 0)
             self.assertIn(out[0], (0, 1))
 
+    def test_sampled_rejection_full_vocabulary_is_fast(self):
+        # top_k off over the model's vocabulary (the chat and serve defaults): the residual draw after a rejection
+        # must not be quadratic in V (it took seconds per rejection with a linear lookup of q).
+        import time
+        K, V = 1, 200058
+        p_logits = [0.0] * V
+        p_logits[1] = 20.0
+        q_logits = [0.0] * V
+        q_logits[0] = 20.0
+        v_buf = (ctypes.c_float * (2 * V))(*(p_logits + p_logits))
+        d_buf = (ctypes.c_float * V)(*q_logits)
+        out = (ctypes.c_int32 * 2)()
+        draft = (ctypes.c_int32 * 1)(0)  # likely under q, unlikely under p: rejected
+        for step in range(3):
+            t0 = time.perf_counter()
+            a = self.accept(out, draft, K, V, v_buf, d_buf, None, 1.0, 0, 1.0, 0.0, 5 + step, step)
+            dt = time.perf_counter() - t0
+            self.assertEqual(a, 0)
+            self.assertEqual(out[0], 1)  # the residual max(0, p - q) is almost all on token 1
+            self.assertLess(dt, 1.5, f"one rejection over V={V} took {dt:.2f} s")
+
 
 if __name__ == "__main__":
     unittest.main()
