@@ -56,7 +56,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 QS_VERSION = "0.3.5"
 ENGINE_ZIP = "yasakani-0.3.5-win-x64.zip"
 ENGINE_URL = "https://github.com/yasakani-dev/yasakani/releases/download/v0.3.5/" + ENGINE_ZIP
-ENGINE_SHA256 = "f02b1792834c3fa00fb80c35dfaa519d7bd42cdd766bc7c4caf2a202cb0547b5"
+ENGINE_SHA256 = "b00f6d82950c825dbc8a43f059c0d6de251e0f3deda775c8318e783cc1d38591"
 # Does the engine zip of ENGINE_SHA256 read images (the image part of Inkling-2 Mini: capability CAP_VISION of its library)?  The
 # zips of 0.3.5 and later do; the 0.3.4 zip did not.  The launcher always installs that zip, so this is what yasakani/inkling2.py
 # library_has_vision() answers for the server it starts; the context note counts the image part only when it is True.  It changes
