@@ -306,6 +306,7 @@ class EngineInk2 {
 
   // DSpark MTP drafter & W=4 Bayes-Optimal Beam Tree
   bool mtp_enabled_ = false;
+  bool mtp_sampled_ = false;  // draft also when sampling (YSKN_INK2_MTP=1); by default only greedy decoding drafts
   bool mtp_q8_ = true;
   bool use_tree_ = false;
   float moe_ratio_ = 12.0f;

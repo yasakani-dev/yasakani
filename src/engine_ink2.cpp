@@ -530,9 +530,13 @@ EngineInk2::EngineInk2(const std::string& path, int max_ctx, int /*flags*/) {
   if (const char* eh = std::getenv("YSKN_INK2_HEAD")) head_mode_ = eh;
   use_q8_head_ = (head_mode_ == "q8_0" || head_mode_ == "Q8_0");
 
+  // The drafter (mtp.safetensors) is loaded when the folder has it.  YSKN_INK2_MTP unset: it drafts for greedy decoding
+  // (temperature 0 or top_k 1) only, since with sampling the drafted tokens are accepted too rarely to pay for the draft;
+  // 0: never loaded; 1: drafts for sampling too.
   bool mtp_want = std::filesystem::exists(dir_ + "/mtp.safetensors");
   if (const char* em = std::getenv("YSKN_INK2_MTP")) {
     if (std::strcmp(em, "0") == 0) mtp_want = false;
+    if (std::strcmp(em, "1") == 0) mtp_sampled_ = true;
   }
   if (mtp_want) mtp_enabled_ = parse_mtp_config(dir_, mtp_cfg_);
   if (const char* mq8 = std::getenv("YSKN_INK2_MTP_Q8")) mtp_q8_ = (std::strcmp(mq8, "0") != 0);
@@ -2780,7 +2784,7 @@ void EngineInk2::generate(const int32_t* prompt, int n_prompt, int n_gen, int eo
     const int room = (max_ctx_ - 2) - pos_;
     if (room < 0) break;
     const bool greedy = (temp_ <= 0.0f || top_k_ == 1);
-    const bool can_mtp = (mtp_enabled_ && rem_gen >= 2 && room >= 1);
+    const bool can_mtp = (mtp_enabled_ && (greedy || mtp_sampled_) && rem_gen >= 2 && room >= 1);
 
     if (!can_mtp) {
       if (pend_m > 0) {
