@@ -259,12 +259,13 @@ def _vision(args):
 def _validate_ink2_vision_args(args) -> None:
     if any(getattr(args, k, None) for k in ("mmproj", "llama_dir", "vision_model")):
         raise YasakaniError("Inkling-2 uses its built-in native vision encoder and does not take --mmproj, --llama-dir or --vision-model")
-    from .vision import DEFAULT_IMAGE_TOKENS, LOCAL_FILES_HINT, error_text, validate_vision_limits
-    try:
-        validate_vision_limits(getattr(args, "vision_max_image_tokens", DEFAULT_IMAGE_TOKENS),
-                               getattr(args, "vision_max_request_image_tokens", None))
-    except ValueError as ex:
-        raise YasakaniError("image input: %s" % error_text(ex)) from ex
+    from . import inkling2 as ink
+    from .vision import LOCAL_FILES_HINT
+    args.ink2_vision_mode = ink.vision_mode_of(getattr(args, "vision", None))
+    args.ink2_vision_limits = ink.vision_limits(getattr(args, "vision_max_image_tokens", None),
+                                                getattr(args, "vision_max_request_image_tokens", None))
+    if getattr(args, "image", None) and args.ink2_vision_mode == "off":
+        raise YasakaniError("--image needs image input, which is off (--vision off or $YASAKANI_INK2_VISION=off)")
     allow = getattr(args, "vision_allow_local_files", None)
     if allow and not Path(os.path.abspath(os.fspath(allow))).is_dir():
         raise YasakaniError("image input: %s: no such folder: %s" % (LOCAL_FILES_HINT, allow))
@@ -298,13 +299,22 @@ def _ink2_tower_problem(pack) -> str:
 
 
 def _inkling2_vision(args, pack, eng):
-    if not pack.has_vision or not eng.supports_ink2_vision:
+    mode = getattr(args, "ink2_vision_mode", "auto")
+    if mode == "off":
         return None
-    problem = _ink2_tower_problem(pack)
+    if not pack.has_vision:
+        problem = "config.json of this folder has no vision_config"
+    elif not eng.supports_ink2_vision:
+        problem = "this engine library has no image encoder (yskn_ink2_encode_rgb)"
+    else:
+        problem = _ink2_tower_problem(pack)
     if problem:
+        if mode == "on" or getattr(args, "image", None):
+            raise YasakaniError("image input cannot be on: %s" % problem)
         _say("note: image input is off: %s" % problem)
         return None
-    from .vision import DEFAULT_IMAGE_TOKENS, Ink2NativeVision, error_text
+    from .vision import Ink2NativeVision, error_text
+    cap, req = getattr(args, "ink2_vision_limits", (None, None))
     allow_local = getattr(args, "vision_allow_local_files", None) or False
     if getattr(args, "image", None):
         allow_local = True
@@ -313,8 +323,8 @@ def _inkling2_vision(args, pack, eng):
             eng,
             cache=getattr(args, "vision_cache", None),
             allow_local_files=allow_local,
-            max_image_tokens=getattr(args, "vision_max_image_tokens", DEFAULT_IMAGE_TOKENS),
-            max_request_image_tokens=getattr(args, "vision_max_request_image_tokens", None),
+            max_image_tokens=cap if cap is not None else 1024,
+            max_request_image_tokens=req,
         )
         vision.check()
     except (ValueError, OSError, RuntimeError, ImportError) as ex:
@@ -348,7 +358,7 @@ def _open_stack(args, *, warm: bool = True, parallel: int = 1, allow_suppress: b
     if yarn2 and args.max_ctx is not None and args.max_ctx > gpus.YARN2_MAX_CTX:
         raise YasakaniError("--yarn2 supports at most %d context tokens (got %d)" % (gpus.YARN2_MAX_CTX, args.max_ctx))
     pack = ModelPack.load(_model_dir(args), hf_inkling2=True)    # a folder of the #28 engine: the library is checked below
-    if getattr(args, "vision", None):
+    if getattr(args, "vision", None) and not pack.is_hf_inkling2:
         raise YasakaniError("--vision is for Inkling-2 Mini model folders; Qwen3.8 image input uses --mmproj, --llama-dir and "
                             "--vision-model")
     if pack.is_hf_inkling2:                      # Qwen3.8 options this engine does not have: refused, not silently ignored
@@ -840,10 +850,18 @@ CHAT_HELP = """commands:  /exit  quit      /reset  forget the conversation      
            /effort low|medium|xhigh  how long the model thinks      /help  this text      Ctrl+C while it writes: stop the answer"""
 
 
+def _published_inkling2(args) -> bool:
+    """The model folder is a published Inkling-2 Mini folder (the Linux engine), read from its config.json only."""
+    from .runtime import is_hf_inkling2_folder
+    d = getattr(args, "model_dir", None) or os.environ.get("YASAKANI_MODEL_DIR")
+    return bool(d) and is_hf_inkling2_folder(d)
+
+
 def _refuse_chat_images(args) -> None:
     """chat --image and the image options are for Inkling-2 Mini folders; a Qwen3.8 chat reads text only."""
     given = [o for o, k in (("--image", "image"), ("--vision", "vision"), ("--vision-max-image-tokens", "vision_max_image_tokens"),
-                            ("--vision-max-request-image-tokens", "vision_max_request_image_tokens"))
+                            ("--vision-max-request-image-tokens", "vision_max_request_image_tokens"),
+                            ("--vision-cache", "vision_cache"))
              if getattr(args, k, None) is not None]
     if given:
         raise YasakaniError("%s: image input in yasakani chat is for Inkling-2 Mini model folders; for Qwen3.8 use yasakani serve "
@@ -858,7 +876,8 @@ def cmd_chat(args) -> int:
     for k, v in (("temperature", 1.0), ("top_p", 0.95), ("top_k", 20)):     # the defaults of Qwen3.8 (generation_config.json)
         if getattr(args, k, None) is None:
             setattr(args, k, v)
-    _refuse_chat_images(args)                    # before the long load
+    if not _published_inkling2(args):           # a Qwen3.8 chat reads text only: its image options are refused before the long load
+        _refuse_chat_images(args)
     pack, eng, fmt, runner = _open_stack(args, warm=True)
     if pack.is_hf_inkling2:                      # an Inkling-2 folder of #28: the model's own defaults (top_k off)
         for k in unset:

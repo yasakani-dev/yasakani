@@ -402,11 +402,12 @@ class OptionTests(unittest.TestCase):
         env = {"YASAKANI_MMPROJ": "D:/nope/mmproj.gguf", "YASAKANI_LLAMA_DIR": "D:/nope", "YASAKANI_VISION_MODEL": "D:/nope/q.gguf"}
         with mock.patch.dict(os.environ, env):
             a = cli.build_parser().parse_args(["chat", "--model-dir", "x"])
-        for key in ("mmproj", "llama_dir", "vision_model", "vision_threads", "vision_cache"):
+        for key in ("mmproj", "llama_dir", "vision_model", "vision_threads"):
             self.assertFalse(hasattr(a, key), key)
+        self.assertIsNone(a.vision_cache)        # --vision-cache is read for a published Inkling-2 Mini folder only
         self.assertIsNone(cli._vision(a))
         cli._refuse_chat_images(a)
-        for extra in (["--image", "a.png"], ["--vision", "on"], ["--vision-max-image-tokens", "256"]):
+        for extra in (["--image", "a.png"], ["--vision", "on"], ["--vision-max-image-tokens", "256"], ["--vision-cache", "c"]):
             with self.subTest(extra=extra):
                 a = cli.build_parser().parse_args(["chat", "--model-dir", "x"] + extra)
                 with mock.patch.object(cli, "_open_stack", side_effect=AssertionError("loaded")), \
