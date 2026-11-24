@@ -58,8 +58,9 @@ START.cmd がすること
     4 番で選べます（START.cmd --model inkling2 でも同じ）。変換済みのコピー（約 15.9 GB）を Hugging Face から取得して、
     ほかのモデルと同じく点検します。24 GB 未満のカードでは選べません。
     0.3.5 から画像も読めます（ブラウザーの画面の「画像」ボタン）。0.3.4 までに取得したフォルダーには、画像用のファイル
-    （約 0.64 GB）を足すかを 1 回だけ聞きます。後から足す時は START.cmd --image-file です。自分で取得や変換をしたフォルダーは、
-    これまで通り START.cmd --model-dir <フォルダー> で開けます。手順はリポジトリの README.ja.md の「Inkling-2 Mini」にあります。
+    （約 0.64 GB）を足すかを 1 回だけ聞きます。Enter だけで取得します。n なら文章だけのままです。後から足す時は
+    START.cmd --image-file です。自分で取得や変換をしたフォルダーは、これまで通り START.cmd --model-dir <フォルダー> で
+    開けます。手順はリポジトリの README.ja.md の「Inkling-2 Mini」にあります。
   - 手で入れる手順と、くわしい説明は https://github.com/yasakani-dev/yasakani にあります。
 
 English
@@ -116,8 +117,9 @@ Good to know
     of the model question since 0.3.2 (or START.cmd --model inkling2). The quickstart downloads our converted copy (about
     15.9 GB) from Hugging Face and checks it like the other models. Cards under 24 GB are not offered it.
     Since 0.3.5 it also reads images (the Image button of the browser page). For a folder downloaded with 0.3.4 or older,
-    START.cmd asks once whether to add the file for images (about 0.64 GB); later: START.cmd --image-file. A folder you
-    downloaded or converted yourself still opens with START.cmd --model-dir <folder>. The steps are in the section
+    START.cmd asks once whether to add the file for images (about 0.64 GB): Enter alone downloads it, n keeps text only;
+    later: START.cmd --image-file. A folder you downloaded or converted yourself still opens with
+    START.cmd --model-dir <folder>. The steps are in the section
     "Inkling-2 Mini" of README.md in the repository.
   - The manual steps and the full documentation are at https://github.com/yasakani-dev/yasakani
 

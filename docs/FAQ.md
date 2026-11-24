@@ -678,7 +678,7 @@ the GPU memory for dropped replies) are in the [README](../README.md#inkling-2-m
 Yes, new in 0.3.5: still images, as the published model reads them. The image tower runs on the GPU inside the engine
 library. A converted folder needs one more file, `inkling_2_mini_vision.yskn` (637 MB, the published image tower unchanged). The
 quickstart of 0.3.5 downloads it with the folder, and for a folder of 0.3.2 to 0.3.4 it asks once whether to add it
-(about 0.64 GB; later `START.cmd --image-file`). With the file, the quickstart page shows an image button, `yasakani serve` takes OpenAI `image_url` parts with `data:image/...;base64` URIs, and
+(about 0.64 GB; Enter alone downloads it, `n` keeps text only; later `START.cmd --image-file`). With the file, the quickstart page shows an image button, `yasakani serve` takes OpenAI `image_url` parts with `data:image/...;base64` URIs, and
 `yasakani chat` takes `--image PATH`.
 
 An image of H × W pixels becomes ceil(H / 40) × ceil(W / 40) image tokens, for example 576 for 1280 × 720. Images above 1,024 image
