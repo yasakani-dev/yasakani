@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 the YASAKANI authors
 # Builds libyskn_inkling2.so (Linux, CUDA backend only) with the flags of build.cmd.
 #   INK2_ARCHS     nvcc -gencode list (default: sm_86, sm_89, sm_120 + PTX)
 #   INK2_NVFP4_TC  1 = also build the RTX 50-only NVFP4 tensor-core prompt products

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2026 the YASAKANI authors
 // Linux build without the CPU emulation (ink2_emu.cpp uses Windows fibers).
 // The "host" backend and ink2_selftest are not available; the "cuda" backend,
 // which runs the model, does not use them.
