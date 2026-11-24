@@ -344,8 +344,8 @@ prompt reading: as in 0.1.7 (setting auto: 24564 MiB card and no --max-ctx; --pr
   [#24](https://github.com/yasakani-dev/yasakani/issues/24); we have not run it on a real 24 GB card, two users have: [below](#prompt-reading-smaller-cards)).
   Since 0.3.5 the same holds for `serve --parallel N` with `--max-ctx`: the 1,800 MiB must stay free beside the N + 1 contexts and the
   N slots ([#34](https://github.com/yasakani-dev/yasakani/pull/34) by @Albrod; 0.3.4 read as 0.1.7 did there). On a 24 GB card that also drives a
-  desktop, two requests of 65,536 tokens leave less than that and 40,960 leave more (our run with the RTX 5090 shown to the
-  package as a 24 GB card with 23,100 MiB free). A card whose memory nvidia-smi
+  desktop, two requests of 65,536 tokens with the quality model leave less than that and 40,960 leave more (our run with the RTX 5090 shown to
+  the package as a 24 GB card with 23,100 MiB free). A card whose memory nvidia-smi
   cannot tell also reads as 0.1.7 did.
 * `new`: the new reading on any card. Under 30,000 MiB this is experimental ([below](#prompt-reading-smaller-cards)).
 * `old`: the reading of 0.1.7 on any card, including its passes of 64 tokens. On the RTX 5090, `--prefill old` gave the tokens, the

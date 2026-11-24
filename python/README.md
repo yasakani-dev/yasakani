@@ -254,12 +254,12 @@ at least 1,800 MiB stay free beside the model, the N + 1 contexts and about 256 
 requests, [below](#several-requests-at-once-experimental)); since 0.3.5 ([#34](https://github.com/yasakani-dev/yasakani/pull/34) by @Albrod; 0.3.4 read as 0.1.7 did there,
 and its line said `no --max-ctx`). The 1,800 MiB are not multiplied by N: the engine keeps one work area for all requests. Its author ran it
 on an RTX 3090 (24,576 MiB, Linux, quality model, `--parallel 2 --max-ctx 65536`): the line said `new`, `selfcheck --parallel 2` gave the
-same result as with 0.3.4, and through the server two prompts of about 8K tokens at once were read at 1,375 and 1,447 tokens/s and one of
+same result as with 0.3.4, and through the server two prompts of about 8K tokens at once were read at 1,375 and 1,447 tokens/s and prompts of
 about 32K at 1,275, against 1,054 to 1,104 and 947 to 957 with 0.3.4 (the author's numbers; we have not run it on such a card).
-With our RTX 5090 shown to the package as a 24,576 MiB card the choice followed the rule: with 24,574 MiB free,
+With our RTX 5090 shown to the package as a 24,576 MiB card (quality model) the choice followed the rule: with 24,574 MiB free,
 `--parallel 2 --max-ctx 65536` took the new reading (2,800 MiB of room); with 23,100 MiB free, as on a card that also drives a
 desktop, it kept the reading of 0.1.7 there (1,326 MiB of room) and took the new one at `--max-ctx 40960` (2,901 MiB);
-`selfcheck --parallel 2` passed with both.
+`selfcheck --parallel 2` passed in both runs with the new reading.
 With `--parallel N` and no `--max-ctx`, on any card, the contexts take the free GPU memory, so the engine may find no room for
 the work area and read prompts without it; this has not been measured.
 

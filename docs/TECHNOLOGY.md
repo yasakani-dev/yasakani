@@ -479,7 +479,8 @@ and `src/specx.cpp`.
   RTX 5090 we measured. Since 0.3.4 it also uses it on a card of 22,000 to 30,000 MiB when the context is given with `--max-ctx` and
   at least 1,800 MiB of memory stays free beside it for the work area (`prefill_choice` in `python/yasakani/gpu.py`; the start-up line names the card, the free memory and the context); this
   follows a user's measurement on an RTX 3090 Ti ([#24](https://github.com/yasakani-dev/yasakani/issues/24)) and has not been run by us
-  on a real 24 GB card. On other smaller cards, and when nvidia-smi does not tell the memory, it passes the settings of 0.1.7 (engine setting
+  on a real 24 GB card. Since 0.3.5 the same rule holds for `serve --parallel N` with `--max-ctx`, where the 1,800 MiB must stay free
+  beside the N + 1 contexts and the N slots ([#34](https://github.com/yasakani-dev/yasakani/pull/34) by @Albrod). On other smaller cards, and when nvidia-smi does not tell the memory, it passes the settings of 0.1.7 (engine setting
   `YSKN_Q35_PF_V2=0`, passes of up to 1,024 rows, 4,096 rows of work area), and prompts are read exactly as in 0.1.7. The context on
   those cards is chosen from the free memory with an overhead measured with the reading of 0.1.7 (`python/yasakani/gpu.py`), and the
   new reading needs more memory, which has not been tried on them. `--prefill old` gives the reading of 0.1.7, with the passes of 64

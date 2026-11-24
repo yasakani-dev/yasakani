@@ -260,7 +260,7 @@ prompt reading: as in 0.1.7 (setting auto: 24564 MiB card and no --max-ctx; --pr
 
 `--prefill`（`chat`・`serve`・`bench`・`selfcheck`）か環境変数 `YASAKANI_PREFILL` で選びます。
 
-* `auto`（既定）：メモリーが 30,000 MiB 以上のカードでは新しい読み方、それ以外は 0.1.7 の読み方です。0.3.4 からは 22,000〜30,000 MiB のカードでも、`--max-ctx` で文脈を決め、その横に作業用の領域の分として 1,800 MiB 以上の空きが残る時は新しい読み方です（[#24](https://github.com/yasakani-dev/yasakani/issues/24) の利用者の方の測定から。24 GB の実機では私たちは動かしていませんが、利用者の方2人が動かしました。[下](#prompt-reading-smaller-cards)）。0.3.5 からは `serve --parallel N` に `--max-ctx` を付けた時も同じで、N + 1 個の文脈と N 件分の領域の横に 1,800 MiB 以上の空きが残る時は新しい読み方です（@Albrod さんの [#34](https://github.com/yasakani-dev/yasakani/pull/34)。0.3.4 ではここで 0.1.7 の読み方でした）。画面も映す 24 GB のカードでは、65,536 トークンの 2 件では空きが足りず、40,960 トークンなら足ります（RTX 5090 を空き 23,100 MiB の 24 GB のカードとしてパッケージに見せた私たちの確認）。nvidia-smi でメモリーが分からないカードも 0.1.7 の読み方です。
+* `auto`（既定）：メモリーが 30,000 MiB 以上のカードでは新しい読み方、それ以外は 0.1.7 の読み方です。0.3.4 からは 22,000〜30,000 MiB のカードでも、`--max-ctx` で文脈を決め、その横に作業用の領域の分として 1,800 MiB 以上の空きが残る時は新しい読み方です（[#24](https://github.com/yasakani-dev/yasakani/issues/24) の利用者の方の測定から。24 GB の実機では私たちは動かしていませんが、利用者の方2人が動かしました。[下](#prompt-reading-smaller-cards)）。0.3.5 からは `serve --parallel N` に `--max-ctx` を付けた時も同じで、N + 1 個の文脈と N 件分の領域の横に 1,800 MiB 以上の空きが残る時は新しい読み方です（@Albrod さんの [#34](https://github.com/yasakani-dev/yasakani/pull/34)。0.3.4 ではここで 0.1.7 の読み方でした）。画面も映す 24 GB のカードでは、品質モデルの 65,536 トークンの 2 件では空きが足りず、40,960 トークンなら足ります（RTX 5090 を空き 23,100 MiB の 24 GB のカードとしてパッケージに見せた私たちの確認）。nvidia-smi でメモリーが分からないカードも 0.1.7 の読み方です。
 * `new`：どのカードでも新しい読み方です。30,000 MiB 未満では試験的な設定です（[下](#prompt-reading-smaller-cards)）。
 * `old`：どのカードでも 0.1.7 の読み方です。64 トークンの計算も 0.1.7 と同じです。RTX 5090 で `--prefill old` にすると、トークン・状態・保存した状態の数・GPU メモリーが 0.1.7 と同じでした。
 
