@@ -1255,7 +1255,12 @@ unsigned f2c_next(unsigned long long& s) {
 float f2c_uni(unsigned long long& s) { return (float)((double)(f2c_next(s) & 0xFFFFFF) / 16777216.0 * 2.0 - 1.0); }
 }  // namespace
 
-extern "C" __declspec(dllexport) int ink2_f2_attn_check(const int* cfg, double* out) {
+#if defined(_WIN32)
+#define INK2_F2_EXPORT extern "C" __declspec(dllexport)
+#else
+#define INK2_F2_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
+INK2_F2_EXPORT int ink2_f2_attn_check(const int* cfg, double* out) {
   const int pos0 = cfg[0], R = cfg[1], nh = cfg[2], nkv = cfg[3], ring = cfg[4], window = cfg[5], drel = cfg[6];
   const int rext = cfg[7], sa = cfg[8], sw = cfg[9], seed = cfg[10], reps = cfg[11], pf = cfg[12], qmul = cfg[13];
   const int ng = cfg[15];

@@ -30,10 +30,14 @@ enum {
   INK2_CAP_VISION = 32          // the image tower and image positions (ink2_vision_api.h)
 };
 
+#if defined(_WIN32)
 #ifdef INK2_BUILD
 #define INK2_API extern "C" __declspec(dllexport)
 #else
 #define INK2_API extern "C" __declspec(dllimport)
+#endif
+#else
+#define INK2_API extern "C" __attribute__((visibility("default")))
 #endif
 
 typedef struct Ink2Config {
