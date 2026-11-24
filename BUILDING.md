@@ -137,7 +137,7 @@ What is in `src/inkling2/`:
   `ink2_feed_many_img`; `ink2_capabilities()` bit 32). `build.cmd cuda` builds it in; the host build has no image tower.
 * `build.cmd`: the build. There is no CMake file for this library.
 
-The released `yskn_inkling2.dll` of 0.3.5 has SHA-256 `{{SHA_INK2_DLL}}` (about 25 MB): the
+The released `yskn_inkling2.dll` of 0.3.5 has SHA-256 `84916af8672a428f5aa512c54161ee7594a19b6d0cf719623fe6c7f2f18d9771` (25,181,184 bytes): the
 engine with the drafter (also from a converted drafter file, `mtp_d4.yskn`), with the products for packed dense matrices, with the
 fast path and, new in 0.3.5, with the image tower, built from `src/inkling2/` of this release. 0.3.3 and 0.3.4 shipped the file
 `282ddcc470e570207dae1362c188be57e6170518e03283475790a28c46a28c7f` (24,137,728 bytes), without the image tower. It was built with the tools of
