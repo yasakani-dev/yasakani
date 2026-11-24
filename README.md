@@ -6,7 +6,7 @@ English · [日本語](README.ja.md)
 
 YASAKANI is an engine that runs the Qwen3.8-27B language model on a Windows PC with one NVIDIA RTX GPU. The developer has tested it on the RTX 5090 only. After setup you can chat and edit code offline. You can also connect your own development tools through its OpenAI-compatible API. Since 0.3.1 it also runs Inkling-2 Mini by Thinking Machines Lab, as an experimental, text-only model. Since 0.3.2 you can choose it in the start screen ([details](#inkling-2-mini)). 0.3.3 makes it faster on RTX 50 cards, most of all with long inputs (measured on the RTX 5090; [details](#inkling-2-mini-033)).
 
-**[Download for Windows](https://github.com/yasakani-dev/yasakani/releases/download/v0.3.4/yasakani-quickstart-0.3.4.zip)** · [Compare eight engines](docs/MEASUREMENTS.md#thinking-off-the-table-of-the-readme-average-without-repetition-loops-etc-toks) · [Watch an uncut code edit](https://github.com/yasakani-dev/yasakani/releases/download/v0.3.1/fast_live_uncut.mp4)
+**[Download for Windows](https://github.com/yasakani-dev/yasakani/releases/download/v0.3.5/yasakani-quickstart-0.3.5.zip)** · [Compare eight engines](docs/MEASUREMENTS.md#thinking-off-the-table-of-the-readme-average-without-repetition-loops-etc-toks) · [Watch an uncut code edit](https://github.com/yasakani-dev/yasakani/releases/download/v0.3.1/fast_live_uncut.mp4)
 
 <a name="two-models"></a>
 <a name="what-you-need"></a>
@@ -20,7 +20,7 @@ JSONL edit is our own task. The model gets 60 JSONL lines, changes one record an
 
 For everyday use, choose the **quality model**. Its predictions are close to the original model. Choose the **fastest model** if you want a smaller file and higher speed in most tasks. The **max-quality model** (15.72 GB) is the closest to the original model of the three. It needs a card with 24 GB or more and generates at about 0.8 to 0.9 times the speed of the quality model ([details](#max-quality-model)). [Quality model download](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-quality) · [Fastest model download](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-speed) · [Max-quality model download](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-max-quality)
 
-A fourth choice in the start screen, since 0.3.2: **Inkling-2 Mini**, another model (experimental, text only, one request at a time, a card with 24 GB or more; [details](#inkling-2-mini)).
+A fourth choice in the start screen, since 0.3.2: **Inkling-2 Mini**, another model (experimental, text and, since 0.3.5, still images, one request at a time, a card with 24 GB or more; [details](#inkling-2-mini)).
 
 | Your GPU | Model choice | Windows testing |
 |---|---|---|
@@ -42,7 +42,7 @@ Contributors have tested a Linux build from source. AMD and Mac are future targe
 
 You need 64-bit Windows 11, Python 3.10 or later, NVIDIA driver 580 or later, the Visual C++ 2015–2022 x64 runtime, and 20 GB of free disk space.
 
-1. Extract the v0.3.4 Windows quickstart ZIP to a path with only English letters and digits, such as `C:\yasakani`. [Release files and SHA-256 checksums](https://github.com/yasakani-dev/yasakani/releases/tag/v0.3.4)
+1. Extract the v0.3.5 Windows quickstart ZIP to a path with only English letters and digits, such as `C:\yasakani`. [Release files and SHA-256 checksums](https://github.com/yasakani-dev/yasakani/releases/tag/v0.3.5)
 2. Open **`START.cmd`** and choose a model (1 to 3: the Qwen3.8-27B models; 4: Inkling-2 Mini, experimental). On the first run it downloads the engine and model files, checks them, and runs a GPU self-check.
 3. A menu comes last. Press Enter and the page opens in your browser. It shows the model loading; when that is done, type your first prompt. The page has four tabs: chat, a speed test (a rough figure measured in the browser; `yasakani bench` is the standard measurement), the API address for other apps, and model and status (GPU memory, and a switch between models when two or more are downloaded). It also has a quit button: it stops the model, and the black window then closes by itself.
 4. From the second run on (once the model has passed the checks), `START.cmd` opens this page directly, with no model question and no menu. For the menu (measure the speed, compare look-ahead on and off, chat in the terminal, start the server), open a command prompt in that folder and type `START.cmd --menu`.
@@ -51,7 +51,7 @@ To use YASAKANI from another app, set the app's API address to the one on the AP
 
 In terminal chat, type `/effort medium` to make the model think for a shorter time, or `/think off` to turn thinking off. [Manual installation](python/README.md#install) · [API guide](python/README.md#the-server)
 
-**Updates.** Since 0.1.7, the quickstart can update itself (from v0.1.6 or older, download the 0.3.4 quickstart ZIP by hand once). At most once a day, before it shows the menu or before it opens the browser page directly, it asks GitHub whether there is a newer release and says so first. If there is one, it shows the old and new version. Before the menu it then asks, and it changes nothing without a yes. The browser page shows the same offer with an **Update** button. When the page opens directly, nothing is asked in the black window, and nothing changes until you press that button. You can also choose “check for a new version” in the menu, run `START.cmd --action update`, or type `yasakani update`. The automatic check runs at most once a day, so right after a release the button can be missing if you started the quickstart within the day before: since 0.3.4 the Model tab of the page has **Check for updates**, which asks at once when you press it; on 0.3.3 or older, run `START.cmd --action update` in the quickstart folder. The models stay; the engine and the Python package are installed again. `START.cmd --action rollback` goes back to the version before. To turn the daily check off: `START.cmd --no-update-check`. [What the check sends, and how the files are checked](docs/FAQ.md#how-does-the-update-work)
+**Updates.** Since 0.1.7, the quickstart can update itself (from v0.1.6 or older, download the 0.3.5 quickstart ZIP by hand once). At most once a day, before it shows the menu or before it opens the browser page directly, it asks GitHub whether there is a newer release and says so first. If there is one, it shows the old and new version. Before the menu it then asks, and it changes nothing without a yes. The browser page shows the same offer with an **Update** button. When the page opens directly, nothing is asked in the black window, and nothing changes until you press that button. You can also choose “check for a new version” in the menu, run `START.cmd --action update`, or type `yasakani update`. The automatic check runs at most once a day, so right after a release the button can be missing if you started the quickstart within the day before: since 0.3.4 the Model tab of the page has **Check for updates**, which asks at once when you press it; on 0.3.3 or older, run `START.cmd --action update` in the quickstart folder. The models stay; the engine and the Python package are installed again. `START.cmd --action rollback` goes back to the version before. To turn the daily check off: `START.cmd --no-update-check`. [What the check sends, and how the files are checked](docs/FAQ.md#how-does-the-update-work)
 
 <a name="speed"></a>
 
@@ -195,9 +195,9 @@ Same PC, compared with llama.cpp b12600: the GGUF `Inkling-2-Mini-IQ4_NL.gguf` o
 
 What you need: 64-bit Windows 11, an NVIDIA RTX card with 24 GB or more (cards under 24 GB cannot hold the model), the YASAKANI quickstart or package of 0.3.1 or newer (0.3.2 or newer to choose it in the start screen), and about 20 GB of free disk for the download. The converter links the weights file into the new folder when both are on the same drive, so the folder takes almost no more space there (on another drive the converter copies the file). The steps below are for Windows. On Linux the model runs on another engine, contributed in [#28](https://github.com/yasakani-dev/yasakani/pull/28): you build it from source with `-DYSKN_WITH_INK2=ON`, and it reads the downloaded folder without conversion ([BUILDING.md](BUILDING.md#linux-inkling-2)).
 
-**The quickest way: the start screen (new in 0.3.2).** Choose 4 at the model question of `START.cmd` (or start `START.cmd --model inkling2`). The quickstart downloads our converted copy from Hugging Face (about 15.3 GB, no conversion), checks it with `info`, `verify` and `selfcheck` like the other models. Then the menu comes: press Enter and the page opens in your browser. The model question comes on the first run and with `START.cmd --menu`; cards under 24 GB are not offered the model. The model switch of the page lists it once it is downloaded. The ways below stay for a folder of your own.
+**The quickest way: the start screen (new in 0.3.2).** Choose 4 at the model question of `START.cmd` (or start `START.cmd --model inkling2`). The quickstart downloads our converted copy from Hugging Face (about 15.9 GB with the image file of 0.3.5, no conversion; a folder of 0.3.2 to 0.3.4 is asked once whether to add that file), checks it with `info`, `verify` and `selfcheck` like the other models. Then the menu comes: press Enter and the page opens in your browser. The model question comes on the first run and with `START.cmd --menu`; cards under 24 GB are not offered the model. The model switch of the page lists it once it is downloaded. The ways below stay for a folder of your own.
 
-**By hand: our converted copy.** We publish the `--scheme quality` conversion described below on Hugging Face: [yasakani-dev/Inkling-2-Mini-YASAKANI-quality](https://huggingface.co/yasakani-dev/Inkling-2-Mini-YASAKANI-quality) (15.3 GB, with the 4-bit drafter). Download it and use the folder as it is, without converting. In a quickstart folder, run `yasakani_env.cmd` first; it puts `hf`, `python` and `yasakani` on the path.
+**By hand: our converted copy.** We publish the `--scheme quality` conversion described below on Hugging Face: [yasakani-dev/Inkling-2-Mini-YASAKANI-quality](https://huggingface.co/yasakani-dev/Inkling-2-Mini-YASAKANI-quality) (15.9 GB, with the 4-bit drafter and, since 0.3.5, the image file). Download it and use the folder as it is, without converting. In a quickstart folder, run `yasakani_env.cmd` first; it puts `hf`, `python` and `yasakani` on the path.
 
 ```bat
 hf download yasakani-dev/Inkling-2-Mini-YASAKANI-quality --local-dir D:\models\inkling2-mini-quality
@@ -217,7 +217,7 @@ In a quickstart folder, run `yasakani_env.cmd` first in the command prompt; it p
 cd /d C:\yasakani
 yasakani_env.cmd
 hf download thinkingmachines/Inkling-2-Mini --revision ed40e7da625f594fc9c4990f5f66be24873c22d7 --local-dir D:\models\Inkling-2-Mini-hf
-python C:\src\yasakani-0.3.4\tools\convert\inkling2_convert.py --source D:\models\Inkling-2-Mini-hf --out D:\models\inkling2-mini
+python C:\src\yasakani-0.3.5\tools\convert\inkling2_convert.py --source D:\models\Inkling-2-Mini-hf --out D:\models\inkling2-mini
 yasakani verify --model-dir D:\models\inkling2-mini
 yasakani selfcheck --model-dir D:\models\inkling2-mini
 yasakani chat --model-dir D:\models\inkling2-mini
@@ -256,7 +256,7 @@ The drafter helps most where the next tokens are easy to guess (code, JSON, math
 **Smaller converted weights (`--scheme quality`).** The converter can also write the weights again in fewer bits: with `--scheme quality` it stores most dense matrices in 4 or 8 bits and re-packs the 8-bit experts of layers 20 to 23 to 4 bits, in one `.yskn` file of 15.05 GB (the published file has 19.5 GB). Against the published model on 43 text windows (14,024 positions: the model's own thinking and answers, English and Japanese prose, code) the KL divergence was 0.0110, and the most likely next token was the same at 96.0 % of the positions. The converter also writes the drafter again in 4 bits, as `mtp_d4.yskn` next to the weights (209.7 MB instead of 635.8 MB; `--drafter-scheme published` keeps the published file; [FORMAT](docs/FORMAT.md) section 10.6). The engine multiplies all these matrices as they are stored, so the folder is faster and needs less GPU memory. Measured in one job on the RTX 5090 (`yasakani bench`, greedy, thinking off, 256 tokens, median of 3 runs): 203.8 tokens/s against 161.2 for the published weights with `--draft off`, and 225.9 against 212.5 tokens/s with the default `--draft auto`. At the default context of 32,768 tokens the engine allocated 18.9 instead of 22.7 GB (19.5 instead of 23.8 GB with the drafter: the 4-bit drafter takes 0.56 GB, the published one 1.10 GB). Prompt reading through the package was a little slower: 959 against 1,063 tokens/s for 1,079 tokens and 878 against 961 tokens/s for 4,900 tokens (median of 3 runs each). The model was ready 2.6 s after the start without the drafter and 3.0 s with it. The conversion takes about 4 minutes on the CPU; the new folder needs about 15 GB of disk.
 
 ```bat
-python C:\src\yasakani-0.3.4\tools\convert\inkling2_convert.py --source D:\models\Inkling-2-Mini-hf --out D:\models\inkling2-mini-quality --scheme quality
+python C:\src\yasakani-0.3.5\tools\convert\inkling2_convert.py --source D:\models\Inkling-2-Mini-hf --out D:\models\inkling2-mini-quality --scheme quality
 yasakani verify --model-dir D:\models\inkling2-mini-quality
 yasakani selfcheck --model-dir D:\models\inkling2-mini-quality
 yasakani chat --model-dir D:\models\inkling2-mini-quality
@@ -269,12 +269,12 @@ START.cmd --model-dir D:\models\inkling2-mini-quality
 
 **Limits.** Experimental in 0.3.1.
 
-* Text only (the original model also reads images).
+* Still images since 0.3.5 ([image input](python/README.md#inkling-2-mini-image-input)); no video.
 * One request at a time: no `--parallel`.
 * Tool calls in `yasakani serve` only, not in terminal chat. A conversation with tools stops at the context of the server (32,768 tokens by default): a request that does not fit gets an error (HTTP 400), and a new conversation is needed. With thinking on, a long thinking can use up `max_tokens` before the call is written; `thinking_budget` (a request field, or the environment variable `YASAKANI_THINKING_BUDGET`) cuts the thinking after that many tokens.
 * Most clients do not send the thinking of the last reply back, so the next request drops that reply. The engine can drop up to 512 positions without reading the conversation again (`YASAKANI_INK2_ROLLBACK`; 0 gives the engine's default of 64). This takes more GPU memory than 64 positions: with the `--scheme quality` folder and context 32,768 the engine allocated 0.6 GB more, and the GPU had 0.8 GB more in use (the allocations above include it).
 * The drafter speeds up text that is easy to guess more than free prose. `--draft auto` stops using it where it does not pay, but its trial passes still cost a little there (up to 2.1 % on Japanese prose with the `--scheme quality` weights in our runs); `--draft off` avoids that.
-* `bench --edit` and image input are not available for this model.
+* `bench --edit` is not available for this model.
 * We ran the fast path on one RTX 5090 only; on RTX 30 cards there is the user report of an RTX 3090 Ti (above), and no RTX 40 card has been reported. Its output is close to, but not the same as, that of the standard path (above). `selfcheck` compares the standard path unless `--fast` is given.
 * Windows: tested on one RTX 5090 under Windows 11 only; not on other GPUs. A user ran 0.3.1 on an RTX 3090 (24 GB, Windows 11): `selfcheck` passed, `bench` gave 105.6 tok/s, and 22.52 GB of GPU memory were in use at a 32K context, the display included ([#29](https://github.com/yasakani-dev/yasakani/issues/29); the reporter's numbers). Linux: only the engine of [#28](https://github.com/yasakani-dev/yasakani/pull/28), built from source; we ran it on one RTX 5090 under WSL2, its author on an RTX 5090 and a DGX Spark ([BUILDING.md](BUILDING.md#linux-inkling-2)).
 * Thinking off is our own setting ([FAQ](docs/FAQ.md#inkling-2-mini)).

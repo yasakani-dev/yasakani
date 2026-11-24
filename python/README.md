@@ -6,7 +6,7 @@ This package is the part you talk to: a local **OpenAI-compatible server**, a **
 whether your files and your installation are the reference ones. The engine itself is the DLL; the package loads it, applies the
 default settings the published numbers were measured with, handles the chat template and the tokenizer, and streams the answer.
 
-Status: version `0.3.4`. Text, and optionally still images (new in 0.1.2; on Linux only with llama.cpp built from source, see [Image input](#image-input-optional)). One request is generated at a time, unless the server is started with `--parallel N` (experimental, see [Several requests at once](#several-requests-at-once-experimental)). Tool calling is new in 0.1.1. Since 0.1.3 the engine also runs on other RTX 30, 40 and 50 series cards, without tuning or tests (see [GPUs other than the RTX 5090](#gpus-other-than-the-rtx-5090)). 0.2.0 reads prompts faster on cards with 30,000 MiB or more and adds the edit copy, which is on by default (see [Prompt reading and edit copy](#prompt-reading-and-edit-copy)). 0.3.1 adds Inkling-2 Mini as an experimental, text-only model on a second engine library (see [Inkling-2 Mini](#inkling-2-mini-experimental)); 0.3.2 makes it the fourth model of the quickstart and chooses its context from the free GPU memory.
+Status: version `0.3.5`. Text, and optionally still images (new in 0.1.2; on Linux only with llama.cpp built from source, see [Image input](#image-input-optional)). One request is generated at a time, unless the server is started with `--parallel N` (experimental, see [Several requests at once](#several-requests-at-once-experimental)). Tool calling is new in 0.1.1. Since 0.1.3 the engine also runs on other RTX 30, 40 and 50 series cards, without tuning or tests (see [GPUs other than the RTX 5090](#gpus-other-than-the-rtx-5090)). 0.2.0 reads prompts faster on cards with 30,000 MiB or more and adds the edit copy, which is on by default (see [Prompt reading and edit copy](#prompt-reading-and-edit-copy)). 0.3.1 adds Inkling-2 Mini as an experimental, text-only model on a second engine library (see [Inkling-2 Mini](#inkling-2-mini-experimental)); 0.3.2 makes it the fourth model of the quickstart and chooses its context from the free GPU memory.
 
 ## What you need
 
@@ -622,9 +622,9 @@ the command passed 12 of 12 times, but if a case fails, run the command once mor
 
 New in 0.3.1. The package also runs [Inkling-2 Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) by Thinking Machines Lab
 (Apache-2.0, with the [Model Acceptable Use Policy](https://thinkingmachines.ai/model-acceptable-use-policy/) named on its model card).
-Text, and since {{VISION_VERSION}} still images ([Image input](#inkling-2-mini-image-input)); one request at a time, tested on the RTX 5090 under Windows 11 only. It runs on a second engine library, not on `yskn.dll`;
+Text, and since 0.3.5 still images ([Image input](#inkling-2-mini-image-input)); one request at a time, tested on the RTX 5090 under Windows 11 only. It runs on a second engine library, not on `yskn.dll`;
 the Qwen3.8-27B commands, settings and numbers in the rest of this document do not change. Since 0.3.2 the quickstart offers our converted
-folder as the fourth model of its model question (`START.cmd --model inkling2`; about 15.3 GB from Hugging Face, no conversion); the steps
+folder as the fourth model of its model question (`START.cmd --model inkling2`; about 15.9 GB from Hugging Face with the image file of 0.3.5, no conversion); the steps
 below stay for a folder of your own.
 
 **Linux: the engine of [#28](https://github.com/yasakani-dev/yasakani/pull/28).** A folder of the published model as downloaded, with no
@@ -697,7 +697,7 @@ above 1, `bench --edit`, the image options of the Qwen models (`--mmproj`, `--ll
 
 <a name="inkling-2-mini-image-input"></a>
 
-**Image input** (new in {{VISION_VERSION}}). Inkling-2 Mini reads still images, as the published model does: its image tower turns an
+**Image input** (new in 0.3.5). Inkling-2 Mini reads still images, as the published model does: its image tower turns an
 image into image tokens that take places in the prompt like text tokens. In this package the image tower runs on the GPU inside
 `yskn_inkling2.dll`; the Qwen3.8 image input above (llama.cpp on the CPU) is not used.
 

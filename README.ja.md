@@ -6,7 +6,7 @@
 
 YASAKANI は Windows PC の RTX 1枚で Qwen3.8-27B を動かす推論エンジンです。開発者が動作を確認したのは RTX 5090 だけです。初回のセットアップのあとは、自分の PC だけでチャットやコード編集ができます。いつもの開発ツールからも OpenAI 互換 API でつなげます。0.3.1 からは、Thinking Machines Lab の Inkling-2 Mini も試験的に動かせます（文章だけ）。0.3.2 からは起動画面で選べます（[詳細](#inkling-2-mini)）。0.3.3 では RTX 50 のカードで速くなり、特に長い入力で差が出ます（RTX 5090 で測定。[詳細](#inkling-2-mini-033)）。
 
-**[Windows 版をダウンロード](https://github.com/yasakani-dev/yasakani/releases/download/v0.3.4/yasakani-quickstart-0.3.4.zip)** · [8エンジンとの速度比較](docs/MEASUREMENTS.ja.md#思考なしreadme-と同じ表反復等を除いた平均toks) · [コード編集の実演動画](https://github.com/yasakani-dev/yasakani/releases/download/v0.3.1/fast_live_uncut.mp4)
+**[Windows 版をダウンロード](https://github.com/yasakani-dev/yasakani/releases/download/v0.3.5/yasakani-quickstart-0.3.5.zip)** · [8エンジンとの速度比較](docs/MEASUREMENTS.ja.md#思考なしreadme-と同じ表反復等を除いた平均toks) · [コード編集の実演動画](https://github.com/yasakani-dev/yasakani/releases/download/v0.3.1/fast_live_uncut.mp4)
 
 <a name="2-つのモデル"></a>
 <a name="必要なもの"></a>
@@ -20,7 +20,7 @@ JSONL 編集は自作の課題です。60行の JSONL のうち1行だけ直し�
 
 普段使いには**品質モデル**をおすすめします。予測が元のモデルに近いモデルです。ファイルの小ささと、多くの課題での速さを優先するなら**最速モデル**を選んでください。**最高品質モデル**（15.72 GB）は、3つの中で元のモデルに最も近いモデルです。24 GB 以上のカードが要り、生成は品質モデルの約 0.8〜0.9 倍の速さです（[詳しく](#max-quality-model)）。[品質モデルの配布ページ](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-quality) · [最速モデルの配布ページ](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-speed) · [最高品質モデルの配布ページ](https://huggingface.co/yasakani-dev/Qwen3.8-27B-YASAKANI-max-quality)
 
-0.3.2 から、起動画面の 4 つ目の選択肢に別のモデルの **Inkling-2 Mini** があります（試験的・文章だけ・依頼は1件ずつ・24 GB 以上のカード。[詳細](#inkling-2-mini)）。
+0.3.2 から、起動画面の 4 つ目の選択肢に別のモデルの **Inkling-2 Mini** があります（試験的・文章と、0.3.5 からは静止画・依頼は1件ずつ・24 GB 以上のカード。[詳細](#inkling-2-mini)）。
 
 | お使いの GPU | 選べるモデル | Windows での動作確認 |
 |---|---|---|
@@ -42,7 +42,7 @@ Linux には寄稿者が検証したソースビルド手順があります。AM
 
 Windows 11（64 ビット）、Python 3.10 以上、NVIDIA ドライバー 580 以上、Visual C++ 2015–2022 ランタイム（x64）、ディスクの空き 20 GB を用意してください。
 
-1. Windows 起動用 ZIP（v0.3.4）を `C:\yasakani` などの英数字のフォルダーに展開します。[配布ファイルと SHA-256](https://github.com/yasakani-dev/yasakani/releases/tag/v0.3.4)
+1. Windows 起動用 ZIP（v0.3.5）を `C:\yasakani` などの英数字のフォルダーに展開します。[配布ファイルと SHA-256](https://github.com/yasakani-dev/yasakani/releases/tag/v0.3.5)
 2. **`START.cmd`** を開いてモデルを選びます（1〜3 は Qwen3.8-27B のモデル、4 は試験的な Inkling-2 Mini）。初回はエンジンとモデル一式を取得し、ファイルと GPU の自己点検まで行います。
 3. 最後にメニューが出ます。Enter を押すとブラウザーの画面が開き、モデルの読み込みの経過が出ます。読み込みが終わったら質問を入力します。画面のタブは「チャット」「スピード測定」「API 接続」「モデル・状態」の 4 つです。スピード測定はブラウザーの中で測る目安で、標準の測定は `yasakani bench` です。「モデル・状態」には GPU メモリーの使用量が出ます。ダウンロード済みのモデルが 2 つ以上ある時は、ここで切り替えられます。終了ボタンを押すとモデルが止まり、黒い画面も自動で閉じます。
 4. 2 回目から（モデルが点検を通ったあと）は、`START.cmd` を開くとこの画面が直接開きます。モデルの質問とメニューは出ません。メニュー（速さを測る・先読みあり・なしを比べる・ターミナルのチャット・サーバーの起動）を出す時は、そのフォルダーのコマンドプロンプトで `START.cmd --menu` と打ちます。
@@ -51,7 +51,7 @@ Windows 11（64 ビット）、Python 3.10 以上、NVIDIA ドライバー 580 �
 
 ターミナルでは `/effort medium` と入力すると思考が短くなり、`/think off` で思考がオフになります。[手動インストール](python/README.md#install) · [API の使い方](python/README.md#the-server)
 
-**更新。** 0.1.7 から、起動ファイルが自分で更新できます（v0.1.6 以前からは、0.3.4 の起動用 ZIP を一度だけ手で取得してください）。新しい版があるかを GitHub に問い合わせるのは、1 日に 1 回までです（問い合わせる前にそう表示します）。問い合わせるのは、メニューを出す前か、ブラウザーの画面を直接開く前です。新しい版があれば今の版と新しい版を示します。メニューの前では、変える前に必ず聞きます。ブラウザーの画面にも同じ案内と **更新する** のボタンが出ます。画面を直接開く時は黒い画面では聞かず、このボタンを押すまで何も変えません。メニューの「新しい版を確認する」、`START.cmd --action update`、`yasakani update` でも更新できます。自動の確認は 1 日に 1 回までです。そのため、新しい版が出る前の 1 日のうちに起動していた場合は、出た直後にこのボタンが出ません。0.3.4 からは、画面の「モデル・状態」に **更新を確認** があり、押すとその場で問い合わせます。0.3.3 以前では、起動ファイルのフォルダーで `START.cmd --action update` を実行してください。モデルはそのまま使い、エンジンと Python のパッケージは入れ直します。前の版に戻す時は `START.cmd --action rollback` です。毎日の確認を止める時は `START.cmd --no-update-check` です。[何を送るか、ファイルをどう確認するか](docs/FAQ.ja.md#更新はどう動く)
+**更新。** 0.1.7 から、起動ファイルが自分で更新できます（v0.1.6 以前からは、0.3.5 の起動用 ZIP を一度だけ手で取得してください）。新しい版があるかを GitHub に問い合わせるのは、1 日に 1 回までです（問い合わせる前にそう表示します）。問い合わせるのは、メニューを出す前か、ブラウザーの画面を直接開く前です。新しい版があれば今の版と新しい版を示します。メニューの前では、変える前に必ず聞きます。ブラウザーの画面にも同じ案内と **更新する** のボタンが出ます。画面を直接開く時は黒い画面では聞かず、このボタンを押すまで何も変えません。メニューの「新しい版を確認する」、`START.cmd --action update`、`yasakani update` でも更新できます。自動の確認は 1 日に 1 回までです。そのため、新しい版が出る前の 1 日のうちに起動していた場合は、出た直後にこのボタンが出ません。0.3.4 からは、画面の「モデル・状態」に **更新を確認** があり、押すとその場で問い合わせます。0.3.3 以前では、起動ファイルのフォルダーで `START.cmd --action update` を実行してください。モデルはそのまま使い、エンジンと Python のパッケージは入れ直します。前の版に戻す時は `START.cmd --action rollback` です。毎日の確認を止める時は `START.cmd --no-update-check` です。[何を送るか、ファイルをどう確認するか](docs/FAQ.ja.md#更新はどう動く)
 
 <a name="速さ"></a>
 
@@ -195,9 +195,9 @@ Inkling-2 Mini は、Thinking Machines Lab が 2026 年 11 月 20 日に公開�
 
 必要な物は次の 3 つです：Windows 11（64 ビット）・24 GB 以上の NVIDIA RTX のカード・YASAKANI 0.3.1 以降の起動ファイルかパッケージ（起動画面で選ぶには 0.3.2 以降）。24 GB 未満のカードにはモデルが入りません。ダウンロードにはディスクの空きが約 20 GB 要ります。変換のプログラムは、同じドライブなら重みのファイルを新しいフォルダーにリンクするので、空きはほとんど減りません（別のドライブではコピーします）。下の手順は Windows の物です。Linux では、[#28](https://github.com/yasakani-dev/yasakani/pull/28) で寄稿された別のエンジンで動きます。`-DYSKN_WITH_INK2=ON` を付けてソースから組み立て、ダウンロードしたフォルダーを変換せずに読みます（[BUILDING.md](BUILDING.md#linux-inkling-2)、英語）。
 
-**一番早い方法：起動画面（0.3.2 の新機能）。** `START.cmd` のモデルの質問で 4 を選びます（`START.cmd --model inkling2` でも同じです）。起動ファイルが変換済みのコピーを Hugging Face から取得し（約 15.3 GB、変換は不要）、ほかのモデルと同じく `info`・`verify`・`selfcheck` で点検します。そのあとメニューで Enter を押すと、ブラウザーの画面が開きます。モデルの質問が出るのは、初回と `START.cmd --menu` の時です。24 GB 未満のカードでは選べません。ダウンロードしたあとは、画面のモデルの切り替えにも出ます。自分で用意したフォルダーには、下の方法が使えます。
+**一番早い方法：起動画面（0.3.2 の新機能）。** `START.cmd` のモデルの質問で 4 を選びます（`START.cmd --model inkling2` でも同じです）。起動ファイルが変換済みのコピーを Hugging Face から取得し（0.3.5 の画像用のファイルを含めて約 15.9 GB、変換は不要。0.3.2〜0.3.4 で取得したフォルダーには、そのファイルを足すかを 1 回だけ聞きます）、ほかのモデルと同じく `info`・`verify`・`selfcheck` で点検します。そのあとメニューで Enter を押すと、ブラウザーの画面が開きます。モデルの質問が出るのは、初回と `START.cmd --menu` の時です。24 GB 未満のカードでは選べません。ダウンロードしたあとは、画面のモデルの切り替えにも出ます。自分で用意したフォルダーには、下の方法が使えます。
 
-**手で取得する：変換済みのコピー。** 下で説明する `--scheme quality` で変換した物を、Hugging Face に置いています（[yasakani-dev/Inkling-2-Mini-YASAKANI-quality](https://huggingface.co/yasakani-dev/Inkling-2-Mini-YASAKANI-quality)、15.3 GB、4 ビットの先読み用のモデルを含む）。取得したフォルダーを、変換せずにそのまま使えます。起動ファイルのフォルダーでは、先に `yasakani_env.cmd` を実行します。`hf`・`python`・`yasakani` が使えるようになります。
+**手で取得する：変換済みのコピー。** 下で説明する `--scheme quality` で変換した物を、Hugging Face に置いています（[yasakani-dev/Inkling-2-Mini-YASAKANI-quality](https://huggingface.co/yasakani-dev/Inkling-2-Mini-YASAKANI-quality)、15.9 GB、4 ビットの先読み用のモデルと、0.3.5 からは画像用のファイルを含む）。取得したフォルダーを、変換せずにそのまま使えます。起動ファイルのフォルダーでは、先に `yasakani_env.cmd` を実行します。`hf`・`python`・`yasakani` が使えるようになります。
 
 ```bat
 hf download yasakani-dev/Inkling-2-Mini-YASAKANI-quality --local-dir D:\models\inkling2-mini-quality
@@ -217,7 +217,7 @@ START.cmd --model-dir D:\models\inkling2-mini-quality
 cd /d C:\yasakani
 yasakani_env.cmd
 hf download thinkingmachines/Inkling-2-Mini --revision ed40e7da625f594fc9c4990f5f66be24873c22d7 --local-dir D:\models\Inkling-2-Mini-hf
-python C:\src\yasakani-0.3.4\tools\convert\inkling2_convert.py --source D:\models\Inkling-2-Mini-hf --out D:\models\inkling2-mini
+python C:\src\yasakani-0.3.5\tools\convert\inkling2_convert.py --source D:\models\Inkling-2-Mini-hf --out D:\models\inkling2-mini
 yasakani verify --model-dir D:\models\inkling2-mini
 yasakani selfcheck --model-dir D:\models\inkling2-mini
 yasakani chat --model-dir D:\models\inkling2-mini
@@ -251,7 +251,7 @@ START.cmd --model-dir D:\models\inkling2-mini
 **小さくした重み（`--scheme quality`）。** 変換のプログラムは、重みを少ないビット数で書き直すこともできます。`--scheme quality` では、密な行列の多くを 4 ビットか 8 ビットにします。層 20〜23 の 8 ビットの専門家は 4 ビットに詰め直します。できるのは 15.05 GB の `.yskn` のファイル 1 つです（公開のファイルは 19.5 GB）。公開のモデルと 43 個の文章（14,024 か所。モデル自身の思考と答え・英語と日本語の文章・コード）で比べると、KL ダイバージェンスは 0.0110 でした。次に最も出やすいトークンは 96.0% の位置で同じでした。先読み用のモデルも 4 ビットで書き直し、重みの隣に `mtp_d4.yskn` として置きます（635.8 MB が 209.7 MB に。`--drafter-scheme published` なら公開のファイルのままです。[FORMAT](docs/FORMAT.md) の 10.6 節、英語）。エンジンはこれらの行列を書いてある形のまま掛けるので、速くなり、GPU のメモリーも減ります。RTX 5090 の 1 回の測定（`yasakani bench`・貪欲法・思考なし・256 トークン・3 回の中央値）では、`--draft off` で 203.8 tokens/s で、公開の重みは 161.2 tokens/s でした。標準の `--draft auto` では 225.9 と 212.5 tokens/s です。標準の文脈 32,768 トークンでのエンジンの確保は 22.7 GB から 18.9 GB に減ります（先読みありでは 23.8 GB から 19.5 GB。4 ビットの先読み用のモデルは 0.56 GB、公開の物は 1.10 GB です）。パッケージを通した入力の読み込みは少し遅く、1,079 トークンで 959 tokens/s（公開の重みは 1,063）、4,900 トークンで 878 tokens/s（同 961）でした（各 3 回の中央値）。起動から使えるまでは、先読みなしで 2.6 秒、先読みありで 3.0 秒でした。変換は CPU で約 4 分です。新しいフォルダーにはディスクが約 15 GB 要ります。
 
 ```bat
-python C:\src\yasakani-0.3.4\tools\convert\inkling2_convert.py --source D:\models\Inkling-2-Mini-hf --out D:\models\inkling2-mini-quality --scheme quality
+python C:\src\yasakani-0.3.5\tools\convert\inkling2_convert.py --source D:\models\Inkling-2-Mini-hf --out D:\models\inkling2-mini-quality --scheme quality
 yasakani verify --model-dir D:\models\inkling2-mini-quality
 yasakani selfcheck --model-dir D:\models\inkling2-mini-quality
 yasakani chat --model-dir D:\models\inkling2-mini-quality
@@ -264,12 +264,12 @@ START.cmd --model-dir D:\models\inkling2-mini-quality
 
 **制限。** 0.3.1 では試験的な対応です。
 
-* 文章だけです（元のモデルは画像も読めます）。
+* 画像は 0.3.5 から静止画を読めます（[画像入力](python/README.md#inkling-2-mini-image-input)、英語）。動画は使えません。
 * 依頼は 1件ずつです。`--parallel` は使えません。
 * ツール呼び出しは `yasakani serve` だけです。ターミナルのチャットでは使えません。ツールを使う会話は、サーバーの文脈（標準は 32,768 トークン）で止まります。入りきらない依頼にはエラー（HTTP 400）を返すので、新しい会話を始めてください。思考ありで長く考えると、呼び出しを書く前に `max_tokens` を使い切ることがあります。`thinking_budget`（依頼の項目か環境変数 `YASAKANI_THINKING_BUDGET`）を付けると、その数のトークンで思考を切ります。
 * 多くのアプリは前の返事の思考を送り返しません。そのため次の依頼では前の返事を捨てます。エンジンは 512 位置までなら、会話を読み直さずに捨てられます（`YASAKANI_INK2_ROLLBACK`。0 でエンジンの標準の 64）。その分 GPU のメモリーが増えます。`--scheme quality` のフォルダーと文脈 32,768 では、エンジンの確保が 0.6 GB、GPU 全体では 0.8 GB 増えました（上の確保の値はこの分を含みます）。
 * 先読みは、自由な文章より予想しやすい文で良く効きます。効かない所では `--draft auto` が先読みをやめます。それでも時々試すので、少し遅くなります（私たちの測定では `--scheme quality` の重みの日本語の文章で最大 2.1%）。`--draft off` ならこの分は掛かりません。
-* このモデルでは `bench --edit` と画像入力も使えません。
+* このモデルでは `bench --edit` も使えません。
 * 私たちが速い道を動かしたのは RTX 5090 1枚だけです。RTX 30 では RTX 3090 Ti の利用者の方の報告があり（上の説明）、RTX 40 のカードの報告はまだありません。出力は標準の道に近いですが、同じではありません（上の説明）。`selfcheck` は、`--fast` を付けない限り標準の道を比べます。
 * Windows で確認したのは RTX 5090 1枚と Windows 11 だけです。ほかの GPU では試していません。利用者の方が RTX 3090（24 GB・Windows 11）で 0.3.1 を動かした報告があります（[#29](https://github.com/yasakani-dev/yasakani/issues/29)）。`selfcheck` は合格、`bench` は 105.6 tok/s で、32K の文脈での GPU のメモリーは画面の分を含めて 22.52 GB でした。報告者の方の数字です。Linux では [#28](https://github.com/yasakani-dev/yasakani/pull/28) のエンジンだけを使い、ソースから組み立てます。私たちは RTX 5090 1枚の WSL2 で動かしました。寄稿者の方は RTX 5090 と DGX Spark で動かしています（[BUILDING.md](BUILDING.md#linux-inkling-2)）。
 * 思考なしは私たちの設定です（[よくある質問](docs/FAQ.ja.md#inkling-2-mini)）。

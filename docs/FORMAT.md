@@ -405,7 +405,7 @@ model file.
 
 ### 10.7 Image-tower files
 
-Since {{VISION_VERSION}}, a converted Inkling-2 Mini folder can hold the image tower of the model (the published tensors
+Since 0.3.5, a converted Inkling-2 Mini folder can hold the image tower of the model (the published tensors
 `model.visual.*`) in a file of its own next to the model file, `inkling_2_mini_vision.yskn`. The program that writes it is
 [`tools/convert/inkling2_vision_convert.py`](../tools/convert/inkling2_vision_convert.py); the reader of the package is
 [`python/yasakani/inkling2_vision.py`](../python/yasakani/inkling2_vision.py) (`vision_weights`, `iter_vision_tensors`, with

@@ -7,7 +7,7 @@
 An inference engine for running **Qwen3.8-27B** on your own Windows PC with **one NVIDIA RTX GPU** (tested on the RTX 5090). It is GPU kernels, a file format for the
 compressed model, and a runtime, with an OpenAI-compatible server, a terminal chat, a benchmark and a self-check. One person in Japan built it. It is
 not a general-purpose engine: one model, tuned on one card. Since 0.3.1 it also runs a second model, Inkling-2 Mini, as an experimental
-model ([below](#inkling-2-mini)); it reads text, and since {{VISION_VERSION}} still images.
+model ([below](#inkling-2-mini)); it reads text, and since 0.3.5 still images.
 
 ## Which model should I download?
 
@@ -551,7 +551,7 @@ Known limits:
 
 Inkling-2 Mini is a language model by Thinking Machines Lab, published on November 20, 2026. Since 0.3.1 YASAKANI runs it as an
 experimental model, with a second engine library. Since 0.3.2 it is choice 4 of the model question of `START.cmd` (or `START.cmd --model inkling2`):
-the quickstart downloads our converted copy from Hugging Face (about 15.3 GB) and checks it like the other models. How to download, convert
+the quickstart downloads our converted copy from Hugging Face (about 15.9 GB) and checks it like the other models. How to download, convert
 and start it by hand: [README](../README.md#inkling-2-mini).
 
 ### Which cards can run it, and why 24 GB?
@@ -625,7 +625,7 @@ path. It needs less GPU memory at long contexts: 20.9 instead of 28.5 GiB in use
 
 The converter can write the weights again in fewer bits (`inkling2_convert.py ... --scheme quality`, [README](../README.md#inkling-2-mini)). We publish this
 conversion on Hugging Face, so you can download it instead of converting: [yasakani-dev/Inkling-2-Mini-YASAKANI-quality](https://huggingface.co/yasakani-dev/Inkling-2-Mini-YASAKANI-quality)
-(15.3 GB). What the conversion does:
+(15.9 GB with the image file of 0.3.5). What the conversion does:
 most dense matrices in 4 or 8 bits, and the 8-bit experts of layers 20 to 23 re-packed to 4 bits, in one `.yskn` file of 15.05 GB
 instead of 19.5 GB ([FORMAT](FORMAT.md)). Against the published model on 43 text windows (14,024 positions: the model's own thinking and
 answers, English and Japanese prose, code) the KL divergence was 0.0110, and the most likely next token was the same at 96.0 % of the
@@ -675,9 +675,10 @@ the GPU memory for dropped replies) are in the [README](../README.md#inkling-2-m
 
 ### Can Inkling-2 Mini read images?
 
-Yes, new in {{VISION_VERSION}}: still images, as the published model reads them. The image tower runs on the GPU inside the engine
-library. A converted folder needs one more file, `inkling_2_mini_vision.yskn` (637 MB, the published image tower unchanged); the
-quickstart page then shows an image button, `yasakani serve` takes OpenAI `image_url` parts with `data:image/...;base64` URIs, and
+Yes, new in 0.3.5: still images, as the published model reads them. The image tower runs on the GPU inside the engine
+library. A converted folder needs one more file, `inkling_2_mini_vision.yskn` (637 MB, the published image tower unchanged). The
+quickstart of 0.3.5 downloads it with the folder, and for a folder of 0.3.2 to 0.3.4 it asks once whether to add it
+(about 0.64 GB; later `START.cmd --image-file`). With the file, the quickstart page shows an image button, `yasakani serve` takes OpenAI `image_url` parts with `data:image/...;base64` URIs, and
 `yasakani chat` takes `--image PATH`.
 
 An image of H × W pixels becomes ceil(H / 40) × ceil(W / 40) image tokens, for example 576 for 1280 × 720. Images above 1,024 image
@@ -707,7 +708,7 @@ when you type it, and the quickstart's check for a new version, each send one re
 
 ## How does the update work?
 
-Since 0.1.7, the quickstart (`START.cmd`) can update itself; from 0.1.7 to 0.3.3 it offers 0.3.4. From v0.1.6 or older, download the quickstart ZIP of the current release (`yasakani-quickstart-0.3.4.zip`) by hand once and run `START.cmd`; the models are kept.
+Since 0.1.7, the quickstart (`START.cmd`) can update itself; from 0.1.7 to 0.3.4 it offers 0.3.5. From v0.1.6 or older, download the quickstart ZIP of the current release (`yasakani-quickstart-0.3.5.zip`) by hand once and run `START.cmd`; the models are kept.
 
 * **The check.** At most once a day, before it shows the menu or before it opens the browser page directly (from the second run on,
   `START.cmd` does that without a menu), the quickstart first prints that it asks github.com, then sends one HTTPS request:
