@@ -132,6 +132,17 @@
   .opts select[disabled] { opacity: 0.45; cursor: default; }
   .opts option { background: var(--panel); color: var(--ink); }
   .link { background: none; border: 0; padding: 0; color: var(--ink2); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+  .attach { background: none; color: var(--ink2); border: 1px solid var(--line); border-radius: 8px; padding: 0 14px; height: 52px; cursor: pointer; }
+  .attach:hover { border-color: var(--accent); color: var(--ink); }
+  .attach[disabled] { opacity: 0.45; cursor: default; border-color: var(--line); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 8px; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px 2px 10px; font-size: 13px; color: var(--ink2); max-width: 100%; }
+  .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip button { background: none; border: 0; color: var(--dim); cursor: pointer; padding: 0 6px; font-size: 15px; line-height: 1; }
+  .chip button:hover { color: var(--ink); }
+  .imgnote { color: var(--err); font-size: 14px; margin-bottom: 6px; }
+  .imgs { color: var(--dim); font-size: 13px; margin-bottom: 4px; }
+  .composer.dropping { outline: 2px dashed var(--accent); outline-offset: -6px; }
   .local { margin-left: auto; color: var(--dim); }
 
   .upd { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 8px 24px; background: var(--panel2); border-bottom: 1px solid var(--line); font-size: 15px; }
@@ -223,8 +234,12 @@
 
 <section class="pane chat" id="p_chat" role="tabpanel" aria-labelledby="t_chat">
   <main id="main"><div class="col" id="log"></div></main>
-  <div class="composer"><div class="col">
+  <div class="composer" id="composer"><div class="col">
+    <div class="imgnote" id="imgnote" role="status" hidden></div>
+    <div class="chips" id="chips" hidden></div>
     <div class="row">
+      <button class="attach" id="attach" type="button" hidden></button>
+      <input type="file" id="pick" accept="image/*" multiple hidden>
       <textarea id="box" rows="1" autofocus></textarea>
       <button class="send" id="send" type="button"></button>
     </div>
@@ -299,6 +314,10 @@ const TEXT = {
     stopped: '止めました。', cut: '上限の長さに達したので、ここで止まりました。',
     err_net: 'サーバーに届きませんでした。起動ファイルの黒い画面が開いたままか確認して、もう一度送ってください。',
     err_http: 'サーバーが断りました（{c}）: {m}',
+    attach: '画像', attach_title: '画像を付ける（貼り付けやドロップでも付けられます）', img_remove: '外す',
+    img_big: '{m} は大きすぎます。1 枚 {n} MB までです。', img_type: '{m} は画像ではありません。', img_many: '1 回に付けられる画像は {n} 枚までです。',
+    img_read: '{m} を読めませんでした。', img_total: '画像を含めた会話が {n} MB を超えるので送れません。「新しい会話」で始めてください。',
+    img_sent: '画像 {n} 枚',
     upd: '新しい版 {v} があります', upd_go: '更新する', upd_later: 'あとで',
     upd_wait: '更新しています。終わると、このページは自動で戻ります（エンジンとモデルの読み込みで数分かかることがあります）。',
     upd_fail: '更新を始められませんでした（{m}）。',
@@ -374,6 +393,10 @@ const TEXT = {
     stopped: 'Stopped.', cut: 'The length limit was reached, so it stopped here.',
     err_net: 'The server could not be reached. Check that the black quickstart window is still open, then send again.',
     err_http: 'The server refused the request ({c}): {m}',
+    attach: 'Image', attach_title: 'Attach an image (pasting or dropping one works too)', img_remove: 'Remove',
+    img_big: '{m} is too large. Each image can be up to {n} MB.', img_type: '{m} is not an image.', img_many: 'Up to {n} images can be attached to one message.',
+    img_read: '{m} could not be read.', img_total: 'With its images the conversation is over {n} MB, so it cannot be sent. Start a new conversation.',
+    img_sent: '{n} image(s)',
     upd: 'New version {v} available', upd_go: 'Update', upd_later: 'Later',
     upd_wait: 'Updating. This page comes back by itself when it is done (loading the engine and the model can take a few minutes).',
     upd_fail: 'The update could not start ({m}).',
@@ -434,7 +457,7 @@ const TEXT = {
   },
 };
 // The fixed labels of the page: element id -> key of TEXT.
-const LABELS = { l_think: 'think', fresh: 'fresh', l_local: 'local', l_effort: 'effort', quit: 'quit', quit2: 'md_quit_go',
+const LABELS = { l_think: 'think', fresh: 'fresh', attach: 'attach', l_local: 'local', l_effort: 'effort', quit: 'quit', quit2: 'md_quit_go',
   t_chat: 'tab_chat', t_speed: 'tab_speed', t_api: 'tab_api', t_model: 'tab_model', ask_yes: 'q_yes', ask_no: 'q_no',
   sp_title: 'sp_title', sp_lead: 'sp_lead', sp_l_avg: 'sp_avg', sp_l_peak: 'sp_peak', sp_l_ttft: 'sp_ttft', sp_l_tok: 'sp_tok', sp_u_sec: 'sec',
   sp_note: 'sp_note', api_title: 'api_title', api_lead: 'api_lead', api_l_base: 'api_base', api_l_model: 'api_model', api_l_key: 'api_key',
@@ -449,6 +472,12 @@ const KNOWN = { speed: 1, quality: 1, max: 1, inkling2: 1 };      // the models 
 const TABS = ['chat', 'speed', 'api', 'model'];
 
 let history = [];              // {role, content} sent to the server
+// Images (models that read them: /v1/models says "vision": true).  The page sends the original file bytes as a data URI, never a
+// re-encoded copy (that would change the colours the model sees).  The launcher takes request bodies up to 16 MiB and base64 adds
+// a third, so one file may have 11 MiB; the images stay in the conversation, so later turns send them again.
+const IMG_MAX = 11 * 1024 * 1024, IMG_COUNT = 4, BODY_MAX = 16 * 1024 * 1024;
+let vision = false;            // the running model reads images
+let attached = [];             // {name, uri} for the next message
 let busy = null;               // AbortController while an answer is being written
 let bench = null;              // AbortController while the speed tab measures
 let ready = false;
@@ -492,6 +521,7 @@ function applyLanguage() {
   document.documentElement.lang = L === TEXT.ja ? 'ja' : 'en';
   document.title = L.title;
   for (const id in LABELS) $(id).textContent = L[LABELS[id]];
+  $('attach').title = L.attach_title;
   for (const o of $('effort').options) o.textContent = L['ef_' + o.value];
   $('sp_cond').textContent = t('sp_cond', { n: fmt(BENCH_MAX) });
   const f = $('support'); f.textContent = '';
@@ -506,7 +536,7 @@ function applyLanguage() {
 function setButton() {
   const b = $('send');
   b.textContent = busy ? L.stop : L.send; b.classList.toggle('stop', !!busy);
-  b.disabled = !busy && (!ready || !!bench || !$('box').value.trim());
+  b.disabled = !busy && (!ready || !!bench || (!$('box').value.trim() && !attached.length));
 }
 function showEmpty() {
   const log = $('log'); log.textContent = '';
@@ -556,6 +586,7 @@ function paintStatus() {
   box.disabled = waiting() || phase === 'failed' || phase === 'stopped' || phase === 'updating';
   box.placeholder = waiting() ? L.ph_wait : L.ph;
   for (const b of document.querySelectorAll('.tries button')) b.disabled = !ready;
+  $('attach').hidden = !vision; $('attach').disabled = !ready || !!busy || !!bench;
   $('quit').hidden = !controls; $('row_quit').hidden = !controls;
   $('quit').disabled = off; $('quit2').disabled = off;
   const now = phase + (checking ? '+' : '');
@@ -718,11 +749,18 @@ async function readEvents(r, each) {
 async function send() {
   const box = $('box');
   const text = box.value.trim();
-  if (!text || busy || bench || !ready) return;
-  box.value = ''; grow();
-  addTurn('me', text);
+  const images = vision ? attached.slice() : [];
+  if ((!text && !images.length) || busy || bench || !ready) return;
+  const msg = images.length ? images.map(a => ({ type: 'image_url', image_url: { url: a.uri } })).concat(text ? [{ type: 'text', text }] : []) : text;
+  if (images.length || history.some(m => Array.isArray(m.content))) {      // the launcher takes bodies up to 16 MiB
+    const size = new TextEncoder().encode(JSON.stringify({ messages: history.concat([{ role: 'user', content: msg }]) })).length + 4096;
+    if (size > BODY_MAX) { imgNote(t('img_total', { n: BODY_MAX / 1024 / 1024 })); return; }
+  }
+  box.value = ''; attached = []; paintImages(); imgNote(''); grow();
+  const mine = addTurn('me', text);
+  if (images.length) mine.body.insertBefore(el('div', 'imgs', t('img_sent', { n: images.length }) + ': ' + images.map(a => a.name).join(', ')), mine.body.firstChild);
   const conv = history;
-  history.push({ role: 'user', content: text });
+  history.push({ role: 'user', content: msg });
   const { turn, body } = addTurn('ai');
   const think = el('details', 'think'); const sum = el('summary'); const thinkText = el('div', 't');
   think.appendChild(sum); think.appendChild(thinkText);
@@ -789,13 +827,63 @@ async function send() {
   if (tab === 'chat') $('box').focus();
 }
 
+// ---- images for the next message: the button, pasting and dropping (only while the model reads images)
+function imgNote(text) { const n = $('imgnote'); n.textContent = text || ''; n.hidden = !text; }
+function paintImages() {
+  const c = $('chips'); c.textContent = '';
+  attached.forEach((a, k) => {
+    const chip = el('span', 'chip'); chip.appendChild(el('span', null, a.name));
+    const x = el('button', null, '×'); x.type = 'button'; x.title = L.img_remove; x.setAttribute('aria-label', L.img_remove + ' ' + a.name);
+    x.addEventListener('click', () => { attached.splice(k, 1); paintImages(); setButton(); });
+    chip.appendChild(x); c.appendChild(chip);
+  });
+  c.hidden = !attached.length;
+}
+function clearImages() { attached = []; paintImages(); imgNote(''); }
+function readImage(file) {
+  return new Promise(done => {
+    const fr = new FileReader();
+    fr.onload = () => done(typeof fr.result === 'string' ? fr.result : null);
+    fr.onerror = () => done(null);
+    fr.readAsDataURL(file);
+  });
+}
+async function addImages(files) {
+  if (!vision || !files) return;
+  let note = '';
+  for (const f of Array.from(files)) {
+    const name = f.name || 'image';
+    if (!/^image\//.test(f.type || '')) { note = t('img_type', { m: name }); continue; }
+    if (f.size > IMG_MAX) { note = t('img_big', { m: name, n: IMG_MAX / 1024 / 1024 }); continue; }
+    if (attached.length >= IMG_COUNT) { note = t('img_many', { n: IMG_COUNT }); break; }
+    const uri = await readImage(f);
+    if (!uri || !uri.startsWith('data:image/')) { note = t('img_read', { m: name }); continue; }
+    if (attached.length >= IMG_COUNT) { note = t('img_many', { n: IMG_COUNT }); break; }
+    attached.push({ name, uri });
+  }
+  imgNote(note); paintImages(); setButton();
+}
+$('attach').addEventListener('click', () => { if (vision && ready) $('pick').click(); });
+$('pick').addEventListener('change', async e => { await addImages(e.target.files); e.target.value = ''; $('box').focus(); });
+$('box').addEventListener('paste', e => {
+  const files = e.clipboardData && e.clipboardData.files;
+  if (vision && files && files.length) { e.preventDefault(); addImages(files); }
+});
+$('composer').addEventListener('dragover', e => { if (vision && e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) { e.preventDefault(); $('composer').classList.add('dropping'); } });
+$('composer').addEventListener('dragleave', () => $('composer').classList.remove('dropping'));
+$('composer').addEventListener('drop', e => {
+  $('composer').classList.remove('dropping');
+  if (!vision || !e.dataTransfer) return;
+  e.preventDefault(); addImages(e.dataTransfer.files);
+});
+
 function grow() { const b = $('box'); b.style.height = 'auto'; b.style.height = Math.min(b.scrollHeight + 2, window.innerHeight * 0.4) + 'px'; setButton(); }
 $('box').addEventListener('input', grow);
 $('box').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); }
 });
 $('send').addEventListener('click', () => { if (busy) busy.abort(); else send(); });
-$('fresh').addEventListener('click', () => { if (busy) busy.abort(); busy = null; history = []; meterEnd(0); showEmpty(); refresh(); $('box').focus(); });
+$('fresh').addEventListener('click', () => { if (busy) busy.abort(); busy = null; history = []; clearImages(); meterEnd(0); showEmpty(); refresh(); $('box').focus(); });
 $('think').addEventListener('change', () => { $('effort').disabled = !$('think').checked; });
 
 // ---- the speed tab.  One fixed prompt, thinking off, sent the way the chat sends its questions.  The figures are a rough
@@ -980,6 +1068,14 @@ async function loadConfig() {
     return true;
   } catch (e) { return false; }             // the settings read before stay
 }
+async function loadVision() {
+  try {
+    const r = await get('/v1/models'); const j = await r.json();
+    const first = j && Array.isArray(j.data) ? j.data[0] : null;
+    vision = !!(first && first.vision === true);
+  } catch (e) { vision = false; }
+  if (!vision) clearImages();
+}
 async function loadHealth() {
   try {
     const r = await get('/health'); const h = await r.json();
@@ -1037,6 +1133,7 @@ async function onStatus(s) {
     if (other || was === 'switching') health = null;
     await loadConfig();                                     // the model, a new control token and, once ready, the context limit
     if (up && !ctxLimit()) await loadHealth();
+    if (up) await loadVision(); else { vision = false; clearImages(); }
     if (phase !== was) return;                              // a button was pressed meanwhile (quit, switch, update): its state stands
   }
   if (typeof s.elapsed === 'number') { loadBase = s.elapsed; loadAt = now; }

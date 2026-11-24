@@ -56,6 +56,11 @@ QS_VERSION = "0.3.4"
 ENGINE_ZIP = "yasakani-0.3.4-win-x64.zip"
 ENGINE_URL = "https://github.com/yasakani-dev/yasakani/releases/download/v0.3.4/" + ENGINE_ZIP
 ENGINE_SHA256 = "831576fe908c0dc52494aae6534d2a45e27f310b3ceaba9bbc0b1e65e4a8a7fc"
+# Does the engine zip of ENGINE_SHA256 read images (the image part of Inkling-2 Mini: capability CAP_VISION of its library)?  The
+# 0.3.4 zip does not.  The launcher always installs that zip, so this is what yasakani/inkling2.py library_has_vision() answers for the
+# server it starts; the context note counts the image part only when it is True.  It changes together with ENGINE_ZIP / ENGINE_SHA256
+# (a zip with image input) and must be True before INK2_IMAGE is turned on.
+ENGINE_IMAGE = False
 REPO_URL = "https://github.com/yasakani-dev/yasakani"
 SUPPORT_URL = "https://camp-fire.jp/projects/992233/view"
 ENGINE_PORT, WEB_PORT = 8765, 8766      # `yasakani serve` and the browser chat; the next free ports are used if these are taken
@@ -84,14 +89,47 @@ END_GRACE = 2.0                     # seconds the page's server stays after Ente
 REOPEN_SECONDS = 10.0               # a model switch: how long the page's port is tried again
 PAGE_CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; "
             "base-uri 'none'; form-action 'none'")
+# The files of the published Inkling-2 Mini folder at the pinned revision below (name: bytes).  The download size of the model
+# question and of the download message is the sum of this list (with INK2_IMAGE's files when that is on).
+INK2_FOLDER_SIZES = {
+    "inkling_2_mini_quality.yskn": 15052423172, "mtp_d4.yskn": 209688040, "tokenizer.json": 26178678,
+    "SOURCE_MODEL_CARD.md": 54831, "tokenizer_config.json": 13235, "LICENSE": 11358, "chat_template.jinja": 6868,
+    "README.md": 6865, "selfcheck.json": 5040, "yasakani.json": 2751, "config.json": 2722, "NOTICE": 1959,
+    "special_tokens_map.json": 529, "generation_config.json": 98,
+}
+
+# ---- image input of Inkling-2 Mini: ONE more file in its folder (INK2_IMAGE_FILE, listed in yasakani.json under "vision").
+# THE SWITCH.  None: the launcher is that of 0.3.4 (text only; images are never mentioned).  After the folder with the file is on
+# Hugging Face, one edit turns it on: the new commit of the repository, and name: (bytes, sha256) of every file of that commit that
+# is new or differs from the pinned folder above (at least INK2_IMAGE_FILE and yasakani.json; NOTICE too when it changed):
+#   INK2_IMAGE = {"revision": "<40 hex digits>",
+#                 "files": {"inkling_2_mini_vision.yskn": (637136896, "858a5a5cacf28c1fdae0dcee23350565ac3eba77d86bc02057ce6c3bb249eabb"),
+#                           "yasakani.json": (<bytes>, "<sha256>"), "NOTICE": (<bytes>, "<sha256>")}}
+# Then a new download gets the folder of that commit (the image file included), and a folder of 0.3.2 to 0.3.4 is offered only
+# these files (about 0.64 GB; the text weights are kept and not read again).  START.cmd --image-file asks again after a no.
+# It needs an engine zip with image input at the same time (ENGINE_ZIP / ENGINE_SHA256 and ENGINE_IMAGE = True above).
+INK2_IMAGE = None
+INK2_IMAGE_FILE = "inkling_2_mini_vision.yskn"
+
+
+def ink2_download_bytes(image=None):
+    """Bytes of a new download of the Inkling-2 Mini folder: INK2_FOLDER_SIZES, with the files of ``image`` (INK2_IMAGE) added or
+    in place of the old ones."""
+    sizes = dict(INK2_FOLDER_SIZES)
+    for name, (size, _sha) in ((image or {}).get("files") or {}).items():
+        sizes[name] = size
+    return sum(sizes.values())
+
+
 MODELS = {
     "quality": {"repo": "yasakani-dev/Qwen3.8-27B-YASAKANI-quality", "need_gb": 16},
     "speed": {"repo": "yasakani-dev/Qwen3.8-27B-YASAKANI-speed", "need_gb": 14},
     "max": {"repo": "yasakani-dev/Qwen3.8-27B-YASAKANI-max-quality", "need_gb": 20},
     # 0.3.2: the converted Inkling-2 Mini (experimental, text only, one request at a time), at a pinned revision of its repository.
-    # Its files are 15.29 GB (shown as 15.3); need_gb is that rounded up plus 1 GB, as for the others.
-    "inkling2": {"repo": "yasakani-dev/Inkling-2-Mini-YASAKANI-quality", "revision": "8de37e9980397da63b050fe008493a35f1c483e9",
-                 "need_gb": 17, "get_gb": "15.3", "model_id": "inkling-2-mini-quality"},
+    # Its files are 15.29 GB (shown as 15.3; 15.93 with the image file); need_gb is that rounded up plus 1 GB, as for the others.
+    "inkling2": {"repo": "yasakani-dev/Inkling-2-Mini-YASAKANI-quality",
+                 "revision": (INK2_IMAGE or {}).get("revision") or "8de37e9980397da63b050fe008493a35f1c483e9",
+                 "need_gb": 17, "get_gb": "%.1f" % (ink2_download_bytes(INK2_IMAGE) / 1e9), "model_id": "inkling-2-mini-quality"},
 }
 MODEL_ORDER = ("quality", "speed", "max", "inkling2")   # the order of the model question (1, 2, 3, 4)
 MODEL_KEYS = {str(i + 1): name for i, name in enumerate(MODEL_ORDER)}     # the answers of the model question
@@ -117,7 +155,7 @@ OVERHEAD_MIB = {"quality": 2300, "speed": 2100, "max": 2300}
 # Inkling-2 Mini (0.3.2): the rule of yasakani/gpu.py ink2_context() with the files of the published folder (weights, drafter), the
 # drafter loaded (the default) and 512 rollback positions, repeated here only to tell the context before anything is downloaded
 # (python/tests/test_gpu.py checks that the two agree).
-INK2_FILES_BYTES = (15052423172, 209688040)
+INK2_FILES_BYTES = (INK2_FOLDER_SIZES["inkling_2_mini_quality.yskn"], INK2_FOLDER_SIZES["mtp_d4.yskn"])
 INK2_BYTES_PER_POSITION = 65536 + 12288 + 10240       # config.json's cache + the engine's rest + the drafter's, per position
 INK2_ROLLBACK_MIB, INK2_OVERHEAD_MIB = (512 - 64) * 1.8, 1800
 # The fast path (0.3.3; since 0.3.4 --fast auto turns it on for compute capability 8.6, 8.9 and 12.0, the RTX 30, 40 and 50 series): an
@@ -127,6 +165,12 @@ INK2_FAST_BYTES_PER_POSITION = 65536 // 4 + 65536 // 4 // 32 + 10240
 INK2_FAST_OVERHEAD_MIB = 500
 INK2_FAST_ENV = "YASAKANI_INK2_FAST"
 INK2_DEFAULT_CONTEXT, INK2_CONTEXT_STEP, INK2_MIN_CONTEXT = 32768, 4096, 8192
+# The image part of Inkling-2 Mini, when its folder has INK2_IMAGE_FILE: yasakani/gpu.py ink2_vision_mib() with the defaults of
+# chat and serve (--vision auto, 1,024 image tokens per image, 8 x that per request; yasakani/inkling2.py vision_plan_mib()),
+# repeated here only for the context note (tests/test_quickstart_ink2_vision.py checks that the two agree).
+INK2_VISION_WEIGHTS_BYTES, INK2_VISION_SCRATCH_BYTES, INK2_VISION_SCRATCH_BYTES_PER_TOKEN = 636512256, 20480, 86720
+INK2_VISION_FEATURE_BYTES_PER_ROW, INK2_VISION_IMAGE_TOKENS, INK2_VISION_REQUEST_FACTOR = 2304 * 2, 1024, 8
+INK2_VISION_ENV = "YASAKANI_INK2_VISION"
 
 # ---- the NVIDIA driver (0.1.4).  yskn.dll carries the CUDA 13.2 runtime (linked in, there is no separate runtime DLL).  Under CUDA minor
 # version compatibility a program built with any CUDA 13.x toolkit runs on a driver of the R580 branch or newer, which reports CUDA 13.0
@@ -272,18 +316,44 @@ T = {
               "  1) 品質モデル〈おすすめ〉  元のモデルに近い。ファイル 12.4 GB\n"
               "  2) 最速モデル            いちばん速い。ファイル 10.3 GB\n"
               "  3) 最高品質モデル        元のモデルにいちばん近い。ファイル 15.7 GB。生成は品質モデルの約 0.8〜0.9 倍の速さ\n"
-              "  4) Inkling-2 Mini〈試験的〉 文章だけ。依頼は 1 件ずつ。GPU 24 GB 以上。ダウンロード約 15.3 GB\n"
+              "  4) Inkling-2 Mini〈試験的〉 " + ("文章と画像" if INK2_IMAGE else "文章だけ") + "。依頼は 1 件ずつ。GPU 24 GB 以上。"
+              "ダウンロード約 " + MODELS["inkling2"]["get_gb"] + " GB\n"
               "番号を入れて Enter [{d}]: ",
         "en": "Which model?\n"
               "  1) quality model (recommended)  close to the original. 12.4 GB file\n"
               "  2) fastest model                the fastest. 10.3 GB file\n"
               "  3) max-quality model            the closest to the original. 15.7 GB file; writes at about 0.8 to 0.9 times\n"
               "                                  the speed of the quality model\n"
-              "  4) Inkling-2 Mini (experimental) text only, one request at a time, a GPU with 24 GB or more;\n"
-              "                                  about 15.3 GB download\n"
+              "  4) Inkling-2 Mini (experimental) " + ("text and images" if INK2_IMAGE else "text only")
+              + ", one request at a time, a GPU with 24 GB or more;\n"
+              "                                  about " + MODELS["inkling2"]["get_gb"] + " GB download\n"
               "Type the number and press Enter [{d}]: ",
     },
     "picked": {"ja": "モデル: {m}", "en": "Model: {m}"},
+    # image input of Inkling-2 Mini: said only while INK2_IMAGE is on
+    "img_ask": {
+        "ja": "Inkling-2 Mini で画像を読むには、ファイルがもう 1 つ要ります（約 {g} GB）。いまダウンロードしますか？ [y/N]: ",
+        "en": "Image input for Inkling-2 Mini needs one more file (about {g} GB). Download it now? [y/N]: ",
+    },
+    "img_later": {
+        "ja": "Inkling-2 Mini は文章だけで使います。画像も使う時は START.cmd --image-file（約 {g} GB）。",
+        "en": "Inkling-2 Mini runs with text only. For image input: START.cmd --image-file (about {g} GB).",
+    },
+    "img_get": {"ja": "画像用のファイルをダウンロードします（約 {g} GB）。", "en": "Downloading the file for image input (about {g} GB)."},
+    "img_done": {"ja": "画像用のファイルを確かめて入れました。画像も使えます。",
+                 "en": "The file for image input was checked and put in place. Images work now."},
+    "img_fail": {
+        "ja": "画像用のファイルをダウンロードできませんでした（{e}）。文章だけで続けます。",
+        "en": "The file for image input could not be downloaded ({e}). Going on with text only.",
+    },
+    "img_bad": {
+        "ja": "画像用のファイルが公開の値と違うので使いません（{e}）。文章だけで続けます。",
+        "en": "The file for image input differs from the published values and was not used ({e}). Going on with text only.",
+    },
+    "img_disk": {
+        "ja": "空き容量が足りないので、画像用のファイル（約 {g} GB）は入れません。文章だけで続けます。",
+        "en": "Not enough free disk space for the file for image input (about {g} GB). Going on with text only.",
+    },
     "m_quality": {"ja": "品質モデル", "en": "quality model"},
     "m_speed": {"ja": "最速モデル", "en": "fastest model"},
     "m_max": {"ja": "最高品質モデル", "en": "max-quality model"},
@@ -749,6 +819,150 @@ def is_inkling2_dir(mdir):
         return False
 
 
+def read_manifest(mdir):
+    """yasakani.json of ``mdir`` as a dict ({} when it is missing or not a JSON object)."""
+    try:
+        with open(os.path.join(mdir, "yasakani.json"), encoding="utf-8") as f:
+            m = json.load(f)
+        return m if isinstance(m, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def ink2_has_image(mdir):
+    """True when the folder's yasakani.json names an image file ("vision") and that file is there with its size."""
+    v = read_manifest(mdir).get("vision")
+    if not isinstance(v, dict) or not isinstance(v.get("file"), str) or os.path.basename(v["file"]) != v["file"]:
+        return False
+    try:
+        return os.path.getsize(os.path.join(mdir, v["file"])) == v.get("size")
+    except OSError:
+        return False
+
+
+IMAGE_CODE = ("import sys\nfrom huggingface_hub import hf_hub_download\n"
+              "for name in sys.argv[4:]:\n"
+              "    hf_hub_download(repo_id=sys.argv[1], filename=name, revision=sys.argv[3], local_dir=sys.argv[2])\n")
+
+
+def image_files_command(vpy, image, ddir):
+    """The command that downloads the files of ``image`` (INK2_IMAGE) at its revision into ``ddir``."""
+    return [vpy, "-c", IMAGE_CODE, MODELS["inkling2"]["repo"], ddir, image["revision"]] + sorted(image["files"])
+
+
+def check_image_files(ddir, image, mdir):
+    """The files of ``image`` in ``ddir``: each has the pinned size and SHA-256, the new yasakani.json names the image file with
+    its pinned values, and its text weights and drafter are those of the folder ``mdir`` (compared in the two yasakani.json files;
+    the weights are not read).  -> None, or what is wrong."""
+    for name, (size, sha) in sorted(image["files"].items()):
+        p = os.path.join(ddir, name)
+        if not os.path.isfile(p):
+            return "%s: missing" % name
+        if os.path.getsize(p) != size:
+            return "%s: %d bytes, expected %d" % (name, os.path.getsize(p), size)
+        got = sha256_of(p)
+        if got != sha:
+            return "%s: SHA-256 %s, expected %s" % (name, got, sha)
+    new, old = read_manifest(ddir), read_manifest(mdir)
+    v, (size, sha) = new.get("vision") or {}, image["files"][INK2_IMAGE_FILE]
+    if not isinstance(v, dict) or (v.get("file"), v.get("size"), v.get("sha256")) != (INK2_IMAGE_FILE, size, sha):
+        return "yasakani.json: the image file is not listed as expected"
+    for key in ("weights", "drafter"):
+        a, b = new.get(key) or {}, old.get(key) or {}
+        if not isinstance(a, dict) or not isinstance(b, dict) or not a.get("sha256") \
+                or (a.get("file"), a.get("size"), a.get("sha256")) != (b.get("file"), b.get("size"), b.get("sha256")):
+            return "yasakani.json: the %s differ from this folder's" % key
+    return None
+
+
+def fetch_image_files(ui, vpy, env, image, ddir, call=subprocess.call, environ=None):
+    """Downloads the files of ``image`` into the empty folder ``ddir`` (once more without Xet when the first try fails).  -> 0, or
+    the exit code.  Tests only: TEST_MODEL_SRC + "INKLING2" names a folder the files are copied from (Hugging Face is not asked)."""
+    var = TEST_MODEL_SRC + "INKLING2"
+    src = (os.environ if environ is None else environ).get(var)
+    os.makedirs(ddir, exist_ok=True)
+    if src:
+        ui.say("model_test_src", p=src, v=var)
+        try:
+            for name in sorted(image["files"]):
+                shutil.copyfile(os.path.join(src, name), os.path.join(ddir, name))
+        except OSError as e:
+            print("%s: %s" % (type(e).__name__, e), flush=True)
+            return 1
+        return 0
+    cmd = image_files_command(vpy, image, ddir)
+    rc = call(cmd, env=env)
+    if rc != 0:
+        ui.say("retry_dl")
+        env2 = dict(env)
+        env2["HF_HUB_DISABLE_XET"] = "1"
+        rc = call(cmd, env=env2)
+    return rc
+
+
+def install_image_files(ddir, image, mdir):
+    """Moves the checked files of ``image`` from ``ddir`` into ``mdir``: yasakani.json last, so that the folder names the image
+    file only once it is there.  The download notes of Hugging Face for the replaced files are removed (a later download of the
+    folder then fetches only those again)."""
+    names = sorted(image["files"], key=lambda n: n == "yasakani.json")
+    for name in names:
+        os.replace(os.path.join(ddir, name), os.path.join(mdir, name))
+        note = os.path.join(mdir, ".cache", "huggingface", "download", name + ".metadata")
+        if os.path.isfile(note):
+            os.remove(note)
+
+
+def offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now, forced, image=None, call=subprocess.call, environ=None):
+    """Step 5 for an Inkling-2 Mini folder without the image file while the switch is on: asks once whether to get it (``forced``:
+    START.cmd --image-file, no question).  A no is kept in the state: later starts say one line.  When the question cannot be
+    asked (``ask_now`` False, or no keyboard) the line is said and nothing is kept.  Every failure leaves the folder as it was
+    (text only).  -> True when the image file was put in place."""
+    image = INK2_IMAGE if image is None else image
+    if not image or ink2_has_image(mdir) or not is_inkling2_dir(mdir):
+        return False
+    size = image["files"][INK2_IMAGE_FILE][0]
+    gb = "%.2f" % (sum(s for s, _ in image["files"].values()) / 1e9)
+    if not forced:
+        if not ask_now or st.get("ink2_image_no") == image["revision"]:
+            ui.say("img_later", g=gb)
+            return False
+        ans = ask(ui.t("img_ask", g=gb), "n", eof="")
+        if not ans:
+            ui.say("img_later", g=gb)
+            return False
+        if ans.lower() not in ("y", "yes"):
+            st["ink2_image_no"] = image["revision"]
+            save()
+            ui.say("img_later", g=gb)
+            return False
+    st.pop("ink2_image_no", None)
+    save()
+    if shutil.disk_usage(home).free < size + (1 << 30):
+        ui.say("img_disk", g=gb)
+        return False
+    ddir = os.path.join(home, "downloads", "inkling2_image")
+    if os.path.isdir(ddir):
+        shutil.rmtree(ddir, ignore_errors=True)
+    try:
+        ui.say("img_get", g=gb)
+        rc = fetch_image_files(ui, vpy, env, image, ddir, call=call, environ=environ)
+        if rc != 0:
+            ui.say("img_fail", e="exit code %d" % rc)
+            return False
+        bad = check_image_files(ddir, image, mdir)
+        if bad:
+            ui.say("img_bad", e=bad)
+            return False
+        install_image_files(ddir, image, mdir)
+    except OSError as e:
+        ui.say("img_fail", e="%s: %s" % (type(e).__name__, e))
+        return False
+    finally:
+        shutil.rmtree(ddir, ignore_errors=True)
+    ui.say("img_done")
+    return True
+
+
 def installed_models(home, downloaded, quality_fits, isfile=os.path.isfile):
     """The models the page can switch between: those the quickstart downloaded into this home (models_downloaded of the state, and
     the folder is still there) that fit this GPU, in the order of the model question."""
@@ -867,12 +1081,33 @@ def ink2_fast_expected(cc, environ=None):
     return mode == "on" or (mode == "auto" and tuple(cc or ()) in INK2_FAST_AUTO_CAPS)
 
 
-def estimate_ink2_context(free_mib, fast=False):
+def ink2_vision_mib():
+    """GPU memory (MiB) of the image part with the defaults of chat and serve (yasakani/gpu.py ink2_vision_mib)."""
+    n = INK2_VISION_WEIGHTS_BYTES + INK2_VISION_SCRATCH_BYTES + INK2_VISION_SCRATCH_BYTES_PER_TOKEN * INK2_VISION_IMAGE_TOKENS
+    n += INK2_VISION_FEATURE_BYTES_PER_ROW * INK2_VISION_REQUEST_FACTOR * INK2_VISION_IMAGE_TOKENS
+    return n / float(1 << 20)
+
+
+def ink2_vision_planned(mdir, image=None, environ=None, engine=None):
+    """Will chat and serve load the image part of the Inkling-2 Mini folder ``mdir``?  When the folder has it (ink2_has_image), or
+    when the folder is not there yet and the switch ``image`` (INK2_IMAGE) is on (a new download brings it); never when
+    YASAKANI_INK2_VISION is off, and with auto (the default) only when the engine library reads images (``engine``; None =
+    ENGINE_IMAGE, the engine zip the launcher installs), as yasakani/inkling2.py vision_plan_mib()."""
+    env = os.environ if environ is None else environ
+    mode = (env.get(INK2_VISION_ENV) or "auto").strip().lower()
+    if mode == "off" or (mode != "on" and not (ENGINE_IMAGE if engine is None else engine)):
+        return False
+    return ink2_has_image(mdir) or bool(image and not os.path.isfile(os.path.join(mdir, "yasakani.json")))
+
+
+def estimate_ink2_context(free_mib, fast=False, vision=False):
     """The context the package will choose for the Inkling-2 Mini folder (yasakani/gpu.py, ink2_context()); 0 = it does not fit.
     ``fast``: planned for the fast path (chat and serve on an RTX 30, 40 or 50 card); without it the standard path, which
-    `yasakani selfcheck` plans with since 0.3.3."""
+    `yasakani selfcheck` plans with since 0.3.3.  ``vision``: the image part is loaded too (ink2_vision_planned)."""
     over = INK2_OVERHEAD_MIB + (INK2_FAST_OVERHEAD_MIB if fast else 0)
     room = free_mib - sum(INK2_FILES_BYTES) / float(1 << 20) - over - INK2_ROLLBACK_MIB - MARGIN_MIB
+    if vision:
+        room -= ink2_vision_mib()
     n = max(0, int(room * (1 << 20) // (INK2_FAST_BYTES_PER_POSITION if fast else INK2_BYTES_PER_POSITION)))
     if n >= INK2_DEFAULT_CONTEXT:
         return INK2_DEFAULT_CONTEXT
@@ -2261,7 +2496,11 @@ def parse_args(argv=None):
     ap.add_argument("--skip-checks", action="store_true", help="do not run info / verify / selfcheck")
     ap.add_argument("--skip-driver-check", action="store_true",
                     help="do not stop when the NVIDIA driver is older than 580 (the engine will most likely not start)")
+    if INK2_IMAGE:                                      # only while the switch is on: the help of 0.3.4 stays as it was
+        ap.add_argument("--image-file", action="store_true",
+                        help="Inkling-2 Mini: download the one more file for image input now (also after a no to the question)")
     a = ap.parse_args(argv)
+    a.image_file = bool(getattr(a, "image_file", False))
     if a.web_test:
         a.action = "web"
     elif a.menu and a.action == "auto":
@@ -2406,7 +2645,8 @@ def main(argv=None):
         if gpu["total"] is None or used is None or a.model_dir:
             return
         if model == "inkling2":                 # the context of chat and serve: the fast path on RTX 30 / 40 / 50 cards (0.3.4)
-            n_ctx = estimate_ink2_context(gpu["total"] - used, fast=ink2_fast_expected(gpu.get("cc")))
+            n_ctx = estimate_ink2_context(gpu["total"] - used, fast=ink2_fast_expected(gpu.get("cc")),
+                                          vision=ink2_vision_planned(os.path.join(home, "models", model), INK2_IMAGE))
             if n_ctx <= 0:
                 ui.say("ctx_short", u=used)
             elif n_ctx < INK2_DEFAULT_CONTEXT:
@@ -2501,6 +2741,11 @@ def main(argv=None):
     got = st.setdefault("models_downloaded", {})
     if a.model_dir or (got.get(model) and have_model):
         ui.say("model_have", p=mdir)
+        if model == "inkling2" and INK2_IMAGE and not a.model_dir:
+            # a folder of 0.3.2 to 0.3.4: the image file is offered once (not when the page's update started this run: the
+            # page waits for the server and nobody looks at this window)
+            offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now=not (a.action == "web" and a.web_port),
+                             forced=a.image_file)
     else:
         rc = fetch_model(ui, vpy, env, model, mdir)
         if rc != 0:
