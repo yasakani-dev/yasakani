@@ -297,8 +297,9 @@ class OfferTests(W.LauncherTests):
             (self.src / n).write_bytes(b)
         self.answers = []
         self.prompts = []
-        for name, value in (("ask", self.answer),):
-            p = mock.patch.object(QS, name, value)
+        # the environment has Pillow, as step 4 installs it (the cases without it: test_quickstart_pillow.py)
+        for name, value in (("ask", self.answer), ("pillow_ok", lambda vpy, call=None: True)):
+            p = mock.patch.object(QS, name, value, create=True)
             p.start()
             self.addCleanup(p.stop)
         e = mock.patch.dict(os.environ, {SRC_VAR: str(self.src), "YASAKANI_INK2_VISION": ""})

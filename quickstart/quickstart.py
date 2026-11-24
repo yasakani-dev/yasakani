@@ -62,6 +62,11 @@ ENGINE_SHA256 = "f02b1792834c3fa00fb80c35dfaa519d7bd42cdd766bc7c4caf2a202cb0547b
 # library_has_vision() answers for the server it starts; the context note counts the image part only when it is True.  It changes
 # together with ENGINE_ZIP / ENGINE_SHA256 and must be True while INK2_IMAGE is on.
 ENGINE_IMAGE = True
+# The extras of the package that step 4 installs from the engine folder (python/pyproject.toml: "vision" = Pillow, which image input
+# needs).  When pip cannot install them, step 4 installs the package without them, as 0.3.4 did (text only).
+ENGINE_EXTRAS = "vision"
+PILLOW_REQ = "Pillow>=10"               # the requirement of that extra: added alone later (add_pillow())
+PILLOW_CHECK = "from PIL import Image, ImageOps"        # what the package imports for an image (pillow_ok())
 REPO_URL = "https://github.com/yasakani-dev/yasakani"
 SUPPORT_URL = "https://camp-fire.jp/projects/992233/view"
 ENGINE_PORT, WEB_PORT = 8765, 8766      # `yasakani serve` and the browser chat; the next free ports are used if these are taken
@@ -396,6 +401,20 @@ T = {
         "ja": "パッケージを入れられませんでした。上のメッセージを確かめてください。",
         "en": "Installing the package failed. See the messages above.",
     },
+    "pillow_none": {
+        "ja": "画像の入力に使う Pillow を入れられませんでした。文章はこれまで通り使えます。画像も使う時は、"
+              "コマンドプロンプトで次を実行してください:\n  \"{p}\" -m pip install Pillow",
+        "en": "Pillow (needed for image input) could not be installed. Text works as before. For images, run this in a "
+              "command prompt:\n  \"{p}\" -m pip install Pillow",
+    },
+    "pillow_need": {
+        "ja": "Python の環境に Pillow が無いので、画像はまだ使えません（文章は使えます）。"
+              "コマンドプロンプトで次を実行すると使えます:\n  \"{p}\" -m pip install Pillow",
+        "en": "Image input will not work until Pillow is added to the Python environment (text works). Run this in a "
+              "command prompt:\n  \"{p}\" -m pip install Pillow",
+    },
+    "pillow_add": {"ja": "画像の入力に使う Pillow を Python の環境に入れます。",
+                   "en": "Adding Pillow (needed for image input) to the Python environment."},
     "model_have": {"ja": "モデルは準備済みです: {p}", "en": "The model is already in place: {p}"},
     "model_get": {
         "ja": "Hugging Face から {r} をダウンロードします（約 {g} GB。回線によっては時間がかかります）。",
@@ -793,6 +812,42 @@ def copy_model_files(src, dst):
     if not n:
         raise OSError("no files in " + src)
     return n
+
+
+def package_commands(vpy, edir):
+    """Step 4: the pip command that installs the engine folder ``edir`` with its extras (ENGINE_EXTRAS) and huggingface_hub, and
+    the command of 0.3.4 (without the extras) that is tried when the first one fails."""
+    pip = [vpy, "-m", "pip", "install", "--disable-pip-version-check"]
+    return pip + ["%s[%s]" % (edir, ENGINE_EXTRAS), "huggingface_hub"], pip + [edir, "huggingface_hub"]
+
+
+def install_package(ui, vpy, edir, call=subprocess.call):
+    """Step 4: the package into the environment of ``vpy``, with its extras; when that fails, once more without them (text works,
+    one line says how to add Pillow later).  -> True (with the extras), False (without), None (both failed: pip_fail)."""
+    full, plain = package_commands(vpy, edir)
+    if call(full) == 0:
+        return True
+    if call(plain) != 0:
+        return None
+    ui.say("pillow_none", p=vpy)
+    return False
+
+
+def pillow_ok(vpy, call=subprocess.call):
+    """True when the Python of the environment can import what image input imports from Pillow (one short run of it)."""
+    try:
+        return call([vpy, "-c", PILLOW_CHECK], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL) == 0
+    except OSError:
+        return False
+
+
+def add_pillow(vpy, call=subprocess.call):
+    """Adds PILLOW_REQ to the environment of ``vpy`` (the image file was asked for).  -> the exit code of pip."""
+    try:
+        return call([vpy, "-m", "pip", "install", "--disable-pip-version-check", PILLOW_REQ])
+    except OSError:
+        return 1
 
 
 def fetch_model(ui, vpy, env, model, mdir, call=subprocess.call, environ=None):
@@ -2920,13 +2975,14 @@ def main(argv=None):
     ui.step(4, n, "s_venv")
     vdir = os.path.join(home, "venv")
     vpy = os.path.join(vdir, "Scripts", "python.exe")
+    extras = None                       # True / False: installed now with / without ENGINE_EXTRAS (install_package)
     if st.get("venv_ok") and os.path.isfile(vpy):
         ui.say("venv_have")
     else:
         if not os.path.isfile(vpy):
             subprocess.check_call([sys.executable, "-m", "venv", vdir])
-        rc = subprocess.call([vpy, "-m", "pip", "install", "--disable-pip-version-check", edir, "huggingface_hub"])
-        if rc != 0:
+        extras = install_package(ui, vpy, edir, call=subprocess.call)
+        if extras is None:
             ui.say("pip_fail")
             return 4
         st["venv_ok"] = True
@@ -2951,14 +3007,25 @@ def main(argv=None):
             return 5
         got[model] = True
         save_state(state_path, st)
+    asked = False                       # the image file was asked for and is there (offer_image_part, or --image-file)
     if a.image_file and (a.model_dir or model != "inkling2"):
         ui.say("img_not_dir" if a.model_dir else "img_not_model")
     elif model == "inkling2" and INK2_IMAGE and not a.model_dir and (a.image_file or not fresh) and fixed != "left":
         # a folder of 0.3.2 to 0.3.4: the image file is offered once (not when the page's update started this run: the
         # page waits for the server and nobody looks at this window)
-        offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now=not (a.action == "web" and a.web_port),
-                         forced=a.image_file, yes=a.yes)
+        asked = offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now=not (a.action == "web" and a.web_port),
+                                 forced=a.image_file, yes=a.yes) or a.image_file
     if model == "inkling2" and INK2_IMAGE:
+        # image input needs Pillow in the environment (ENGINE_EXTRAS): not checked when step 4 installed it just now.  The image
+        # file was asked for (the yes answer, or --image-file): one try to add Pillow.  Without Pillow, one line says so here,
+        # after the downloads (a line of step 4 has scrolled away by now)
+        if extras is not True and ink2_has_image(mdir) and not pillow_ok(vpy, call=subprocess.call):
+            added = False
+            if asked:
+                ui.say("pillow_add")
+                added = add_pillow(vpy, call=subprocess.call) == 0
+            if not added:
+                ui.say("pillow_need", p=vpy)
         # once the image file is in place (the install above, or a download of the image revision into a folder that step 2
         # counted without it: the state file was lost) the server loads it too: the note of step 2 is said again when it changes
         context_note(gpu["used"], quiet=noted)
