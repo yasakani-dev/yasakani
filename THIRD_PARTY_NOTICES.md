@@ -162,6 +162,11 @@ is in the release; you download them yourself.
 * Jian Chen, Yesheng Liang, Zhijian Liu. *DFlash: Block Diffusion for Flash Speculative Decoding.* arXiv:2602.06036, February 2026.
   The helper model above is a drafter of this kind.
 * Qwen team. The Qwen3.8 model family (see above).
+* Inco AI. Inkling-2-Mini-DFlash2 (<https://huggingface.co/incoai/Inkling-2-Mini-DFlash2>, model card license: Apache-2.0).
+  The optional Linux DFlash2 implementation in `src/engine_ink2.cpp` and `src/ink2_kernels.cu` follows the checkpoint's configuration
+  and published `sglang_inkling_dflash2.py` reference computation: block diffusion, dynamic convolution, and the conditional
+  candidate selector. The initial CUDA port was developed by @audreyt for MSI's Linux deployment, then adapted onto PR #30.
+  The checkpoint and Python reference are downloaded separately and are not included in this repository or the engine binary.
 * Thinking Machines Lab. Inkling-2 Mini (<https://huggingface.co/thinkingmachines/Inkling-2-Mini>, Apache License 2.0; its model card
   also names a Model Acceptable Use Policy, <https://thinkingmachines.ai/model-acceptable-use-policy/>). The engine in `src/inkling2/` and
   the reader `python/yasakani/_ink2_ckpt.py` compute what the published model code computes (the Inkling-2 code proposed for Hugging Face

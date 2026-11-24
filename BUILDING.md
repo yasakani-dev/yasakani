@@ -322,7 +322,8 @@ built only when you ask for it, and the released Windows `yskn.dll` does not con
   `yskn_inkling2.dll` above, which is Windows only.
 * It runs the shapes of Inkling-2 Mini only. Before it loads anything it checks `config.json` and the type, shape and size of every
   tensor in the weights file, and it stops with an error on anything else.
-* It does not use the drafter (`mtp.safetensors`), and it reads the published weights, not those of `--scheme quality`. Text only, one
+* With PR #30, it can use the built-in drafter (`mtp.safetensors`); the optional external DFlash2 drafter is described below.
+  It reads the published weights, not those of `--scheme quality`. Text only, one
   request at a time; `yasakani serve` takes tool calls. `--yarn2`, `--suppress-tokens`, `--parallel` and `selfcheck` are not available
   for this engine. Sampling uses the model's defaults (temperature 1.0, top-p 1.0, no top-k).
 * Its author ran it on an RTX 5090 and on a DGX Spark (GB10). We ran it on one RTX 5090 under WSL2 (Ubuntu 24.04, CUDA 13.1, November
@@ -335,6 +336,54 @@ cmake --build build -j
 yasakani chat  --model-dir ~/models/Inkling-2-Mini --dll build/bin/libyskn.so
 yasakani serve --model-dir ~/models/Inkling-2-Mini --dll build/bin/libyskn.so
 ```
+
+#### External Inkling-2-Mini DFlash2 drafter (Linux)
+
+This feature is based on the Linux engine changes of [PR #30](https://github.com/yasakani-dev/yasakani/pull/30).
+It requires the same `-DYSKN_WITH_INK2=ON` build above and cuBLAS. The default build and the separate Windows engine do not include it.
+Without a DFlash2 directory, the existing PR #30 MTP, tree, suffix drafting and autoregressive paths keep their behavior.
+
+Download `incoai/Inkling-2-Mini-DFlash2` separately. Pass its directory, containing `config.json` and `model.safetensors`,
+alongside the unconverted `thinkingmachines/Inkling-2-Mini` target:
+
+```sh
+yasakani chat --model-dir ~/models/Inkling-2-Mini --dll build/bin/libyskn.so \
+  --dflash-dir ~/models/Inkling-2-Mini-DFlash2 --draft-depth 7
+yasakani serve --model-dir ~/models/Inkling-2-Mini --dll build/bin/libyskn.so \
+  --dflash-dir ~/models/Inkling-2-Mini-DFlash2
+```
+
+`chat`, `serve` and `bench` accept `--dflash-dir`. It selects DFlash2 instead of built-in MTP. `--draft off` disables both.
+`--draft-depth` sets a fixed 1 to 7 proposals (default 7); one additional verifier token anchors each block. Greedy decoding uses
+the same target verifier and convolution-state rollback as MTP. Sampled decoding draws conditional proposals from the 16-candidate
+selector and uses sparse rejection/residual sampling against the target distribution. The residual scan costs O(vocabulary * 16);
+it does not search the full target distribution separately for every vocabulary entry.
+
+The directory precedence is `--dflash-dir`, `YASAKANI_DFLASH_DIR`, then `YSKN_INK2_DFLASH_DIR`. Native callers can set
+`YSKN_INK2_DFLASH_DIR`, `YSKN_INK2_DFLASH_K=1..7`, and `YSKN_INK2_DFLASH=0` to disable loading.
+`YSKN_INK2_DFLASH_HEAD=q8` uses the existing Q8 draft-head buffer when available; the default uses the BF16 output head.
+The existing target `YSKN_INK2_HEAD=q8_0` also selects its Q8 head for DFlash2.
+`YSKN_INK2_GRAPH=0` disables graph capture for comparisons; sampled draft selection runs on the host.
+
+Only the published Mini DFlash2 architecture is supported: hidden size 2304, five noncausal sliding-attention layers,
+32 query heads, eight KV heads, head dimension 128, FFN 6912, window 2048, block size 8, convolution group 16/kernel 2,
+selector rank 256/top-16, and target-compatible vocabulary and four ascending tap indices ending at visit 48.
+Missing or mistyped required config values, unsupported rotary/activation/attention settings, and tensor dtype, shape or byte-size
+mismatches are errors. The engine checks the draft config and all required BF16 tensor metadata before selecting a CUDA device.
+Weights and the published Python reference are not bundled; see `THIRD_PARTY_NOTICES.md`.
+
+After building a separate library, run the retained tests against that library:
+
+```sh
+PYTHONPATH=python YASAKANI_DLL="$PWD/build/bin/libyskn.so" \
+  python -m unittest discover -s python/tests -p 'test_inkling2_dflash2.py' -v
+```
+
+The acceptance tests call host-only exports, but require an Inkling-enabled library and its CUDA/cuBLAS runtime dependencies.
+Without it, those tests skip; CLI tests still run. Before publishing, compare greedy output with DFlash2 disabled and enabled,
+graphs off/on, draft depths 1 and 7, a prompt crossing the 2048-token window, repeated/extended prompts, and suppressed tokens.
+Exercise sampled decoding with temperature 1, top-p 1, top-k disabled (the model defaults), then top-k/top-p/min-p filters.
+Build once with `YSKN_WITH_INK2=OFF` as well to check that the opt-in boundary remains intact.
 
 ## GPUs
 

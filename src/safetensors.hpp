@@ -217,8 +217,65 @@ class SafetensorsReader {
   SafetensorsReader() { staging_.resize(kChunkBytes); }
   ~SafetensorsReader() { close_all(); }
 
+  void add_file(const std::string& path, const char* key_prefix) {
+    const int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) throw std::runtime_error("cannot open " + path);
+    struct stat st {};
+    if (::fstat(fd, &st) != 0 || st.st_size < 8) {
+      ::close(fd);
+      throw std::runtime_error("cannot read the size of " + path + " (or it is shorter than a safetensors header)");
+    }
+    const uint64_t fsize = uint64_t(st.st_size);
+    uint64_t hlen = 0;
+    if (::pread(fd, &hlen, 8, 0) != 8 || hlen == 0 || hlen > (64u << 20) || 8u + hlen > fsize) {
+      ::close(fd);
+      throw std::runtime_error("bad safetensors header in " + path);
+    }
+    std::string hdr(size_t(hlen), '\0');
+    if (::pread(fd, hdr.data(), size_t(hlen), 8) != ssize_t(hlen)) {
+      ::close(fd);
+      throw std::runtime_error("truncated safetensors header in " + path);
+    }
+    const size_t fidx = fds_.size();
+    fds_.push_back(fd);
+    const stjson::Val root = stjson::parse(hdr);
+    for (const auto& [name, val] : root.obj) {
+      if (name == "__metadata__") continue;
+      if (key_prefix && name.rfind(key_prefix, 0) != 0) continue;
+      StTensorInfo info;
+      info.dtype = val.at("dtype").s;
+      uint64_t numel = 1;
+      for (const auto& d : val.at("shape").arr) {
+        if (d.kind != stjson::Val::Num || d.i < 0 || (d.i > 0 && numel > (uint64_t(1) << 48) / uint64_t(d.i)))
+          throw std::runtime_error("bad shape for " + name + " in " + path);
+        numel *= uint64_t(d.i);
+        info.shape.push_back(d.i);
+      }
+      const auto& offs = val.at("data_offsets").arr;
+      if (offs.size() != 2 || offs[0].i < 0 || offs[1].i < offs[0].i) throw std::runtime_error("bad offsets for " + name);
+      info.file_offset = 8u + hlen + uint64_t(offs[0].i);
+      info.nbytes = size_t(offs[1].i - offs[0].i);
+      info.file_idx = fidx;
+      // the data must lie inside the file, and be as large as dtype x shape says (the engine sizes its buffers by the shape)
+      if (uint64_t(offs[1].i) > fsize - 8u - hlen)
+        throw std::runtime_error("tensor " + name + " lies past the end of " + path + " (truncated or damaged file)");
+      const size_t eb = st_dtype_bytes(info.dtype);
+      if (eb != 0 && uint64_t(info.nbytes) != numel * eb)
+        throw std::runtime_error("tensor " + name + " in " + path + ": " + std::to_string(info.nbytes) + " bytes of data, but dtype " +
+                                 info.dtype + " and its shape need " + std::to_string(numel * eb));
+      tensors_.emplace(name, std::move(info));
+    }
+  }
+
+  void open_file(const std::string& path, const char* key_prefix = nullptr) {
+    close_all();
+    tensors_.clear();
+    add_file(path, key_prefix);
+  }
+
   void open_dir(const std::string& dir, const char* key_prefix = "model.llm.") {
     close_all();
+    tensors_.clear();
     namespace fs = std::filesystem;
     std::vector<std::string> files;
     for (const auto& ent : fs::directory_iterator(dir)) {
@@ -227,55 +284,7 @@ class SafetensorsReader {
     }
     std::sort(files.begin(), files.end());
     if (files.empty()) throw std::runtime_error("no .safetensors files in " + dir);
-    for (const std::string& path : files) {
-      const int fd = ::open(path.c_str(), O_RDONLY);
-      if (fd < 0) throw std::runtime_error("cannot open " + path);
-      struct stat st {};
-      if (::fstat(fd, &st) != 0 || st.st_size < 8) {
-        ::close(fd);
-        throw std::runtime_error("cannot read the size of " + path + " (or it is shorter than a safetensors header)");
-      }
-      const uint64_t fsize = uint64_t(st.st_size);
-      uint64_t hlen = 0;
-      if (::pread(fd, &hlen, 8, 0) != 8 || hlen == 0 || hlen > (64u << 20) || 8u + hlen > fsize) {
-        ::close(fd);
-        throw std::runtime_error("bad safetensors header in " + path);
-      }
-      std::string hdr(size_t(hlen), '\0');
-      if (::pread(fd, hdr.data(), size_t(hlen), 8) != ssize_t(hlen)) {
-        ::close(fd);
-        throw std::runtime_error("truncated safetensors header in " + path);
-      }
-      const size_t fidx = fds_.size();
-      fds_.push_back(fd);
-      const stjson::Val root = stjson::parse(hdr);
-      for (const auto& [name, val] : root.obj) {
-        if (name == "__metadata__") continue;
-        if (key_prefix && name.rfind(key_prefix, 0) != 0) continue;
-        StTensorInfo info;
-        info.dtype = val.at("dtype").s;
-        uint64_t numel = 1;
-        for (const auto& d : val.at("shape").arr) {
-          if (d.kind != stjson::Val::Num || d.i < 0 || (d.i > 0 && numel > (uint64_t(1) << 48) / uint64_t(d.i)))
-            throw std::runtime_error("bad shape for " + name + " in " + path);
-          numel *= uint64_t(d.i);
-          info.shape.push_back(d.i);
-        }
-        const auto& offs = val.at("data_offsets").arr;
-        if (offs.size() != 2 || offs[0].i < 0 || offs[1].i < offs[0].i) throw std::runtime_error("bad offsets for " + name);
-        info.file_offset = 8u + hlen + uint64_t(offs[0].i);
-        info.nbytes = size_t(offs[1].i - offs[0].i);
-        info.file_idx = fidx;
-        // the data must lie inside the file, and be as large as dtype x shape says (the engine sizes its buffers by the shape)
-        if (uint64_t(offs[1].i) > fsize - 8u - hlen)
-          throw std::runtime_error("tensor " + name + " lies past the end of " + path + " (truncated or damaged file)");
-        const size_t eb = st_dtype_bytes(info.dtype);
-        if (eb != 0 && uint64_t(info.nbytes) != numel * eb)
-          throw std::runtime_error("tensor " + name + " in " + path + ": " + std::to_string(info.nbytes) + " bytes of data, but dtype " +
-                                   info.dtype + " and its shape need " + std::to_string(numel * eb));
-        tensors_.emplace(name, std::move(info));
-      }
-    }
+    for (const std::string& path : files) add_file(path, key_prefix);
   }
 
   void close_all() {

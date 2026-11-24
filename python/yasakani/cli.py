@@ -147,6 +147,9 @@ def _add_engine_args(sp: argparse.ArgumentParser) -> None:
                    help="the model's drafter proposes a few tokens that the model checks in one pass; the output does not change.  "
                         "auto (default): used only while it makes generation faster; on: always; off: not loaded.  "
                         "Default: $YASAKANI_DRAFT or auto")
+    g.add_argument("--dflash-dir", default=None, metavar="DIR",
+                   help="folder with an external DFlash2 draft model (config.json + model.safetensors) for HF Inkling-2 Mini "
+                        "(default: $YASAKANI_DFLASH_DIR or $YSKN_INK2_DFLASH_DIR)")
     g.add_argument("--draft-depth", type=int, default=None, metavar="N",
                    help="tokens the drafter proposes per pass, 1 to 7 (default: $YASAKANI_DRAFT_DEPTH or the engine's)")
     g.add_argument("--copy", choices=("auto", "off"), default=None,
@@ -330,6 +333,27 @@ def _open_stack(args, *, warm: bool = True, parallel: int = 1, allow_suppress: b
         _say("edit copy: on")
     max_ctx = plan.max_ctx
     extra_env = dict(plan.env) if plan.env else {}
+    dflash_arg = getattr(args, "dflash_dir", None)
+    dflash_env = (os.environ.get("YASAKANI_DFLASH_DIR") or os.environ.get("YSKN_INK2_DFLASH_DIR") or "").strip()
+    dflash_dir = dflash_arg if dflash_arg is not None else (dflash_env or None)
+    draft_arg = getattr(args, "draft", None) or ((os.environ.get("YASAKANI_DRAFT") or "").strip().lower() or None)
+    if dflash_arg is not None and not pack.is_hf_inkling2:
+        raise YasakaniError("--dflash-dir is for HF Inkling-2 Mini model folders only")
+    if pack.is_hf_inkling2:
+        if draft_arg == "off":
+            extra_env["YSKN_INK2_MTP"] = "0"
+            extra_env["YSKN_INK2_DFLASH"] = "0"
+        elif dflash_dir:
+            dp = Path(dflash_dir).expanduser().resolve()
+            if not dp.is_dir() or not (dp / "config.json").is_file() or not (dp / "model.safetensors").is_file():
+                raise YasakaniError("--dflash-dir must be a folder containing config.json and model.safetensors: %s" % dflash_dir)
+            extra_env["YSKN_INK2_DFLASH_DIR"] = str(dp)
+            extra_env["YSKN_INK2_DFLASH"] = "1"
+            depth = getattr(args, "draft_depth", None)
+            if depth is not None:
+                if not 1 <= int(depth) <= 7:
+                    raise YasakaniError("--draft-depth must be between 1 and 7 (got %s)" % depth)
+                extra_env["YSKN_INK2_DFLASH_K"] = str(int(depth))
     if yarn2:
         if max_ctx is not None and max_ctx > gpus.YARN2_MAX_CTX:
             raise YasakaniError("--yarn2 supports at most %d context tokens (got %d)" % (gpus.YARN2_MAX_CTX, max_ctx))
