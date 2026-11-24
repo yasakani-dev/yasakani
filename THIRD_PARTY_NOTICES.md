@@ -51,6 +51,46 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+### Strata 0.2.19 (source, parts of `src/ink2_kernels.cu` and `src/engine_ink2.cpp`)
+
+* Copyright (c) 2026 Niko1221 and the Strata contributors - MIT License (below, as in the `LICENSE` file of Strata 0.2.19) -
+  <https://github.com/Niko1221/Strata>, tag `v0.2.19`.
+* Parts of the Linux Inkling-2 engine (pull request #30) are **derived** from Strata's CUDA code in `engine/src/inkling2/cuda/` and
+  changed for YASAKANI (names, constants, arguments, layout). Among them:
+  * `src/ink2_kernels.cu`: the decode helpers `sf4_decode16_h2`, `mx8_decode16_h2` and `dot16_h2_2acc` and the inner loops of the
+    `__half2` expert kernels that use them, the screened BF16 unembed (`k_build_unembed_screen_bf16` and the `k_screen_*` kernels), and
+    the kernels of the drafter's beam tree (`k_dspark_*`).
+  * `src/engine_ink2.cpp`: the host part of the beam tree (how the candidates are sorted, how the tree size is chosen and which nodes
+    are kept).
+* These parts stay under the MIT License below; the rest of YASAKANI is under the Apache License 2.0.
+* The released Windows libraries `yskn.dll` and `yskn_inkling2.dll` do not contain this code: it is built only on Linux, with
+  `-DYSKN_WITH_INK2=ON`.
+* Corrected on 2026-11-25. Until then this file said that only ideas of Strata were used and no code was taken from it.
+
+```
+MIT License
+
+Copyright (c) 2026 Niko1221 and the Strata contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ### NVIDIA CUDA Runtime (inside `yskn.dll` and `yskn_inkling2.dll`)
 
 * The prebuilt `yskn.dll` and, since 0.3.1, `yskn_inkling2.dll` (the engine for Inkling-2 Mini) each contain the NVIDIA CUDA Runtime library
@@ -166,11 +206,10 @@ is in the release; you download them yourself.
   also names a Model Acceptable Use Policy, <https://thinkingmachines.ai/model-acceptable-use-policy/>). The engine in `src/inkling2/`,
   the Linux engine (`src/engine_ink2.*`, `src/ink2_kernels.*` and its image encoder `src/ink2_vision.*`) and the reader
   `python/yasakani/_ink2_ckpt.py` compute what the published model code computes (the Inkling-2 code proposed for Hugging Face
-  transformers, <https://github.com/huggingface/transformers/pull/51050>, Apache License 2.0); they were written for YASAKANI. The model
+  transformers, <https://github.com/huggingface/transformers/pull/51050>, Apache License 2.0); they were written for YASAKANI, except the
+  parts of the Linux engine that are derived from Strata (above). The model
   files are not part of the release: the converter `tools/convert/inkling2_convert.py` makes a model folder from the files you download
   and writes the model's notice into it.
-* Niko1221/Strata (<https://github.com/Niko1221/Strata>, MIT License). Ideas from it are used in the Linux Inkling-2 engine
-  (`src/engine_ink2.*`, `src/ink2_kernels.*`, pull request #30); no code was taken from it.
 
 ## Not included
 
