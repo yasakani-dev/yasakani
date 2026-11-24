@@ -258,7 +258,7 @@ export LD_LIBRARY_PATH=/usr/local/cuda-13.5/targets/x86_64-linux/lib${LD_LIBRARY
 
 ### Image input on Linux
 
-The optional image input ([python/README.md](python/README.md#image-input-optional)) uses the multimodal library of llama.cpp b10488. On
+The optional image input of the Qwen3.8 models ([python/README.md](python/README.md#image-input-optional)) uses the multimodal library of llama.cpp b10488. On
 Windows the server takes the libraries of the b10488 release and compares them by SHA-256. That release has no matching Linux package to
 compare with, so on Linux the same release is built from source, as shared libraries:
 
@@ -300,7 +300,7 @@ apart, not every change: build b10488 unchanged. The server loads every `libggml
 more library named by the environment variable `GGML_BACKEND_PATH`, on Windows too), so keep the folder writable only by you.
 
 This part was contributed in [#8](https://github.com/yasakani-dev/yasakani/pull/8); its author ran it on native Ubuntu 26.04 with an
-RTX 5090 (the table above). We have not run image input on Linux ourselves, and it is not part of an official release.
+RTX 5090 (the table above). We have not run this image input on Linux ourselves, and it is not part of an official release.
 
 By default the projector runs on the CPU, as on Windows. `YASAKANI_VISION_GPU=1` in the environment of the server moves it to the GPU,
 with flash attention switched off. This is experimental and off by default: the image test was not repeated in this mode, and we have not
@@ -310,12 +310,14 @@ square of the image tokens, so with the variable set `--vision-max-image-tokens`
 
 <a name="linux-inkling-2"></a>
 
-### Inkling-2 Mini on Linux: the engine of #28 (`-DYSKN_WITH_INK2=ON`)
+### Inkling-2 Mini on Linux: the engine inside `libyskn.so` (`-DYSKN_WITH_INK2=ON`; #28, #30, #32)
 
-日本語：Linux では、[#28](https://github.com/yasakani-dev/yasakani/pull/28) で寄稿された Inkling-2 Mini のエンジンを `libyskn.so` に入れて組み立てられます。CMake の `-DYSKN_WITH_INK2=ON` を付けます（標準は付けません）。この時は実行に cuBLAS（CUDA Toolkit の `libcublas.so`）が要ります。ダウンロードしたままのモデルのフォルダー（`yasakani.json` が無い物）を変換せずに読みます。配布する Windows の `yskn.dll` には入っていません。
+日本語：Linux では、Inkling-2 Mini のエンジンを `libyskn.so` に入れて組み立てられます。@audreyt さんの寄稿です（[#28](https://github.com/yasakani-dev/yasakani/pull/28)・[#30](https://github.com/yasakani-dev/yasakani/pull/30)・[#32](https://github.com/yasakani-dev/yasakani/pull/32)）。CMake の `-DYSKN_WITH_INK2=ON` を付けます（標準は付けません）。この時は実行に cuBLAS（CUDA Toolkit の `libcublas.so`）が要ります。ダウンロードしたままのモデルのフォルダー（`yasakani.json` が無い物）を変換せずに読みます。0.3.5 で速くなり、先読み用のモデル（`mtp.safetensors`）も使います。キーと値は標準で bf16 で持ちます。`YSKN_INK2_KV=fp32` で 32 ビットになります。先読みは、標準では貪欲法の時だけです。`YSKN_INK2_MTP=1` でサンプリングにも使います。`YSKN_INK2_MTP=0` では読み込みません。画像も読めます。オプションと決まりは Windows と同じです（チャットの `/image` はありません）。会話の次の番では、プレフィックスキャッシュで前の部分を読み直しません。ソースからの組み立てで、公式の配布物ではありません。配布する Windows の `yskn.dll` には入っていません。
 
-[#28](https://github.com/yasakani-dev/yasakani/pull/28) (@audreyt) contributed a second engine for Inkling-2 Mini, inside `libyskn.so`. It is
-built only when you ask for it, and the released Windows `yskn.dll` does not contain it:
+[#28](https://github.com/yasakani-dev/yasakani/pull/28) (@audreyt) contributed a second engine for Inkling-2 Mini, inside `libyskn.so`;
+[#30](https://github.com/yasakani-dev/yasakani/pull/30) and [#32](https://github.com/yasakani-dev/yasakani/pull/32), by the same author,
+make it faster and let it read images (since 0.3.5). It is built only when you ask for it, from source; it is not part of an official
+release, and the released Windows `yskn.dll` does not contain it:
 
 * Add `-DYSKN_WITH_INK2=ON` to the first `cmake` command of the [steps](#steps-1) above. The option stops with an error on Windows.
 * With it, `libyskn.so` also needs cuBLAS when it loads (`libcublas.so.13` and `libcublasLt.so.13` of the CUDA Toolkit), for every model,
@@ -327,18 +329,67 @@ built only when you ask for it, and the released Windows `yskn.dll` does not con
   the Inkling-2 library above: `yskn_inkling2.dll` on Windows, and on Linux `libyskn_inkling2.so`, built from source
   ([below](#linux-inkling-2-library)).
 * It runs the shapes of Inkling-2 Mini only. Before it loads anything it checks `config.json` and the type, shape and size of every
-  tensor in the weights file, and it stops with an error on anything else.
-* It does not use the drafter (`mtp.safetensors`), and it reads the published weights, not those of `--scheme quality`. Text only, one
-  request at a time; `yasakani serve` takes tool calls. `--yarn2`, `--suppress-tokens`, `--parallel` and `selfcheck` are not available
-  for this engine. Sampling uses the model's defaults (temperature 1.0, top-p 1.0, no top-k).
-* Its author ran it on an RTX 5090 and on a DGX Spark (GB10). We ran it on one RTX 5090 under WSL2 (Ubuntu 24.04, CUDA 13.1, November
-  22, 2026): the 30 tokens that the official test of the model expects, a chat in the terminal, and `yasakani serve` with a streamed
-  answer, a tool call and the answer to its result.
+  text tensor in the weights file, and it stops with an error on anything else. It reads the published weights, not those of
+  `--scheme quality`. One request at a time; `yasakani serve` takes tool calls. `--yarn2`, `--suppress-tokens`, `--parallel` and
+  `selfcheck` are not available for this engine. Sampling uses the model's defaults (temperature 1.0, top-p 1.0, no top-k). It opens a
+  context of 32,768 tokens unless `--max-ctx` is given, without looking at the free GPU memory.
+* **Faster since 0.3.5 ([#30](https://github.com/yasakani-dev/yasakani/pull/30)):** vectorized kernels, prompt reading on the Tensor
+  Cores in BF16, CUDA graphs, a screened output head, and the model's drafter (`mtp.safetensors`, loaded when the folder has it) with
+  tree verification. We added three changes on top:
+  * **Keys and values are stored in bf16 by default**, 16 bits per value like the engine of 0.3.4 (which used FP16).
+    `YSKN_INK2_KV=fp32` in the environment stores them in 32 bits, as the pull request did by default; that takes more GPU memory
+    (below).
+  * **The drafter drafts for greedy decoding only by default** (temperature 0 or top-k 1). With sampling few drafted tokens are kept,
+    so drafting costs more than it gives (numbers below). The drafter is still loaded and follows the text, so that a later greedy
+    request can draft. `YSKN_INK2_MTP=1` makes it draft for sampling too, and `YSKN_INK2_MTP=0` does not load it.
+  * A step of sampled generation with the drafter took seconds for each rejected draft token. We changed how it looks up the draft
+    probabilities; it draws the same tokens without that delay.
+* **Image input since 0.3.5 ([#32](https://github.com/yasakani-dev/yasakani/pull/32)).** The image tower of the published model runs on
+  the GPU inside `libyskn.so` (`src/ink2_vision.*`) and reads its tensors from the downloaded weights file. The options and rules are
+  those of the converted folder ([python/README.md](python/README.md#inkling-2-mini-image-input)): `--vision auto|on|off` (or
+  `YASAKANI_INK2_VISION`), `--vision-max-image-tokens`, `--vision-max-request-image-tokens`, `--vision-allow-local-files`,
+  `chat --image` (the chat of this engine has no `/image`), and in `serve` image parts in user and tool messages (`image_url`, `input_image` and `image`), with the
+  same limits, the same shrink of large images and the same messages for what is refused. What we added on top:
+  * Before the image tower is used, `vision_config` in `config.json` and the type, shape and size of every image-tower tensor are
+    checked against Inkling-2 Mini. A folder with another configuration, or with a damaged entry, opens with text only and one line
+    that gives the reason (`--vision auto`); `--vision on` or `--image` stops with that reason.
+  * A failed GPU allocation in the image tower frees what it took.
+  * The export of the image entry is built only with `-DYSKN_WITH_INK2=ON`. The default build, and so the released Windows `yskn.dll`,
+    keeps the entries and messages of 0.3.4.
+* **GPU memory of the image tower.** Its weights are loaded at the first image. Unlike on Windows, this memory is not counted when the
+  context is chosen (32,768 tokens unless `--max-ctx` is given). On a card with little free memory, leave room with a smaller
+  `--max-ctx`, or use `--vision off`.
+* **Image vectors.** The vectors of recent images stay in host memory (up to 512 MiB). `--vision-cache DIR` (from the contributor) also
+  keeps them in DIR as `.npz` files, so that a later start need not encode the same image again. Only this engine takes it; for a
+  converted folder it is refused.
+* **Prefix cache ([#32](https://github.com/yasakani-dev/yasakani/pull/32)).** The engine keeps up to 6 snapshots of its state at the end
+  of earlier prompts, matched on the tokens and on the images at their places, so that the next turn of a conversation reads only the
+  new part. The snapshots are kept in pinned host memory: by our reading of the code up to about 1 GiB with the bf16 store, and about
+  2 GiB with `YSKN_INK2_KV=fp32`. When that memory cannot be allocated, the engine skips the snapshot and goes on.
+* **What we ran** (November 24, 2026, one RTX 5090 under WSL2, Ubuntu 24.04, CUDA 13.1, GCC 13.3, `-DCMAKE_CUDA_ARCHITECTURES=120`, the
+  published folder with `mtp.safetensors`, one run of each):
+  * The 30 tokens that the official test of the model expects: 30 of 30.
+  * `yasakani bench --max-ctx 8192 --n 128 --runs 2`, greedy: 203.0 tokens/s on average (21.9 with the engine of 0.3.4 in our earlier
+    run).
+  * Sampled with the model's defaults, a code prompt, 128 tokens, seeds 1, 2 and 3, a context of 4,096 tokens: 35.3, 43.0 and 44.8
+    tokens/s by default; 21.9, 21.6 and 22.0 with `YSKN_INK2_MTP=1`; 56.4, 56.9 and 57.7 with `YSKN_INK2_MTP=0`. In our earlier run
+    of 128 sampled tokens the engine of 0.3.4 gave 17.0 to 17.4 tokens/s.
+  * GPU memory at the default context of 32,768 tokens (the peak of `bench --n 32` minus the 1,640 MiB in use before): 22,105 MiB. With
+    `YSKN_INK2_KV=fp32` it was 23,593 MiB (measured with #30 alone, where the default also gave 22,105 MiB).
+  * Images: four image prompts (a table, shapes and colours, the text in a picture) gave the same prompt tokens and the same first 64
+    greedy tokens as the reference run of the published model that the Windows check uses. A 4032 × 3024 photo was shrunk to 999 image
+    tokens, as on Windows. In the second turn of a conversation 144 of the 264 prompt tokens came from the prefix cache.
+  * `yasakani serve`: all three kinds of image part were answered. A video part and an image in a system message got 400 with the
+    messages of Windows. A copy of the folder with another `native_patch_size` in `config.json` opened with text only and the reason,
+    and `chat --image` stopped with it.
+  * Not checked: native Linux, GPUs other than the RTX 5090, `compute-sanitizer`, and the quality of the answers beyond these tests.
+    The author of #28 ran that engine on an RTX 5090 and on a DGX Spark (GB10).
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc -DYSKN_WITH_INK2=ON
 cmake --build build -j
 yasakani chat  --model-dir ~/models/Inkling-2-Mini --dll build/bin/libyskn.so
+yasakani chat  --model-dir ~/models/Inkling-2-Mini --dll build/bin/libyskn.so --image picture.png
 yasakani serve --model-dir ~/models/Inkling-2-Mini --dll build/bin/libyskn.so
 ```
 
@@ -346,7 +397,7 @@ yasakani serve --model-dir ~/models/Inkling-2-Mini --dll build/bin/libyskn.so
 
 ### Inkling-2 Mini on Linux: `libyskn_inkling2.so` (`build_linux.sh`, since 0.3.5)
 
-日本語：0.3.5 から、Inkling-2 Mini 用のライブラリー（`src/inkling2/`）を Linux でもソースから組み立てられます（[#33](https://github.com/yasakani-dev/yasakani/pull/33)）。`bash src/inkling2/build_linux.sh` で `build/inkling2/libyskn_inkling2.so` ができ、`YASAKANI_INK2_DLL` でその場所を教えます。RTX 50 シリーズでは `INK2_NVFP4_TC=1` を付けます。CPU のエミュレーションとその自己試験は入っていません。寄稿者が確かめた方法で、公式の対応ではありません。変換したフォルダー（`"architecture": "inkling2"`）はこのライブラリー、ダウンロードしたままのフォルダーは上の #28 のエンジンが読みます。
+日本語：0.3.5 から、Inkling-2 Mini 用のライブラリー（`src/inkling2/`）を Linux でもソースから組み立てられます（[#33](https://github.com/yasakani-dev/yasakani/pull/33)）。`bash src/inkling2/build_linux.sh` で `build/inkling2/libyskn_inkling2.so` ができ、`YASAKANI_INK2_DLL` でその場所を教えます。RTX 50 シリーズでは `INK2_NVFP4_TC=1` を付けます。CPU のエミュレーションとその自己試験は入っていません。寄稿者が確認した方法で、公式の対応ではありません。変換したフォルダー（`"architecture": "inkling2"`）は、このライブラリーが読みます。ダウンロードしたままのフォルダーは、上の `libyskn.so` のエンジンが読みます。
 
 [#33](https://github.com/yasakani-dev/yasakani/pull/33) (@Albrod) contributed a Linux build of the Inkling-2 library of
 [the section above](#the-inkling-2-mini-library-yskn_inkling2dll-since-031). This is building from source, tested by contributors, not an
