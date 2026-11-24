@@ -1689,9 +1689,24 @@ def port_is_free(port):
         s.close()
 
 
+def port_answers(port, seconds=0.25):
+    """True when something accepts a connection on 127.0.0.1:port.  On Windows a program that listens on every address (0.0.0.0)
+    does not stop a bind to 127.0.0.1, so port_is_free passes there, but a server of ours could not listen on that port.  A
+    listener answers at once; nothing there gives no answer within ``seconds`` (a refusal takes about two seconds on Windows)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(seconds)
+    try:
+        s.connect(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 def pick_port(preferred, avoid=()):
     for p in [preferred] + list(range(preferred + 10, preferred + 60)):
-        if p not in avoid and port_is_free(p):
+        if p not in avoid and not port_answers(p) and port_is_free(p):      # ask first: a port in use is not even bound for the test
             return p
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:

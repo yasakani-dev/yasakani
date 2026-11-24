@@ -1155,6 +1155,30 @@ class HelperTests(Base):
         self.assertEqual(httpd.server_address[1], port)
         self.assertEqual(set(made), {port})
 
+    def test_pick_port_skips_a_port_that_answers(self):
+        """On Windows a bind to 127.0.0.1 passes while another program listens on the port on every address (0.0.0.0); the
+        server could then not listen there.  The listener of this test is on the loopback address (so no firewall question),
+        and the bind test is made to pass as it does in that case."""
+        port = free_port()
+        holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        holder.bind(("127.0.0.1", port))
+        holder.listen(8)
+        self.addCleanup(holder.close)
+        self.assertTrue(QS.port_answers(port))
+        asked = []
+        with mock.patch.object(QS, "port_is_free", lambda p: asked.append(p) or True):
+            got = QS.pick_port(port)
+        self.assertIn(got, range(port + 10, port + 60))
+        self.assertNotIn(port, asked)                                # a port that answers is not bound for the test
+
+    def test_a_port_without_a_listener_does_not_answer(self):
+        port = free_port()
+        t0 = time.monotonic()
+        self.assertFalse(QS.port_answers(port))
+        self.assertLess(time.monotonic() - t0, 1.5)                  # bounded: a refusal alone takes about two seconds on Windows
+        self.assertEqual(QS.pick_port(port), port)
+        self.assertIn(QS.pick_port(port, avoid=(port,)), range(port + 10, port + 60))
+
     def test_closed_server_ends_the_connections_it_accepted(self):
         """A browser keeps its connections open.  After the server was closed, the thread of such a connection must not go on
         answering for the server that is gone (after a model switch the page must reach the next one)."""
