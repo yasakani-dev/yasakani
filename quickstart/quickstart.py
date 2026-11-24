@@ -341,6 +341,8 @@ T = {
         "ja": "Inkling-2 Mini は文章だけで使います。画像も使う時は START.cmd --image-file（約 {g} GB）。",
         "en": "Inkling-2 Mini runs with text only. For image input: START.cmd --image-file (about {g} GB).",
     },
+    "img_undone": {"ja": "前回は画像用のファイルを入れる途中で止まりました。フォルダーを前の状態に戻しました。",
+                   "en": "The last start stopped while it put the file for image input in place. The folder was put back as it was."},
     "img_have": {"ja": "--image-file: 画像用のファイルはもう入っています。ダウンロードはしません。",
                  "en": "--image-file: the file for image input is already there. Nothing is downloaded."},
     "img_not_dir": {"ja": "--image-file: --model-dir のフォルダーは変えません。画像用のファイルはダウンロードしません。",
@@ -908,50 +910,140 @@ def fetch_image_files(ui, vpy, env, image, ddir, call=subprocess.call, environ=N
     return rc
 
 
-IMAGE_OLD_SUFFIX = ".before-image"                     # a file of the folder while install_image_files() replaces it
+IMAGE_OLD_SUFFIX = ".before-image"                     # a copy of a file of the folder while install_image_files() replaces it
 
 
-def install_image_files(ddir, image, mdir, replace=os.replace):
-    """Moves the checked files of ``image`` from ``ddir`` into ``mdir``: yasakani.json last, so that the folder names the image
-    file only once it is there.  All or nothing: a file of the folder is first moved aside (+ IMAGE_OLD_SUFFIX, in the same
-    folder), and when a move fails (on Windows a file another program holds open cannot be renamed or replaced, and a folder on
-    another drive cannot be moved into) the files moved in go back to ``ddir`` and the old ones back to their names, in reverse
-    order, before the OSError is raised: yasakani.json then still matches the files it lists.  After the last move the old
-    files and the download notes of Hugging Face for the replaced files are removed (a later download of the folder then fetches
-    only those again).  ``replace``: os.replace (tests: a stand-in that fails)."""
-    names = sorted(image["files"], key=lambda n: n == "yasakani.json")
-    done = []                                           # [name, an old file was moved aside, the new file was moved in]
+def image_install_order(image):
+    """The files of ``image`` in the order install_image_files() handles them: the image file first (the old yasakani.json does
+    not name it), then the other files, yasakani.json last."""
+    files = image["files"]
+    first = [INK2_IMAGE_FILE] if INK2_IMAGE_FILE in files else []
+    last = ["yasakani.json"] if "yasakani.json" in files else []
+    return first + sorted(n for n in files if n not in first + last) + last
+
+
+def install_image_files(ddir, image, mdir, replace=os.replace, copy=shutil.copy2, remove=os.remove):
+    """Puts the checked files of ``image`` from ``ddir`` into ``mdir``, all or nothing.  Every file keeps its real name at every
+    instant: yasakani.json is never missing, also when the process is stopped between two steps.
+
+    1. Each file the folder already has is copied to its backup name (name + IMAGE_OLD_SUFFIX, through a temporary name + ".tmp"),
+       in the order of image_install_order(): the backup of yasakani.json is made last.  No file of the folder changes here.
+    2. Each new file replaces the file of the folder with one os.replace (atomic on NTFS and on Linux), in the same order: the
+       image file first (the old yasakani.json does not name it), then NOTICE and README.md, yasakani.json last.  Only between
+       the first and the last of these three replaces (the time of two renames) are NOTICE or README.md new while yasakani.json
+       is old: the folder loads as before, and a ``yasakani verify`` in that moment would call NOTICE or README.md different.
+    3. The backup of yasakani.json is removed: from here the install counts as done (see repair_image_install()).  Then the
+       other backups and the download notes of Hugging Face for the replaced files are removed (a later download of the folder
+       then fetches only those again).
+
+    When a step before 3 fails or is interrupted (any exception, Ctrl+C too), every old file is put back straight from its
+    backup with one os.replace, the new files that had no old file go back to ``ddir``, and the exception goes on.  A file that
+    cannot be put back is named in an OSError ("; not put back: ..."); the backup of yasakani.json is then kept, so that the
+    next start puts the folder back (repair_image_install()).  ``replace``, ``copy``, ``remove``: os.replace, shutil.copy2 and
+    os.remove (tests: stand-ins that fail)."""
+    done = []                                           # [name, backed up, moved in]
     try:
-        for name in names:
+        for name in image_install_order(image):
             dst = os.path.join(mdir, name)
             done.append([name, False, False])
             if os.path.isfile(dst):
-                replace(dst, dst + IMAGE_OLD_SUFFIX)
+                copy(dst, dst + IMAGE_OLD_SUFFIX + ".tmp")
+                replace(dst + IMAGE_OLD_SUFFIX + ".tmp", dst + IMAGE_OLD_SUFFIX)
                 done[-1][1] = True
-            replace(os.path.join(ddir, name), dst)
-            done[-1][2] = True
-    except OSError as e:
+        for entry in done:
+            replace(os.path.join(ddir, entry[0]), os.path.join(mdir, entry[0]))
+            entry[2] = True
+        if done and done[-1][:2] == ["yasakani.json", True]:
+            remove(os.path.join(mdir, "yasakani.json" + IMAGE_OLD_SUFFIX))
+    except BaseException as e:
         left = []
+        last = done.pop() if done and done[-1][0] == "yasakani.json" else None
         for name, had, moved in reversed(done):
-            dst = os.path.join(mdir, name)
-            try:
-                if moved:
-                    replace(dst, os.path.join(ddir, name))
-                if had:
-                    replace(dst + IMAGE_OLD_SUFFIX, dst)
-            except OSError:
+            if not _put_back(ddir, mdir, name, had, moved, replace, remove):
                 left.append(name)
-        if left:
+        if last is not None:
+            if left:                                    # its backup stays: the next start puts the whole folder back
+                if last[2]:
+                    left.insert(0, last[0])
+            elif not _put_back(ddir, mdir, last[0], last[1], last[2], replace, remove):
+                left.insert(0, last[0])
+        if left and isinstance(e, OSError):
             raise OSError("%s; not put back: %s" % (e, ", ".join(left))) from e
         raise
     for name, had, _moved in done:
-        old = [os.path.join(mdir, name + IMAGE_OLD_SUFFIX)] if had else []
+        old = [os.path.join(mdir, name + IMAGE_OLD_SUFFIX)] if had and name != "yasakani.json" else []
         for p in old + [os.path.join(mdir, ".cache", "huggingface", "download", name + ".metadata")]:
             try:
                 if os.path.isfile(p):
-                    os.remove(p)
+                    remove(p)
             except OSError:
                 pass
+
+
+def _put_back(ddir, mdir, name, had, moved, replace, remove):
+    """install_image_files(), one file on the way back: the old file straight from its backup (one os.replace over the new one),
+    or the new file back to ``ddir`` when the folder had no old one.  -> False when the file could not be put back."""
+    dst = os.path.join(mdir, name)
+    if moved:
+        try:
+            if had:
+                replace(dst + IMAGE_OLD_SUFFIX, dst)
+            else:
+                replace(dst, os.path.join(ddir, name))
+        except OSError:
+            return False
+    for p in ([dst + IMAGE_OLD_SUFFIX] if had and not moved else []) + [dst + IMAGE_OLD_SUFFIX + ".tmp"]:
+        try:                                            # the file itself is unchanged: a backup left is removed at the next start
+            if os.path.isfile(p):
+                remove(p)
+        except OSError:
+            pass
+    return True
+
+
+def repair_image_install(mdir, replace=os.replace, remove=os.remove):
+    """At each start, for the Inkling-2 Mini folder of the home: finishes what an install_image_files() that was stopped (the
+    window closed, the power lost) left behind.  The backup of yasakani.json decides:
+    - It is there: the install had not reached its step 3.  It is undone: every backup is put back over its file (yasakani.json
+      last, so that a repair that is stopped too is done again at the next start), then an image file without a backup (one the
+      install moved in) is removed.  The folder is the old one again (text only), and the question comes again.  Undoing is
+      the safe way: the backups are whole copies (they get their name only once complete), while the new NOTICE and README.md
+      may be gone with the download folder.
+    - It is not there: nothing had changed yet, or the install was done.  The backups left are removed (one whose file is
+      missing, as an earlier candidate of 0.3.5 could leave, is put back instead).
+    Temporary copies (+ ".tmp") are removed in both cases.  -> "undone", "cleaned", "left" (a backup could not be put back or
+    removed: it stays for the next start, and no image question is asked in this run), or None when nothing was left.  No
+    OSError is raised."""
+    try:
+        names = sorted(os.listdir(mdir))
+    except OSError:
+        return None
+    tmps = [n for n in names if n.endswith(IMAGE_OLD_SUFFIX + ".tmp")]
+    backups = [n[:-len(IMAGE_OLD_SUFFIX)] for n in names if n.endswith(IMAGE_OLD_SUFFIX)]
+    if not tmps and not backups:
+        return None
+    for n in tmps:
+        try:
+            remove(os.path.join(mdir, n))
+        except OSError:
+            pass
+    undo = "yasakani.json" in backups
+    for name in sorted(backups, key=lambda n: n == "yasakani.json"):
+        dst = os.path.join(mdir, name)
+        try:
+            if undo or not os.path.isfile(dst):
+                replace(dst + IMAGE_OLD_SUFFIX, dst)
+            else:
+                remove(dst + IMAGE_OLD_SUFFIX)
+        except OSError:
+            return "left"
+    if undo and INK2_IMAGE_FILE not in backups:
+        try:
+            if os.path.isfile(os.path.join(mdir, INK2_IMAGE_FILE)):
+                remove(os.path.join(mdir, INK2_IMAGE_FILE))
+        except OSError:
+            pass
+    return "undone" if undo else "cleaned"
 
 
 def offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now, forced, image=None, call=subprocess.call, environ=None,
@@ -959,7 +1051,11 @@ def offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now, forced, image=
     """Step 5 for an Inkling-2 Mini folder without the image file while the switch is on: asks once whether to get it, Enter
     alone is yes (``forced``: START.cmd --image-file, no question; ``yes``: --yes answers it).  A no is kept in the state: later
     starts say one line.  When the question cannot be asked (``ask_now`` False, or no keyboard) the line is said and nothing is
-    kept.  Every failure leaves the folder as it was (text only).  -> True when the image file was put in place."""
+    kept.  Keys typed before the question and still waiting in the console are dropped first (flush_keys()): an Enter pressed
+    during the long steps before must not answer yes to a download.  A failed download or check leaves the folder as it was
+    (text only); a failed or interrupted install puts back the old files (install_image_files()), and what it could not put back
+    or what a stopped process left is put back at the next start (repair_image_install()).  -> True when the image file was put
+    in place."""
     image = INK2_IMAGE if image is None else image
     if not image or not is_inkling2_dir(mdir):
         return False
@@ -973,6 +1069,8 @@ def offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now, forced, image=
         if not ask_now or st.get("ink2_image_no") == image["revision"]:
             ui.say("img_later", g=gb)
             return False
+        if not yes:
+            flush_keys()
         ans = "y" if yes else ask(ui.t("img_ask", g=gb), "y", eof="")
         if not ans:
             ui.say("img_later", g=gb)
@@ -2721,6 +2819,10 @@ def main(argv=None):
     except UnicodeEncodeError:
         ui.say("bad_path", p=mdir)
         return 2
+    # an install of the image file of Inkling-2 Mini that was stopped (window closed, power lost): finished or undone first
+    fixed = repair_image_install(mdir) if model == "inkling2" and not a.model_dir else None
+    if fixed == "undone":
+        ui.say("img_undone")
     have_model = os.path.isfile(os.path.join(mdir, "yasakani.json"))
     need = 2 if (a.model_dir or have_model) else MODELS[model]["need_gb"]
     free = shutil.disk_usage(home).free / 1e9
@@ -2802,13 +2904,15 @@ def main(argv=None):
         save_state(state_path, st)
     if a.image_file and (a.model_dir or model != "inkling2"):
         ui.say("img_not_dir" if a.model_dir else "img_not_model")
-    elif model == "inkling2" and INK2_IMAGE and not a.model_dir and (a.image_file or not fresh):
+    elif model == "inkling2" and INK2_IMAGE and not a.model_dir and (a.image_file or not fresh) and fixed != "left":
         # a folder of 0.3.2 to 0.3.4: the image file is offered once (not when the page's update started this run: the
-        # page waits for the server and nobody looks at this window).  Once it is in place the server loads it too: the
-        # context note of step 2 is said again when it changes.
-        if offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now=not (a.action == "web" and a.web_port),
-                            forced=a.image_file, yes=a.yes):
-            context_note(gpu["used"], quiet=noted)
+        # page waits for the server and nobody looks at this window)
+        offer_image_part(ui, st, save, vpy, env, home, mdir, ask_now=not (a.action == "web" and a.web_port),
+                         forced=a.image_file, yes=a.yes)
+    if model == "inkling2" and INK2_IMAGE:
+        # once the image file is in place (the install above, or a download of the image revision into a folder that step 2
+        # counted without it: the state file was lost) the server loads it too: the note of step 2 is said again when it changes
+        context_note(gpu["used"], quiet=noted)
 
     def yk(cmd, *extra):
         args = [vpy, "-m", "yasakani", cmd, "--model-dir", mdir]
