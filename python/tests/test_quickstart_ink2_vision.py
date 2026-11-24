@@ -39,6 +39,15 @@ OLD_W = {"file": "inkling_2_mini_quality.yskn", "size": 11, "sha256": "aa" * 32}
 OLD_D = {"file": "mtp_d4.yskn", "size": 7, "sha256": "bb" * 32}
 
 
+FOREIGN = {"notes.before-image": b"a file of the user\n", "something.before-image.tmp": b"another one\n"}
+
+
+def add_foreign(m):
+    """Files of the user in the model folder whose names end like a backup of the install: the repair never touches them."""
+    for n, b in FOREIGN.items():
+        (m / n).write_bytes(b)
+
+
 class Killed(BaseException):
     """The process is stopped (the window closed, power lost): in the tests, raised at one file operation and every one after."""
 
@@ -586,6 +595,36 @@ class OfferTests(W.LauncherTests):
         self.assertEqual((m / "yasakani.json").read_bytes(), before["yasakani.json"])
         self.assertEqual(QS.repair_image_install(str(m)), "undone")
         self.assertEqual(self.tree(m), before)
+        # all 4 files went in, the backup of yasakani.json cannot be removed (the commit), and the way back fails too: for
+        # NOTICE (then the new yasakani.json stays) or for yasakani.json itself.  The image file stays with the new manifest
+        # that names it; the next start undoes the whole install.
+        for held, said in (("NOTICE", "yasakani.json, NOTICE, "), ("yasakani.json", "yasakani.json, ")):
+            m, ddir, img, files = self.install_case()
+            before = self.tree(m)
+
+            back = []
+
+            def replace(a, b, held=held):
+                if back and os.path.basename(b) == held:                           # on the way back only
+                    raise PermissionError(13, "in use", b)
+                os.replace(a, b)
+
+            def remove(p):
+                if p == str(m / ("yasakani.json" + QS.IMAGE_OLD_SUFFIX)):
+                    back.append(p)
+                    raise PermissionError(13, "in use", p)
+                os.remove(p)
+            with self.assertRaises(OSError, msg=held) as cm:
+                QS.install_image_files(str(ddir), img, str(m), replace=replace, remove=remove)
+            self.assertIn("; not put back: " + said + QS.INK2_IMAGE_FILE, str(cm.exception))
+            self.assertEqual((m / "yasakani.json").read_bytes(), files["yasakani.json"], held)
+            self.assertTrue((m / ("yasakani.json" + QS.IMAGE_OLD_SUFFIX)).is_file(), held)
+            self.assertEqual((m / QS.INK2_IMAGE_FILE).read_bytes(), files[QS.INK2_IMAGE_FILE], held)
+            self.assertTrue(QS.ink2_has_image(str(m)), held)                       # the manifest names a file that is there
+            self.assertEqual((m / "README.md").read_bytes(), before["README.md"], held)
+            shutil.rmtree(str(ddir))                                               # as offer_image_part() does in its finally
+            self.assertEqual(QS.repair_image_install(str(m)), "undone")
+            self.assertEqual(self.tree(m), before, held)
 
     def test_failing_install_in_main_keeps_the_folder_and_asks_again(self):
         h, m = self.ink_home()
@@ -630,19 +669,21 @@ class OfferTests(W.LauncherTests):
         file operation of the install: at every instant yasakani.json is there and is the old or the new one; after the next
         start's repair the folder is wholly old (before the backup of yasakani.json is removed) or wholly new (after it)."""
         m, ddir, img, files = self.install_case()
+        add_foreign(m)                                                             # files of the user: never touched
         before = self.tree(m)
         replace, copy, remove, log, man = self.ops(m, 0, KeyboardInterrupt)
         man.update((before["yasakani.json"], files["yasakani.json"]))
         QS.install_image_files(str(ddir), img, str(m), replace=replace, copy=copy, remove=remove)
         after, n = self.snapshot(m), len(log)
         self.assertEqual({k: after[k] for k in files}, files)
-        self.assertEqual([k for k in after if QS.IMAGE_OLD_SUFFIX in k], [])
+        self.assertEqual([k for k in after if QS.IMAGE_OLD_SUFFIX in k and k not in FOREIGN], [])
         commit = log.index(("remove", "yasakani.json" + QS.IMAGE_OLD_SUFFIX)) + 1
         self.assertEqual([k for k, *_ in log[:commit]], ["copy", "replace"] * 3 + ["replace"] * 4 + ["remove"])
         self.assertEqual([x[2] for x in log[6:10]], [QS.INK2_IMAGE_FILE, "NOTICE", "README.md", "yasakani.json"])
         for stop in (KeyboardInterrupt, Killed):
             for stop_at in range(1, n + 1):
                 m, ddir, img, files = self.install_case()
+                add_foreign(m)
                 replace, copy, remove, log, man = self.ops(m, stop_at, stop)
                 man.update((before["yasakani.json"], files["yasakani.json"]))
                 with self.assertRaises(stop, msg=(stop, stop_at)):
@@ -658,6 +699,7 @@ class OfferTests(W.LauncherTests):
                 else:
                     self.assertEqual(self.snapshot(m), after, (stop, stop_at, got, log))
                     self.assertTrue(QS.ink2_has_image(str(m)))
+                self.assertEqual({n: (m / n).read_bytes() for n in FOREIGN}, FOREIGN)
                 self.assertIsNone(QS.repair_image_install(str(m)))
 
     def test_way_back_puts_each_old_file_straight_back(self):
@@ -690,20 +732,35 @@ class OfferTests(W.LauncherTests):
             self.assertEqual(self.tree(m), before, fail_at)
 
     def test_repair_cleans_what_a_stopped_install_left(self):
+        """Each repair case, with two files of the user whose names end like a backup ("notes.before-image",
+        "something.before-image.tmp"): only the backup and temporary names of the 4 files of the install are touched.  When
+        something was left, the download folder of that install goes too."""
         m, ddir, img, files = self.install_case()
+        add_foreign(m)
+        (m / "notes").write_bytes(b"the user's notes\n")                          # never put over by notes.before-image
         before = self.tree(m)
-        self.assertIsNone(QS.repair_image_install(str(m)))
+        real = QS.repair_image_install
+
+        def repair(*a, **k):
+            (ddir / "part").write_bytes(b"x")
+            got = real(*a, ddir=str(ddir), **k)
+            self.assertEqual({n: (m / n).read_bytes() for n in FOREIGN}, FOREIGN, got)
+            self.assertEqual((m / "notes").read_bytes(), b"the user's notes\n", got)
+            self.assertEqual(ddir.exists(), got is None, got)                    # something was left: the download folder goes
+            ddir.mkdir(exist_ok=True)
+            return got
+        self.assertIsNone(repair(str(m)))
         # stopped while the backups were made: only copies, no backup of yasakani.json -> removed, the folder unchanged
         (m / ("NOTICE" + QS.IMAGE_OLD_SUFFIX)).write_bytes(before["NOTICE"])
         (m / ("README.md" + QS.IMAGE_OLD_SUFFIX + ".tmp")).write_bytes(b"old re")
-        self.assertEqual(QS.repair_image_install(str(m)), "cleaned")
+        self.assertEqual(repair(str(m)), "cleaned")
         self.assertEqual(self.tree(m), before)
         # stopped after the install was done (the backup of yasakani.json removed): the new folder stays, backups go
         for n, b in files.items():
             (m / n).write_bytes(b)
         new = self.snapshot(m)
         (m / ("NOTICE" + QS.IMAGE_OLD_SUFFIX)).write_bytes(before["NOTICE"])
-        self.assertEqual(QS.repair_image_install(str(m)), "cleaned")
+        self.assertEqual(repair(str(m)), "cleaned")
         self.assertEqual(self.snapshot(m), new)
         self.assertTrue(QS.ink2_has_image(str(m)))
         # stopped half-way: the new image file, NOTICE and yasakani.json in place, README.md old, every backup there -> undone
@@ -711,21 +768,32 @@ class OfferTests(W.LauncherTests):
         for n in ("NOTICE", "README.md", "yasakani.json"):
             (m / (n + QS.IMAGE_OLD_SUFFIX)).write_bytes(before[n])
         (m / "README.md").write_bytes(before["README.md"])
-        self.assertEqual(QS.repair_image_install(str(m)), "undone")
+        self.assertEqual(repair(str(m)), "undone")
         self.assertEqual(self.snapshot(m), {n: b for n, b in before.items() if "/" not in n and "\\" not in n})
         self.assertFalse(QS.ink2_has_image(str(m)))
         # a backup whose file is missing (the rename scheme of an earlier candidate) is put back, not removed
         notice = (m / "NOTICE").read_bytes()
         os.replace(str(m / "NOTICE"), str(m / ("NOTICE" + QS.IMAGE_OLD_SUFFIX)))
-        self.assertEqual(QS.repair_image_install(str(m)), "cleaned")
+        self.assertEqual(repair(str(m)), "cleaned")
         self.assertEqual((m / "NOTICE").read_bytes(), notice)
         # a backup that cannot be put back now stays for the next start, and the question waits
         (m / ("yasakani.json" + QS.IMAGE_OLD_SUFFIX)).write_bytes(before["yasakani.json"])
         def held(a, b):
             raise PermissionError(13, "in use", a)
-        self.assertEqual(QS.repair_image_install(str(m), replace=held), "left")
+        self.assertEqual(repair(str(m), replace=held), "left")
         self.assertTrue((m / ("yasakani.json" + QS.IMAGE_OLD_SUFFIX)).is_file())
-        self.assertEqual(QS.repair_image_install(str(m)), "undone")
+        self.assertEqual(repair(str(m)), "undone")
+        self.assertIsNone(repair(str(m)))
+        # a backup that cannot be removed (the install was done): "left" as well
+        (m / ("NOTICE" + QS.IMAGE_OLD_SUFFIX)).write_bytes(before["NOTICE"])
+
+        def stuck(p):
+            raise PermissionError(13, "in use", p)
+        self.assertEqual(repair(str(m), remove=stuck), "left")
+        self.assertEqual(repair(str(m)), "cleaned")
+        # only files of the user: nothing to do, also when the switch is off
+        self.assertIsNone(repair(str(m)))
+        self.assertIsNone(repair(str(m), image={}))
 
     def test_next_start_undoes_a_stopped_install_and_asks_again(self):
         h, m = self.ink_home()
@@ -734,6 +802,9 @@ class OfferTests(W.LauncherTests):
             shutil.copy2(str(m / n), str(m / (n + QS.IMAGE_OLD_SUFFIX)))
         for n, b in self.files.items():
             (m / n).write_bytes(b)
+        dl = h / "downloads" / "inkling2_image"                                     # what the stopped install had downloaded
+        dl.mkdir(parents=True)
+        (dl / "README.md").write_bytes(b"new readme\n")
         self.answers = ["n"]
         self.assertEqual(self.run_on(h), 0)
         out = self.out.getvalue()
@@ -741,11 +812,32 @@ class OfferTests(W.LauncherTests):
                       out)
         self.assertEqual(len(self.prompts), 1)                                      # the question comes again
         self.assertEqual(self.tree(m), before)
+        self.assertFalse(dl.exists())                                               # removed by the repair, also after a no
         self.assertEqual(QS.Ui("ja").t("img_undone"), "前回は画像用のファイルを入れる途中で止まりました。フォルダーを前の状態に戻しました。")
         self.out.truncate(0)
         self.out.seek(0)
         self.assertEqual(self.run_on(h), 0)                                         # nothing left: not said again
         self.assertNotIn("The folder was put back", self.out.getvalue())
+
+    def test_note_counts_the_folder_as_the_repair_leaves_it(self):
+        """A stopped install left the new yasakani.json and the image file (with the backups): the repair runs before the note
+        of step 2, so the note counts no image part (the folder is old again) and is not said twice."""
+        used = 24564 - 19300
+        card = dict(index=0, uuid="GPU-b", name="NVIDIA GeForce RTX 4090", cc=(8, 9), total=24564, used=used, driver="616.92")
+        h, m = self.ink_home()
+        for n in ("NOTICE", "yasakani.json"):
+            shutil.copy2(str(m / n), str(m / (n + QS.IMAGE_OLD_SUFFIX)))
+        for n, b in self.files.items():
+            (m / n).write_bytes(b)
+        self.assertTrue(QS.ink2_has_image(str(m)))                                 # before the repair: 12,288 tokens
+        self.answers = ["n"]
+        with mock.patch.object(QS, "query_gpus", lambda run=None: [dict(card)]), \
+                mock.patch.dict(os.environ, {"YASAKANI_INK2_FAST": ""}):
+            self.assertEqual(self.run_on(h), 0)
+        out = self.out.getvalue()
+        self.assertIn("The folder was put back as it was.", out)
+        self.assertFalse(QS.ink2_has_image(str(m)))
+        self.assertNotIn("tokens with what is free now", out)                       # the folder without the image part fits 32,768
 
     def test_keys_typed_before_the_question_are_dropped(self):
         """An Enter typed during the long steps before waits in the console: it is dropped before the question (msvcrt), so it
