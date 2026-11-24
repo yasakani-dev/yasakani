@@ -168,6 +168,8 @@ is in the release; you download them yourself.
   transformers, <https://github.com/huggingface/transformers/pull/51050>, Apache License 2.0); they were written for YASAKANI. The model
   files are not part of the release: the converter `tools/convert/inkling2_convert.py` makes a model folder from the files you download
   and writes the model's notice into it.
+* Niko1221/Strata (<https://github.com/Niko1221/Strata>, MIT License). Ideas from it are used in the Linux Inkling-2 engine
+  (`src/engine_ink2.*`, `src/ink2_kernels.*`, pull request #30); no code was taken from it.
 
 ## Not included
 
