@@ -564,8 +564,10 @@ and 0.3.3 on an RTX 3090 Ti, both under Windows 11: `selfcheck` passed, and on t
 path ([#29](https://github.com/yasakani-dev/yasakani/issues/29); the reporters' numbers are in the
 [README](../README.md#inkling-2-mini-033)). With the desktop also on that card
 there is less room, and a smaller `--max-ctx` needs less memory. Since 0.3.2, without `--max-ctx` the package takes a shorter context when
-32,768 tokens do not fit the free GPU memory, and stops before loading when not even 8,192 fit; a line at start says which. On Linux it runs on the engine contributed in
-[#28](https://github.com/yasakani-dev/yasakani/pull/28), built from source ([BUILDING.md](../BUILDING.md#linux-inkling-2)); we ran that one on one
+32,768 tokens do not fit the free GPU memory, and stops before loading when not even 8,192 fit; a line at start says which. On Linux there are two ways, both built from source and not part of an official release
+([BUILDING.md](../BUILDING.md#linux-inkling-2)): the engine inside `libyskn.so` for the downloaded folder (by @audreyt in
+[#28](https://github.com/yasakani-dev/yasakani/pull/28), [#30](https://github.com/yasakani-dev/yasakani/pull/30) and [#32](https://github.com/yasakani-dev/yasakani/pull/32); it opens 32,768 tokens unless `--max-ctx` is given,
+without this check), and `libyskn_inkling2.so` for a converted folder ([#33](https://github.com/yasakani-dev/yasakani/pull/33) by @Albrod). We ran both on one
 RTX 5090 under WSL2 only.
 
 ### How fast is it, and under which conditions?
@@ -676,7 +678,7 @@ the GPU memory for dropped replies) are in the [README](../README.md#inkling-2-m
 ### Can Inkling-2 Mini read images?
 
 Yes, new in 0.3.5: still images, as the published model reads them. The image tower runs on the GPU inside the engine
-library. A converted folder needs one more file, `inkling_2_mini_vision.yskn` (637 MB, the published image tower unchanged). The
+library, on Windows and in both Linux builds from source ([BUILDING.md](../BUILDING.md#linux-inkling-2)). A converted folder needs one more file, `inkling_2_mini_vision.yskn` (637 MB, the published image tower unchanged). The
 quickstart of 0.3.5 downloads it with the folder, and for a folder of 0.3.2 to 0.3.4 it asks once whether to add it
 (about 0.64 GB; Enter alone downloads it, `n` keeps text only; later `START.cmd --image-file`). With the file, the quickstart page shows an image button, `yasakani serve` takes OpenAI `image_url` parts with `data:image/...;base64` URIs, and
 `yasakani chat` takes `--image PATH`.
@@ -690,8 +692,8 @@ Details: [python/README.md](../python/README.md#inkling-2-mini-image-input).
 
 ### What is not supported yet?
 
-Video, several requests at once (`--parallel`), tools in terminal chat, `bench --edit`, Linux, and any GPU other than the RTX 5090
-(not tested). This model is experimental in 0.3.1.
+Video, several requests at once (`--parallel`), tools in terminal chat, `bench --edit`, a prebuilt Linux release (on Linux it is built
+from source only), and any GPU other than the RTX 5090 (not tested). This model is experimental in 0.3.1.
 
 ## Can I use other models, for example Qwen4?
 

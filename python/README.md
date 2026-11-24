@@ -6,7 +6,7 @@ This package is the part you talk to: a local **OpenAI-compatible server**, a **
 whether your files and your installation are the reference ones. The engine itself is the DLL; the package loads it, applies the
 default settings the published numbers were measured with, handles the chat template and the tokenizer, and streams the answer.
 
-Status: version `0.3.5`. Text, and optionally still images (new in 0.1.2; on Linux only with llama.cpp built from source, see [Image input](#image-input-optional)). One request is generated at a time, unless the server is started with `--parallel N` (experimental, see [Several requests at once](#several-requests-at-once-experimental)). Tool calling is new in 0.1.1. Since 0.1.3 the engine also runs on other RTX 30, 40 and 50 series cards, without tuning or tests (see [GPUs other than the RTX 5090](#gpus-other-than-the-rtx-5090)). 0.2.0 reads prompts faster on cards with 30,000 MiB or more and adds the edit copy, which is on by default (see [Prompt reading and edit copy](#prompt-reading-and-edit-copy)). 0.3.1 adds Inkling-2 Mini as an experimental, text-only model on a second engine library (see [Inkling-2 Mini](#inkling-2-mini-experimental)); 0.3.2 makes it the fourth model of the quickstart and chooses its context from the free GPU memory; 0.3.5 lets it read still images (see [Image input](#inkling-2-mini-image-input)).
+Status: version `0.3.5`. Text, and optionally still images (new in 0.1.2; on Linux only with llama.cpp built from source, see [Image input](#image-input-optional)). One request is generated at a time, unless the server is started with `--parallel N` (experimental, see [Several requests at once](#several-requests-at-once-experimental)). Tool calling is new in 0.1.1. Since 0.1.3 the engine also runs on other RTX 30, 40 and 50 series cards, without tuning or tests (see [GPUs other than the RTX 5090](#gpus-other-than-the-rtx-5090)). 0.2.0 reads prompts faster on cards with 30,000 MiB or more and adds the edit copy, which is on by default (see [Prompt reading and edit copy](#prompt-reading-and-edit-copy)). 0.3.1 adds Inkling-2 Mini as an experimental, text-only model on a second engine library (see [Inkling-2 Mini](#inkling-2-mini-experimental)); 0.3.2 makes it the fourth model of the quickstart and chooses its context from the free GPU memory; 0.3.5 lets it read still images (see [Image input](#inkling-2-mini-image-input); on Linux too, built from source).
 
 ## What you need
 
@@ -622,17 +622,23 @@ the command passed 12 of 12 times, but if a case fails, run the command once mor
 
 New in 0.3.1. The package also runs [Inkling-2 Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) by Thinking Machines Lab
 (Apache-2.0, with the [Model Acceptable Use Policy](https://thinkingmachines.ai/model-acceptable-use-policy/) named on its model card).
-Text, and since 0.3.5 still images ([Image input](#inkling-2-mini-image-input)); one request at a time, tested on the RTX 5090 under Windows 11 only. It runs on a second engine library, not on `yskn.dll`;
+Text, and since 0.3.5 still images ([Image input](#inkling-2-mini-image-input)); one request at a time, tested on the RTX 5090 under Windows 11 (and, built from source, under WSL2) only. It runs on a second engine library, not on `yskn.dll`;
 the Qwen3.8-27B commands, settings and numbers in the rest of this document do not change. Since 0.3.2 the quickstart offers our converted
 folder as the fourth model of its model question (`START.cmd --model inkling2`; about 15.9 GB from Hugging Face with the image file of 0.3.5, no conversion); the steps
 below stay for a folder of your own.
 
-**Linux: the engine of [#28](https://github.com/yasakani-dev/yasakani/pull/28).** A folder of the published model as downloaded, with no
-`yasakani.json`, runs on the Inkling-2 engine contributed in #28 inside `libyskn.so`, when that library was built with `-DYSKN_WITH_INK2=ON`
-(its `yskn_build_info` then says `ink2=1`; [BUILDING.md](../BUILDING.md#linux-inkling-2)). A folder with `"architecture": "inkling2"` always
-takes the path below. With a library without that engine (the released Windows `yskn.dll` too), such a folder gives the error of 0.3.0
-(the Qwen3.8 files are missing), with a hint. This engine uses the model's sampling defaults (temperature 1.0, top-p 1.0, no top-k) and
-takes tool calls in `yasakani serve`; `--yarn2`, `--suppress-tokens` and `--parallel` are refused or not used for it.
+**Linux: two ways, both built from source** (not part of an official release; [BUILDING.md](../BUILDING.md#linux-inkling-2)).
+A folder of the published model as downloaded, with no `yasakani.json`, runs on the Inkling-2 engine inside `libyskn.so`, contributed by
+@audreyt in [#28](https://github.com/yasakani-dev/yasakani/pull/28), [#30](https://github.com/yasakani-dev/yasakani/pull/30) and [#32](https://github.com/yasakani-dev/yasakani/pull/32), when that library was built with `-DYSKN_WITH_INK2=ON`
+(its `yskn_build_info` then says `ink2=1`). A folder with `"architecture": "inkling2"` always takes the path below; on Linux that is
+`libyskn_inkling2.so`, built with `src/inkling2/build_linux.sh` ([#33](https://github.com/yasakani-dev/yasakani/pull/33) by @Albrod) and given with `YASAKANI_INK2_DLL`
+([BUILDING.md](../BUILDING.md#linux-inkling-2-library)). With a library without the engine of `libyskn.so` (the released Windows `yskn.dll` too), a downloaded folder gives the error of 0.3.0
+(the Qwen3.8 files are missing), with a hint. That engine uses the model's sampling defaults (temperature 1.0, top-p 1.0, no top-k),
+takes tool calls in `yasakani serve`, and opens 32,768 tokens unless `--max-ctx` is given; `--yarn2`, `--suppress-tokens` and `--parallel` are refused or not used for it.
+Since 0.3.5 it uses the model's drafter (`mtp.safetensors`) for greedy decoding by default (`YSKN_INK2_MTP=1` drafts for sampling too, `0` does not load it),
+stores keys and values in bf16 (`YSKN_INK2_KV=fp32` for 32 bits), keeps up to 6 snapshots of earlier prompts (a prefix cache), and reads
+images with the options and rules of [Image input](#inkling-2-mini-image-input), with three differences: the chat has no `/image`,
+`--vision-cache DIR` keeps image vectors on disk, and the GPU memory of the image tower is not counted when the context is chosen.
 
 **The architecture field.** The commands read `"architecture"` in the folder's `yasakani.json`. With `"architecture": "inkling2"` they
 use the Inkling-2 path (`yasakani/inkling2.py` and `yasakani/inkling2_cli.py`); without the field, or with any other folder, they work as
@@ -699,7 +705,8 @@ above 1, `bench --edit`, the image options of the Qwen models (`--mmproj`, `--ll
 
 **Image input** (new in 0.3.5). Inkling-2 Mini reads still images, as the published model does: its image tower turns an
 image into image tokens that take places in the prompt like text tokens. In this package the image tower runs on the GPU inside
-`yskn_inkling2.dll`; the Qwen3.8 image input above (llama.cpp on the CPU) is not used.
+`yskn_inkling2.dll` (on Linux `libyskn_inkling2.so`, built from source), and for a downloaded folder on Linux inside `libyskn.so`
+([above](#inkling-2-mini-experimental)); the Qwen3.8 image input above (llama.cpp on the CPU) is not used.
 
 * **The folder.** A converted folder needs one more file, `inkling_2_mini_vision.yskn` (637,136,896 bytes: the 422 tensors of the published
   image tower, unchanged), listed as `"vision"` in `yasakani.json`. `tools/convert/inkling2_convert.py ... --vision` writes it with a new
@@ -720,8 +727,8 @@ image into image tokens that take places in the prompt like text tokens. In this
   context with the text.
 * **GPU memory.** With the defaults (1,024 per image, 8,192 per request) the image tower takes 636,512,256 bytes of weights, 88,821,760 bytes
   of work memory and 37,748,736 bytes for the image vectors of a request; the free GPU memory dropped by 773,849,088 bytes (about 0.77 GB)
-  on the RTX 5090. With 4,096 / 32,768 it dropped by 1,153,433,600 bytes. Without `--max-ctx` the context is chosen with this memory
-  counted; `--vision off` gives it back.
+  on the RTX 5090. With 4,096 / 32,768 it dropped by 1,153,433,600 bytes. Without `--max-ctx` the context of a converted folder is chosen
+  with this memory counted; `--vision off` gives it back.
 * **Time.** Encoding an image on the RTX 5090: 7.2 ms for 192 image tokens, 12.5 ms for 576, 24.6 ms for 1,024, 189 ms for 4,096. An
   image seen in the last request is not encoded again (its places in the prompt are kept), and the vectors of recent images stay in
   memory (up to 512 MiB).

@@ -451,7 +451,7 @@ Inkling-2 Mini は、Thinking Machines Lab が 2026 年 11 月 20 日に公開�
 `--scheme quality` で変換した重みと 4 ビットの先読み用のモデルでは、エンジンの確保が 18.9 / 19.5 GB、GPU 全体で 21.2 / 21.9 GB でした。`--draft off` では先読み用のモデルを読み込みません。24 GB 未満のカードにはモデルが入りません。
 24 GB のカード（RTX 3090・3090 Ti・4090）では、私たちは試していません。利用者の方が RTX 3090 で 0.3.1 を、RTX 3090 Ti で 0.3.3 を、どちらも Windows 11 で動かしました。`selfcheck` は合格で、RTX 3090 Ti では速い道で 131,072 トークンの入力が入りました（[#29](https://github.com/yasakani-dev/yasakani/issues/29)。報告者の方の数字は [README](../README.ja.md#inkling-2-mini-033) にあります）。画面の表示にも同じカードを使うと、空きはさらに減ります。`--max-ctx` を小さくすると、使うメモリーも減ります。
 0.3.2 からは、`--max-ctx` が無い時、32,768 トークンが空きメモリーに入らなければ文脈を短くします。8,192 トークンも入らない時は、読み込む前に止まります。どちらも起動の時に1行で出ます。
-Linux では、[#28](https://github.com/yasakani-dev/yasakani/pull/28) で寄稿されたエンジンをソースから組み立てて使います（[BUILDING.md](../BUILDING.md#linux-inkling-2)）。私たちはそれを RTX 5090 1枚の WSL2 だけで動かしました。
+Linux では、ソースから組み立てる 2 つの方法があります。公式の配布物ではありません（[BUILDING.md](../BUILDING.md#linux-inkling-2)）。ダウンロードしたフォルダーは、`libyskn.so` の中のエンジンが読みます。@audreyt さんの寄稿です（[#28](https://github.com/yasakani-dev/yasakani/pull/28)・[#30](https://github.com/yasakani-dev/yasakani/pull/30)・[#32](https://github.com/yasakani-dev/yasakani/pull/32)）。このエンジンは `--max-ctx` が無い時は 32,768 トークンで開き、上の確認はしません。変換したフォルダーは `libyskn_inkling2.so` が読みます（@Albrod さんの [#33](https://github.com/yasakani-dev/yasakani/pull/33)）。私たちはどちらも RTX 5090 1枚の WSL2 だけで動かしました。
 
 ### どれくらい速い？ 条件は？
 
@@ -539,7 +539,7 @@ Qwen のモデルの速度表は、このモデルには当てはまりません
 
 ### Inkling-2 Mini に画像は送れる？
 
-0.3.5 からは送れます（静止画だけ）。公開のモデルと同じ方法で読みます。画像を読む部分は、エンジンのライブラリの中で GPU で動きます。
+0.3.5 からは送れます（静止画だけ）。公開のモデルと同じ方法で読みます。画像を読む部分は、エンジンのライブラリの中で GPU で動きます。Windows のほか、Linux でソースから組み立てた 2 つの方法でも読めます（[BUILDING.md](../BUILDING.md#linux-inkling-2)）。
 変換したフォルダーには、ファイルが 1 つ増えます（`inkling_2_mini_vision.yskn`、637 MB。公開の重みのうち画像の部分をそのまま入れた物）。
 0.3.5 の起動ファイルは、このファイルもフォルダーと一緒に取得します。0.3.2〜0.3.4 で取得したフォルダーには、足すかを 1 回だけ聞きます
 （約 0.64 GB）。Enter だけで取得します。`n` なら文章だけのままです。後からは `START.cmd --image-file` で足せます。このファイルがあれば、クイックスタートのページに画像のボタンが出ます。`yasakani serve` は OpenAI の `image_url`（`data:image/...;base64` の URI）を、
@@ -554,7 +554,7 @@ GPU のメモリーは、標準の設定で約 0.77 GB 増えます（RTX 5090 �
 
 ### まだ使えない物は？
 
-動画・複数の依頼の同時処理（`--parallel`）・ターミナルのチャットでのツール・`bench --edit`・Linux です。
+動画・複数の依頼の同時処理（`--parallel`）・ターミナルのチャットでのツール・`bench --edit`・組み立て済みの Linux 版です（Linux はソースからの組み立てだけです）。
 RTX 5090 以外の GPU も試していません。0.3.1 では試験的な対応です。
 
 ## ほかのモデル（Qwen4 など）は？
