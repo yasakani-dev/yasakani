@@ -62,6 +62,21 @@ struct Ink2PinnedBuf {
     cap = bytes;
   }
 
+  // As ensure, but a failed allocation of pinned host memory returns false (the buffer is then empty) instead of throwing:
+  // a snapshot that cannot be kept is skipped, and the generation goes on.
+  bool try_ensure(size_t bytes, cudaStream_t stream) {
+    if (bytes == 0 || (ptr && bytes <= cap)) return true;
+    release(stream);
+    if (cudaMallocHost(&ptr, bytes) != cudaSuccess) {
+      (void)cudaGetLastError();
+      ptr = nullptr;
+      cap = 0;
+      return false;
+    }
+    cap = bytes;
+    return true;
+  }
+
   void release(cudaStream_t stream = nullptr) {
     if (!ptr) return;
     if (stream) cudaStreamSynchronize(stream);
@@ -212,9 +227,13 @@ class Ink2PrefixCache {
 
     const int slot_idx = pick_slot_for_insert(live_tokens, live_vis_hash, pos);
     Ink2Snapshot& s = slots_[slot_idx];
-    s.h_conv.ensure(conv_bytes_, stream);
-    if (mtp_enabled_ && d_mtp_rec_feat && mtp_rec_bytes_ > 0) {
-      s.h_mtp_rec_feat.ensure(mtp_rec_bytes_, stream);
+    if (!s.h_conv.try_ensure(conv_bytes_, stream) ||
+        (mtp_enabled_ && d_mtp_rec_feat && mtp_rec_bytes_ > 0 && !s.h_mtp_rec_feat.try_ensure(mtp_rec_bytes_, stream))) {
+      invalidate_slot(s, true);  // no pinned memory for this snapshot: it is not kept (the slot is empty)
+      s.h_conv.release(stream);
+      s.h_mtp_rec_feat.release(stream);
+      if (debug_log_) std::fprintf(stderr, "[ink2_snap] capture skipped pos=%d: no pinned host memory\n", pos);
+      return false;
     }
 
     ink2_cache_cuda_ok(
@@ -267,7 +286,11 @@ class Ink2PrefixCache {
         const size_t need = base_local_visits_.size() * 2 * base_slice_bytes +
                             mtp_local_layers_.size() * 2 * mtp_slice_bytes;
         if (need > 0) {
-          s.h_swa_kv.ensure(need, stream);
+          if (!s.h_swa_kv.try_ensure(need, stream)) {
+            invalidate_slot(s, true);  // the window cannot be kept: the snapshot is dropped before its rows are overwritten
+            if (debug_log_) std::fprintf(stderr, "[ink2_snap] backup skipped pos=%d: no pinned host memory\n", s.pos);
+            continue;
+          }
           uint8_t* h_dst = static_cast<uint8_t*>(s.h_swa_kv.ptr);
           const int base_start = s.pos - n_base;
           for (int v : base_local_visits_) {
