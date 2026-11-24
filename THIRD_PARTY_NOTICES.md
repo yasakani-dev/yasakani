@@ -163,8 +163,9 @@ is in the release; you download them yourself.
   The helper model above is a drafter of this kind.
 * Qwen team. The Qwen3.8 model family (see above).
 * Thinking Machines Lab. Inkling-2 Mini (<https://huggingface.co/thinkingmachines/Inkling-2-Mini>, Apache License 2.0; its model card
-  also names a Model Acceptable Use Policy, <https://thinkingmachines.ai/model-acceptable-use-policy/>). The engine in `src/inkling2/` and
-  the reader `python/yasakani/_ink2_ckpt.py` compute what the published model code computes (the Inkling-2 code proposed for Hugging Face
+  also names a Model Acceptable Use Policy, <https://thinkingmachines.ai/model-acceptable-use-policy/>). The engine in `src/inkling2/`,
+  the Linux engine (`src/engine_ink2.*`, `src/ink2_kernels.*` and its image encoder `src/ink2_vision.*`) and the reader
+  `python/yasakani/_ink2_ckpt.py` compute what the published model code computes (the Inkling-2 code proposed for Hugging Face
   transformers, <https://github.com/huggingface/transformers/pull/51050>, Apache License 2.0); they were written for YASAKANI. The model
   files are not part of the release: the converter `tools/convert/inkling2_convert.py` makes a model folder from the files you download
   and writes the model's notice into it.
