@@ -183,20 +183,19 @@ extern "C" int yskn_spec_generate(yskn_engine* e, const int32_t* prompt, int n_p
     };
 #if YSKN_WITH_INK2
     if (e->ink) {
-      double t_pf = 0.0, t_gen = 0.0;
-      int64_t produced = 0;
-      int eos = 0, cached = 0, passes = 0;
-      e->ink->generate(prompt, n_prompt, n_gen, c.eos1, c.eos2, c.cancel, out_ids,
-                       produced, eos, cached, passes, t_pf, t_gen);
-      if (times_ms) { times_ms[0] = t_pf; times_ms[1] = t_gen; }
+      yskn::Ink2GenStats st{};
+      e->ink->generate(prompt, n_prompt, n_gen, c.eos1, c.eos2, c.cancel, out_ids, st);
+      if (times_ms) { times_ms[0] = st.prefill_ms; times_ms[1] = st.gen_ms; }
       if (stats) {
         const int ns = n_cfg > 44 ? 64 : 32;
         std::fill(stats, stats + ns, 0.0);
-        stats[0] = (double)passes;
-        stats[1] = (double)(std::max(0, n_prompt - cached) + produced);
-        stats[30] = (double)produced;
-        stats[31] = (double)eos;
-        if (ns > 42) stats[42] = (double)cached;
+        stats[0] = (double)st.passes;
+        stats[1] = (double)(std::max(0, n_prompt - st.cached) + st.produced);
+        stats[3] = (double)st.drafted;
+        stats[4] = (double)st.accepted;
+        stats[30] = (double)st.produced;
+        stats[31] = (double)st.eos;
+        if (ns > 42) stats[42] = (double)st.cached;
       }
     } else
 #endif
@@ -362,3 +361,17 @@ extern "C"  int yskn_nll_layer(yskn_engine* e,const int32_t* ids,int n,float* ou
 extern "C"  int yskn_layer_info(yskn_engine* e,uint64_t* out) {
   YSKN_TRY(if(!e->q)throw std::runtime_error("layer_info needs 27B");e->q->layer_info(out))
 }
+#if YSKN_WITH_INK2
+extern "C" YSKN_API int yskn_ink2_accept(int32_t* out_accepted_and_next, const int32_t* draft_tokens, int K, int V,
+                                         const float* verify_logits, const float* draft_logits,
+                                         const int32_t* verify_argmax, float temp, int top_k, float top_p,
+                                         float min_p, uint64_t seed, int64_t step) {
+  try {
+    return yskn::ink2_accept_tokens(out_accepted_and_next, draft_tokens, K, V, verify_logits, draft_logits,
+                                    verify_argmax, temp, top_k, top_p, min_p, seed, step);
+  } catch (const std::exception& ex) {
+    g_err = ex.what();
+    return -1;
+  }
+}
+#endif

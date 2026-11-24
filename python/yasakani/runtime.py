@@ -108,7 +108,7 @@ class RuntimeProfile:
     @classmethod
     def default(cls, pack: "ModelPack", overrides: Optional[Dict[str, str]] = None) -> "RuntimeProfile":
         if pack.is_hf_inkling2:                   # the engine of #28 has no drafter head or KV profile
-            env: Dict[str, str] = {}
+            env: Dict[str, str] = {k: v for k, v in os.environ.items() if k.startswith("YSKN_INK2_")}
             for k, v in (overrides or {}).items():
                 if not k.startswith("YSKN_"):
                     raise ValueError("engine settings start with YSKN_: " + k)
