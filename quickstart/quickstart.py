@@ -52,9 +52,9 @@ import webbrowser
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-QS_VERSION = "0.3.4"
-ENGINE_ZIP = "yasakani-0.3.4-win-x64.zip"
-ENGINE_URL = "https://github.com/yasakani-dev/yasakani/releases/download/v0.3.4/" + ENGINE_ZIP
+QS_VERSION = "0.3.5"
+ENGINE_ZIP = "yasakani-0.3.5-win-x64.zip"
+ENGINE_URL = "https://github.com/yasakani-dev/yasakani/releases/download/v0.3.5/" + ENGINE_ZIP
 ENGINE_SHA256 = "831576fe908c0dc52494aae6534d2a45e27f310b3ceaba9bbc0b1e65e4a8a7fc"
 # Does the engine zip of ENGINE_SHA256 read images (the image part of Inkling-2 Mini: capability CAP_VISION of its library)?  The
 # 0.3.4 zip does not.  The launcher always installs that zip, so this is what yasakani/inkling2.py library_has_vision() answers for the
