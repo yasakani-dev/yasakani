@@ -344,8 +344,9 @@ dense matrix in NVFP4 or MXFP8 has the same layout as a single expert.
 
 The names are the parameter names of the published checkpoint; an expert tensor is named without the suffix
 (`model.llm.layers.N.mlp.experts.w13`; its parts are the published `..._weight`, `..._weight_scale`, `..._weight_amax` and
-`..._weight_outer_scale_denominator`). `model.llm.unembed.weight` holds only the rows of the unpadded vocabulary. The vision
-tower and the drafter are not in the file (a converted drafter is a file of its own, section 10.6).
+`..._weight_outer_scale_denominator`). `model.llm.unembed.weight` holds only the rows of the unpadded vocabulary. The file
+holds no tensor of the vision tower (`model.visual.*`) and none of the drafter; each can be a file of its own next to it (the
+image tower: section 10.7; a converted drafter: section 10.6).
 
 ### 10.4 The quality scheme
 
@@ -401,3 +402,49 @@ accepted, the time of a draft call, memory and load time. An engine library that
 says so by bit 4 of `ink2_capabilities()` and by drafter interface version 2 (`ink2_draft_abi()`); with an older library the
 package generates without drafting. `yasakani verify` checks the SHA-256 of the file and the CRC-32 of every part, as for the
 model file.
+
+### 10.7 Image-tower files
+
+Since {{VISION_VERSION}}, a converted Inkling-2 Mini folder can hold the image tower of the model (the published tensors
+`model.visual.*`) in a file of its own next to the model file, `inkling_2_mini_vision.yskn`. The program that writes it is
+[`tools/convert/inkling2_vision_convert.py`](../tools/convert/inkling2_vision_convert.py); the reader of the package is
+[`python/yasakani/inkling2_vision.py`](../python/yasakani/inkling2_vision.py) (`vision_weights`, `iter_vision_tensors`, with
+the version 2 reader of `ink2_yskn.py`). A folder whose weights are the published safetensors file needs no such file: the
+image tower is read from the `model.visual.*` tensors of that file.
+
+The file has the layout of this version: the same prefix (version `2`), header and parts, every part at a multiple of 4,096
+bytes with its CRC-32. The header has the members of section 10.2 (`model`: `arch` `inkling2_vision`, `model_id`,
+`converter`) and these:
+
+| Member | Meaning |
+|---|---|
+| `kind` | `"inkling2_vision"`; the package refuses any other value |
+| `vision_config` | the `vision_config` of the model's config.json. The package needs these values and refuses the file, naming the key, when one is missing or differs: `model_type` `inkling2_vision`, `hidden_size` 1024, `num_hidden_layers` 23, `num_attention_heads` 16, `mlp_ratio` 4.0, `native_patch_size` 20, `adapter_merge_size` 2, `temporal_patch_size` 2, `posemb_grid_size` 32, `projection_hidden_dim` 4096, `projector_bias` false, `layer_norm_eps` 1e-5, `text_hidden_size` 2304 (and, where present, `hidden_act` `gelu`, `num_channels` 3, `rope_theta` 10000) |
+| `text_hidden_size` | 2304: the values per image token handed to the language model; the package refuses any other value |
+| `source` | where the bytes come from: `file` (the name of the published weights file), `range` (the first byte of the image tower in that file and the byte after its last, absolute), `revision` (the revision of the Hugging Face repository), `sha256` (the SHA-256 of the bytes of that range) |
+
+* `tensors` lists the 422 `model.visual.*` tensors of the published weights file, with their published names and shapes, in
+  the order of that file. Each has `encoding` `bf16`, `role` `vision` and one part `data` (`bf16`, the shape of the tensor)
+  that holds the bytes of the published file unchanged, 636,512,256 bytes in all; an entry has no `source` member (the
+  header's `source` covers them all). The names are `model.visual.backbone.embeddings.*` (4 tensors),
+  `model.visual.backbone.layers.N.*` for N = 0 to 22 (18 each), `model.visual.backbone.ln_pre.*` (2),
+  `model.visual.proj_in.weight` (`[4096, 4096]`) and `model.visual.proj_out.weight` (`[2304, 4096]`); the full table with the
+  shapes is `VISION_TENSORS` in `inkling2_vision.py`.
+* Before it uses the file, the package reads the header as for every version 2 file (the CRC-32 of the header, the file length,
+  every part inside the file, aligned, with no overlap), then checks `kind`, `vision_config` and `text_hidden_size`, then all
+  422 entries: the set of names equals the table (none missing, none unknown), `encoding` `bf16`, and the shape and byte count
+  of every tensor as in the table. `yasakani verify` checks the file by its size and SHA-256.
+* The file of Inkling-2 Mini has 637,136,896 bytes.
+
+`yasakani.json` names the file in the entry `vision` and also lists it in its `sha256` and `sizes` maps:
+
+    "vision": {"file": "inkling_2_mini_vision.yskn", "format": "yskn", "version": 2,
+               "sha256": "<SHA-256 of the file>", "size": <bytes>, "note": "<a text for people>"}
+
+* Without a `vision` entry (and with weights other than the published safetensors file) the folder has no image tower: the
+  model works with text only. The same holds when the entry names a file that is not in the folder.
+* An entry with another `format` or `version`, or a file that the checks above refuse, turns image input off and says why; the
+  model works with text only.
+* With `--vision on` the package stops with the reason instead of working with text only.
+* Adding the file changes neither the model file nor its SHA-256. A package without image input does not read the entry; its
+  `yasakani verify` checks the file through the `sha256` map.

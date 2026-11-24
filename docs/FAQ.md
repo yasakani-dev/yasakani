@@ -6,8 +6,8 @@
 
 An inference engine for running **Qwen3.8-27B** on your own Windows PC with **one NVIDIA RTX GPU** (tested on the RTX 5090). It is GPU kernels, a file format for the
 compressed model, and a runtime, with an OpenAI-compatible server, a terminal chat, a benchmark and a self-check. One person in Japan built it. It is
-not a general-purpose engine: one model, tuned on one card. Since 0.3.1 it also runs a second model, Inkling-2 Mini, as an experimental,
-text-only model ([below](#inkling-2-mini)).
+not a general-purpose engine: one model, tuned on one card. Since 0.3.1 it also runs a second model, Inkling-2 Mini, as an experimental
+model ([below](#inkling-2-mini)); it reads text, and since {{VISION_VERSION}} still images.
 
 ## Which model should I download?
 
@@ -673,10 +673,24 @@ returns the calls as `tool_calls`, with and without streaming. With `required` (
 can only write one of the offered names as the call, and the reply ends after that one call. Terminal chat has no tools. The limits (the context, the thinking budget and
 the GPU memory for dropped replies) are in the [README](../README.md#inkling-2-mini).
 
+### Can Inkling-2 Mini read images?
+
+Yes, new in {{VISION_VERSION}}: still images, as the published model reads them. The image tower runs on the GPU inside the engine
+library. A converted folder needs one more file, `inkling_2_mini_vision.yskn` (637 MB, the published image tower unchanged); the
+quickstart page then shows an image button, `yasakani serve` takes OpenAI `image_url` parts with `data:image/...;base64` URIs, and
+`yasakani chat` takes `--image PATH`.
+
+An image of H × W pixels becomes ceil(H / 40) × ceil(W / 40) image tokens, for example 576 for 1280 × 720. Images above 1,024 image
+tokens (`--vision-max-image-tokens`) are shrunk to fit; that shrink is this project's choice, not part of the official method. The
+image tower takes about 0.77 GB more GPU memory with the defaults (measured on the RTX 5090); `--vision off` does not load it, and then
+the model is text only as before. Encoding one 1280 × 720 image took 12.5 ms on the RTX 5090. Requests without images give the same
+output as before. Not supported: video, several frames of one file, and images in system or assistant messages.
+Details: [python/README.md](../python/README.md#inkling-2-mini-image-input).
+
 ### What is not supported yet?
 
-Images (the original model reads them; we support text only), several requests at once (`--parallel`), tools in terminal chat,
-`bench --edit`, Linux, and any GPU other than the RTX 5090 (not tested). This model is experimental in 0.3.1.
+Video, several requests at once (`--parallel`), tools in terminal chat, `bench --edit`, Linux, and any GPU other than the RTX 5090
+(not tested). This model is experimental in 0.3.1.
 
 ## Can I use other models, for example Qwen4?
 
