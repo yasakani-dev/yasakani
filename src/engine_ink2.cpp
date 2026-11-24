@@ -1206,7 +1206,12 @@ EngineInk2::EngineInk2(const std::string& path, int max_ctx, int /*flags*/) {
   }
 
   if (Ink2VisionEncoder::has_vision_config(dir_)) {
-    vision_ = std::make_unique<Ink2VisionEncoder>(dir_, stream_, cublas_);
+    try {  // a vision_config this encoder does not run leaves the engine text only (with the reason), as before images
+      vision_ = std::make_unique<Ink2VisionEncoder>(dir_, stream_, cublas_);
+    } catch (const std::exception& ex) {
+      vision_.reset();
+      vision_off_ = ex.what();
+    }
   }
   {
     std::vector<int> base_local_visits;
@@ -1416,7 +1421,9 @@ uint64_t ink2_vis_row_hash(const uint16_t* row, int H) {
 
 void EngineInk2::encode_rgb(const uint8_t* const* frames, const int32_t* widths, const int32_t* heights, int n_frames,
                             uint16_t* out_bf16, int32_t* out_grids, int32_t* out_n_tokens) {
-  if (!vision_) throw std::runtime_error("encode_rgb: checkpoint has no vision encoder");
+  if (!vision_)
+    throw std::runtime_error(vision_off_.empty() ? std::string("encode_rgb: checkpoint has no vision encoder")
+                                                 : "image input is off: " + vision_off_);
   vision_->encode_rgb(frames, widths, heights, n_frames, out_bf16, out_grids, out_n_tokens);
 }
 

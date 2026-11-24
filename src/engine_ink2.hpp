@@ -380,6 +380,7 @@ class EngineInk2 {
 
   // Native vision encoder & vis_sig injection state
   std::unique_ptr<Ink2VisionEncoder> vision_;
+  std::string vision_off_;  // why the folder's vision_config was refused (empty: no vision_config, or accepted)
   bool vis_active_ = false;
   int vis_n_image_ = 0;
   int vis_n_prompt_ = 0;

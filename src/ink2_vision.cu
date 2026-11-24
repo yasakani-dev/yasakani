@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <initializer_list>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
@@ -72,7 +73,44 @@ Ink2VisionConfig parse_vision_config(const std::string& dir) {
   if (v.has("rope_parameters") && v.at("rope_parameters").has("rope_theta")) {
     c.rope_theta = gf(v.at("rope_parameters").at("rope_theta"), 10000.0f);
   }
+  // The kernels, the scratch sizes and the callers (40-pixel tiles, 2304 values per image token) are written for the image
+  // tower of Inkling-2 Mini only: any other vision_config is refused here, before a weight is read.
+  const Ink2VisionConfig m;  // the defaults are the values of Inkling-2 Mini
+  std::string bad;
+  auto eq = [&](const char* key, int got, int want) {
+    if (got != want)
+      bad += std::string(bad.empty() ? "" : ", ") + key + " " + std::to_string(got) + " (needs " + std::to_string(want) + ")";
+  };
+  eq("patch_size", c.patch_size, m.patch_size);
+  eq("merge_size", c.merge_size, m.merge_size);
+  eq("hidden_size", c.hidden_size, m.hidden_size);
+  eq("num_hidden_layers", c.num_hidden_layers, m.num_hidden_layers);
+  eq("num_attention_heads", c.num_attention_heads, m.num_attention_heads);
+  eq("intermediate_size", c.intermediate_size, m.intermediate_size);
+  eq("posemb_grid_size", c.posemb_grid_size, m.posemb_grid_size);
+  eq("projection_hidden_dim", c.projection_hidden_dim, m.projection_hidden_dim);
+  eq("text_hidden_size", c.text_hidden_size, m.text_hidden_size);
+  eq("projector_bias", c.projector_bias ? 1 : 0, m.projector_bias ? 1 : 0);
+  if (std::fabs(c.layer_norm_eps - m.layer_norm_eps) > 1e-9f) bad += std::string(bad.empty() ? "" : ", ") + "layer_norm_eps";
+  if (c.rope_theta != m.rope_theta) bad += std::string(bad.empty() ? "" : ", ") + "rope_theta";
+  if (!bad.empty())
+    throw std::runtime_error("ink2_vision: config.json vision_config: this encoder runs the image tower of Inkling-2 Mini only; " +
+                             bad);
   return c;
+}
+
+// dtype BF16, the shape the kernels index with, and the byte count of one tensor of the image tower.
+void vis_expect(const StTensorInfo& t, const std::string& name, std::initializer_list<int64_t> shape) {
+  if (t.dtype == "BF16" && t.shape.size() == shape.size() && std::equal(t.shape.begin(), t.shape.end(), shape.begin()) &&
+      t.nbytes == t.numel() * 2u)
+    return;
+  auto dims = [](const std::vector<int64_t>& v) {
+    std::string s = "[";
+    for (size_t i = 0; i < v.size(); ++i) s += (i ? ", " : "") + std::to_string(v[i]);
+    return s + "]";
+  };
+  throw std::runtime_error("ink2_vision: " + name + " is " + t.dtype + " " + dims(t.shape) + "; this encoder needs BF16 " +
+                           dims(std::vector<int64_t>(shape)) + " (Inkling-2 Mini)");
 }
 
 __device__ __forceinline__ float vis_warp_sum(float v) {
@@ -528,32 +566,34 @@ void Ink2VisionEncoder::ensure_loaded() {
   SafetensorsReader reader;
   reader.open_dir(dir_, "model.visual.");
 
-  auto upload_bf16 = [&](const std::string& name) -> const __nv_bfloat16* {
+  const int64_t H = cfg_.hidden_size, I = cfg_.intermediate_size, P = cfg_.patch_size, G = cfg_.posemb_grid_size;
+  const int64_t PH = cfg_.projection_hidden_dim, MM = int64_t(cfg_.merge_size) * cfg_.merge_size;
+  const int64_t TH = cfg_.text_hidden_size;
+  auto upload_bf16 = [&](const std::string& name, std::initializer_list<int64_t> shape) -> const __nv_bfloat16* {
     const StTensorInfo& info = reader.get(name);
-    if (info.dtype != "BF16") throw std::runtime_error("ink2_vision: expected BF16 tensor for " + name);
+    vis_expect(info, name, shape);
     void* p = alloc_weight(info.nbytes);
     reader.upload_gpu(info, p, stream_);
     return static_cast<const __nv_bfloat16*>(p);
   };
 
-  auto try_upload_bf16 = [&](const std::string& name) -> const __nv_bfloat16* {
+  auto try_upload_bf16 = [&](const std::string& name, std::initializer_list<int64_t> shape) -> const __nv_bfloat16* {
     try {
-      const StTensorInfo& info = reader.get(name);
-      if (info.dtype != "BF16") throw std::runtime_error("ink2_vision: expected BF16 tensor for " + name);
-      void* p = alloc_weight(info.nbytes);
-      reader.upload_gpu(info, p, stream_);
-      return static_cast<const __nv_bfloat16*>(p);
+      (void)reader.get(name);
     } catch (const std::exception&) {
-      return nullptr;
+      return nullptr;  // optional tensor: absent is fine; present, it must have the right dtype and shape
     }
+    return upload_bf16(name, shape);
   };
 
-  auto pack_bf16_3 = [&](const std::string& n0, const std::string& n1, const std::string& n2) -> const __nv_bfloat16* {
+  auto pack_bf16_3 = [&](const std::string& n0, const std::string& n1, const std::string& n2,
+                         std::initializer_list<int64_t> shape) -> const __nv_bfloat16* {
     const StTensorInfo& i0 = reader.get(n0);
     const StTensorInfo& i1 = reader.get(n1);
     const StTensorInfo& i2 = reader.get(n2);
-    if (i0.dtype != "BF16" || i1.dtype != "BF16" || i2.dtype != "BF16")
-      throw std::runtime_error("ink2_vision: expected BF16 QKV tensor");
+    vis_expect(i0, n0, shape);
+    vis_expect(i1, n1, shape);
+    vis_expect(i2, n2, shape);
     uint8_t* p = static_cast<uint8_t*>(alloc_weight(i0.nbytes + i1.nbytes + i2.nbytes));
     reader.upload_gpu(i0, p, stream_);
     reader.upload_gpu(i1, p + i0.nbytes, stream_);
@@ -562,39 +602,39 @@ void Ink2VisionEncoder::ensure_loaded() {
   };
 
   const std::string emb = "model.visual.backbone.embeddings.";
-  class_emb_ = upload_bf16(emb + "class_embedding");
-  cls_pos_emb_ = upload_bf16(emb + "cls_position_embedding");
-  patch_emb_w_ = upload_bf16(emb + "patch_embedding.weight");
-  patch_emb_b_ = try_upload_bf16(emb + "patch_embedding.bias");
-  pos_emb_ = upload_bf16(emb + "position_embedding");
-  ln_pre_w_ = upload_bf16("model.visual.backbone.ln_pre.weight");
-  ln_pre_b_ = upload_bf16("model.visual.backbone.ln_pre.bias");
+  class_emb_ = upload_bf16(emb + "class_embedding", {H});
+  cls_pos_emb_ = upload_bf16(emb + "cls_position_embedding", {H});
+  patch_emb_w_ = upload_bf16(emb + "patch_embedding.weight", {H, 3 * P * P});
+  patch_emb_b_ = try_upload_bf16(emb + "patch_embedding.bias", {H});
+  pos_emb_ = upload_bf16(emb + "position_embedding", {G * G, H});
+  ln_pre_w_ = upload_bf16("model.visual.backbone.ln_pre.weight", {H});
+  ln_pre_b_ = upload_bf16("model.visual.backbone.ln_pre.bias", {H});
 
   layers_.resize(size_t(cfg_.num_hidden_layers));
   for (int i = 0; i < cfg_.num_hidden_layers; ++i) {
     Ink2VisionLayerWeights& L = layers_[size_t(i)];
     const std::string p = "model.visual.backbone.layers." + std::to_string(i) + ".";
-    L.ln1_w = upload_bf16(p + "ln_1.weight");
-    L.ln1_b = upload_bf16(p + "ln_1.bias");
-    L.ln2_w = upload_bf16(p + "ln_2.weight");
-    L.ln2_b = upload_bf16(p + "ln_2.bias");
-    L.ls1_gamma = upload_bf16(p + "ls_1.gamma");
-    L.ls2_gamma = upload_bf16(p + "ls_2.gamma");
-    L.qkv_w = pack_bf16_3(p + "self_attn.q_proj.weight", p + "self_attn.k_proj.weight", p + "self_attn.v_proj.weight");
-    L.qkv_b = pack_bf16_3(p + "self_attn.q_proj.bias", p + "self_attn.k_proj.bias", p + "self_attn.v_proj.bias");
-    L.out_w = upload_bf16(p + "self_attn.out_proj.weight");
-    L.out_b = upload_bf16(p + "self_attn.out_proj.bias");
-    L.fc1_w = upload_bf16(p + "mlp.c_fc.weight");
-    L.fc1_b = upload_bf16(p + "mlp.c_fc.bias");
-    L.fc2_w = upload_bf16(p + "mlp.c_proj.weight");
-    L.fc2_b = upload_bf16(p + "mlp.c_proj.bias");
+    L.ln1_w = upload_bf16(p + "ln_1.weight", {H});
+    L.ln1_b = upload_bf16(p + "ln_1.bias", {H});
+    L.ln2_w = upload_bf16(p + "ln_2.weight", {H});
+    L.ln2_b = upload_bf16(p + "ln_2.bias", {H});
+    L.ls1_gamma = upload_bf16(p + "ls_1.gamma", {H});
+    L.ls2_gamma = upload_bf16(p + "ls_2.gamma", {H});
+    L.qkv_w = pack_bf16_3(p + "self_attn.q_proj.weight", p + "self_attn.k_proj.weight", p + "self_attn.v_proj.weight", {H, H});
+    L.qkv_b = pack_bf16_3(p + "self_attn.q_proj.bias", p + "self_attn.k_proj.bias", p + "self_attn.v_proj.bias", {H});
+    L.out_w = upload_bf16(p + "self_attn.out_proj.weight", {H, H});
+    L.out_b = upload_bf16(p + "self_attn.out_proj.bias", {H});
+    L.fc1_w = upload_bf16(p + "mlp.c_fc.weight", {I, H});
+    L.fc1_b = upload_bf16(p + "mlp.c_fc.bias", {I});
+    L.fc2_w = upload_bf16(p + "mlp.c_proj.weight", {H, I});
+    L.fc2_b = upload_bf16(p + "mlp.c_proj.bias", {H});
   }
 
-  proj_in_w_ = upload_bf16("model.visual.proj_in.weight");
-  proj_out_w_ = upload_bf16("model.visual.proj_out.weight");
+  proj_in_w_ = upload_bf16("model.visual.proj_in.weight", {PH, MM * H});
+  proj_out_w_ = upload_bf16("model.visual.proj_out.weight", {TH, PH});
   if (cfg_.projector_bias) {
-    proj_in_b_ = upload_bf16("model.visual.proj_in.bias");
-    proj_out_b_ = upload_bf16("model.visual.proj_out.bias");
+    proj_in_b_ = upload_bf16("model.visual.proj_in.bias", {PH});
+    proj_out_b_ = upload_bf16("model.visual.proj_out.bias", {TH});
   }
   reader.close_all();
   vis_cuda_ok(cudaStreamSynchronize(stream_), "sync weights");

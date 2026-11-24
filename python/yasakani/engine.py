@@ -345,6 +345,8 @@ class Engine:
             heights[i], widths[i] = h, w
             tot_tok += ((h + 39) // 40) * ((w + 39) // 40)
         hidden = int(getattr(self.pack, "hidden_size", 2304))
+        if hidden != 2304:                       # the encoder writes 40-pixel tiles of 2304 values (Inkling-2 Mini only)
+            raise YasakaniError("image input: the model's hidden size is %d; the image encoder gives 2304 values per token" % hidden)
         out_u16 = np.empty((tot_tok, hidden), dtype=np.uint16)
         grids = np.empty((len(arrs), 2), dtype=np.int32)
         ptrs = (C.c_void_p * len(arrs))(*[a.ctypes.data for a in arrs])

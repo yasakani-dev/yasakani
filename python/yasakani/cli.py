@@ -274,8 +274,35 @@ def _validate_ink2_vision_args(args) -> None:
             raise YasakaniError("image input: cannot read image file: %s" % img_path)
 
 
+def _ink2_tower_problem(pack) -> str:
+    """Why the image tower of a published Inkling-2 folder cannot be used ("" when it can): the vision_config of config.json and
+    the dtype, shape and bytes of every model.visual.* tensor are checked against Inkling-2 Mini (header only, nothing loaded)."""
+    import json
+    from . import inkling2_vision as V
+    try:
+        V.check_vision_config(json.loads((pack.root / "config.json").read_text(encoding="utf-8")))
+        seen = set()
+        for f in sorted(pack.root.glob("*.safetensors")):         # the files the engine reads model.visual.* from
+            header, _, _ = V.read_safetensors_header(f)
+            for name, e in header.items():
+                if name.startswith(V.PREFIX) and isinstance(e, dict):
+                    off = e.get("data_offsets") or [0, 0]
+                    V.check_tensor(name, str(e.get("dtype")), e.get("shape") or [], int(off[1]) - int(off[0]))
+                    seen.add(name)
+        missing = [n for n in V.VISION_TENSORS if n not in seen]
+        if missing:
+            return "%d image-tower tensors are missing, first: %s" % (len(missing), missing[0])
+    except (OSError, ValueError) as ex:
+        return str(ex)
+    return ""
+
+
 def _inkling2_vision(args, pack, eng):
     if not pack.has_vision or not eng.supports_ink2_vision:
+        return None
+    problem = _ink2_tower_problem(pack)
+    if problem:
+        _say("note: image input is off: %s" % problem)
         return None
     from .vision import DEFAULT_IMAGE_TOKENS, Ink2NativeVision, error_text
     allow_local = getattr(args, "vision_allow_local_files", None) or False
