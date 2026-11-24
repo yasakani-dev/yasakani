@@ -34,7 +34,7 @@ enum { INK2_DFMT_BF16 = 0, INK2_DFMT_NVFP4 = 1, INK2_DFMT_MXFP8 = 2, INK2_DFMT_Q
 struct StepState {
   int token, pos;
   float tau;  // log scaling factor of this position
-  int pad;
+  int pad;    // 0: text position; k > 0: image position, feature row k - 1 (NormArgs.img)
 };
 
 // y = W x, W bfloat16 [rows, cols] (cols % 8 == 0), x and y float32.
@@ -84,6 +84,9 @@ struct NormArgs {
   // [table rows, n], esc = exponent bytes [table rows, n / 32]
   const u8* esc;
   int efmt;
+  // Image positions (ink2_vision_api.h): with img != NULL, a row of job 0 (embed_stride > 0) whose
+  // st[row].pad = k > 0 takes the bfloat16 feature row img[k - 1] (n values) as it is: no table row, no norm.
+  const u16* img;
 };
 
 // Top-k routing from the router logits. One block of >= E threads.
@@ -378,6 +381,9 @@ struct Backend {
   virtual void set_f2(const struct F2Opts* o) {}
   virtual int run_f2(int fid, const void* args, int grid, int block) { return -1; }
   virtual int f2_gemvm_block() { return 0; }
+  // CUDA: the stream (cudaStream_t) the kernels run on, for work launched outside this interface (the image
+  // tower). NULL: the legacy default stream, which is ordered with the blocking stream of the CUDA backend.
+  virtual void* native_stream() { return nullptr; }
 };
 
 Backend* ink2_make_host_backend();

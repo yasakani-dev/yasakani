@@ -112,6 +112,7 @@ struct CudaBackend : Backend {
   }
   std::string err;
   cudaStream_t stream = nullptr;  // every kernel runs here; copies use the default stream, which waits for it
+  void* native_stream() override { return stream; }  // the image tower (ink2_vision.cu) queues its work here too
 
   void fail(const char* what, cudaError_t e) {
     if (failed) return;

@@ -10,8 +10,17 @@
 // earlier rows of the pass through the caches and convolution histories, and
 // every weight matrix is read once for all rows (experts: once per distinct
 // expert of the pass). The optional NVFP4 Tensor Core prompt mode instead rounds activations.
+// Image input (ink2_vision_api.h): the image tower writes image vectors into a feature buffer; a prompt
+// position that names a feature row takes that row as its embedding (the norm kernel, NormArgs.img) and is
+// an ordinary position for everything after it.
 #define INK2_BUILD
 #include "ink2_api.h"
+#include "ink2_vision_api.h"
+#ifdef INK2_WITH_VISION
+#include "ink2_vision.h"  // the image tower (ink2_vision.cu): ink2v_*
+#else
+struct Ink2Vis;  // no image tower in this build: the ink2_vision_* calls refuse with a message
+#endif
 
 #include <math.h>
 #include <stdarg.h>
@@ -274,6 +283,15 @@ struct Engine {
   int cap_visit = -1;
   std::vector<Capture> caps;
   Drafter* drf = nullptr;  // drafter hook: defined in ink2_drafter.inc
+  // Image input (ink2_vision_api.h). img_feat is fixed from ink2_vision_finalize to ink2_vision_unload, so the
+  // recorded kernel sequences stay valid in between (the rows are named per position through st[].pad).
+  Ink2Vis* vis = nullptr;               // the image tower (ink2_vision.cu)
+  Ink2VisionConfig vis_cfg{};
+  bool vis_ready = false;               // ink2_vision_finalize done
+  bool vis_capture = false;             // option "vision_capture": keep stages 1 .. 3 of every encode (tests)
+  u16* img_feat = nullptr;              // feature buffer, bfloat16 [vis_cfg.max_feature_rows, hidden]
+  std::vector<unsigned char> img_valid;  // per feature row: written since the last ink2_reset
+  void vision_release();
 #include "ink2_fast_engine.inc"   // fast kernels
 #include "ink2_fast2_engine.inc"  // fast kernels, second set
   void drf_commit(int R);
@@ -285,6 +303,7 @@ struct Engine {
   ~Engine() {
     if (be) {
       drf_destroy();  // drafter hook
+      vision_release();
       free_graphs();
       for (void* p : owned) be->release(p);
       for (auto& kv : ten)
@@ -1368,6 +1387,7 @@ struct Engine {
       n.eps = c.eps;
       n.nj = 1;
       n.rows = R;
+      n.img = img_feat;  // image positions (st[row].pad > 0) copy their feature row; NULL without the image tower
       run(KID_norm, &n, R, 256, INK2_PROF_MIX_NORM);
     }
     const float* hidden = emb;
@@ -1421,12 +1441,14 @@ struct Engine {
     return StepState{token, p, 1.0f + c.alpha * logf(ratio), 0};
   }
 
-  void step(int token, float* logits_out, bool with_logits, int* top1 = nullptr) {
+  // img_row >= 0: an image position that takes feature row img_row (checked by the caller).
+  void step(int token, float* logits_out, bool with_logits, int* top1 = nullptr, int img_row = -1) {
     if (!finalized) fail("step before finalize");
     if (token < 0 || token >= c.embed_rows) fail("token id out of range");
     if (pos >= c.max_positions) fail(fmt("context full: %d positions", c.max_positions));
     caps.clear();
     StepState s = state_at(token, pos);
+    s.pad = img_row + 1;  // 0: text
     be->upload(st, &s, sizeof s);
     if (prof) {
       be->sync();
@@ -1471,8 +1493,10 @@ struct Engine {
     ++pos;
   }
 
-  // One pass over R consecutive positions (R >= 2).
-  void pass(const int* ids, int R, bool with_logits, float* logits_out, int* argmax_out, float* max_out) {
+  // One pass over R consecutive positions (R >= 2). img (may be NULL): per row -1 for text, else the
+  // feature row of an image position (checked by the caller).
+  void pass(const int* ids, int R, bool with_logits, float* logits_out, int* argmax_out, float* max_out,
+            const int* img = nullptr) {
     if (!finalized) fail("pass before finalize");
     if (R < 2 || R > max_rows) fail(fmt("rows of a pass must be 2 .. %d", max_rows));
     if (with_logits && R > logit_rows) fail(fmt("at most %d rows with logits", logit_rows));
@@ -1480,6 +1504,7 @@ struct Engine {
     for (int r = 0; r < R; ++r) {
       if (ids[r] < 0 || ids[r] >= c.embed_rows) fail("token id out of range");
       st_host[r] = state_at(ids[r], pos + r);
+      st_host[r].pad = img ? img[r] + 1 : 0;  // every row is written: 0 for text
     }
     caps.clear();
     be->upload(st, st_host.data(), (size_t)R * sizeof(StepState));
@@ -1528,7 +1553,8 @@ struct Engine {
 
   // Prompt tokens: passes of `chunk` rows; the rest in passes of falling
   // powers of two (so that only a few pass sizes are ever recorded).
-  void feed_many(const int* ids, int n) {
+  // img (may be NULL): the feature rows of image positions, -1 for text (checked by the caller).
+  void feed_many(const int* ids, int n, const int* img = nullptr) {
     if (n < 0) fail("negative count");
     if (pos + n > c.max_positions) fail(fmt("context full: %d positions", c.max_positions));
     int i = 0;
@@ -1538,8 +1564,8 @@ struct Engine {
         R = 1;
         while (R * 2 <= left) R *= 2;
       }
-      if (R <= 1) step(ids[i], nullptr, false);
-      else pass(ids + i, R, false, nullptr, nullptr, nullptr);
+      if (R <= 1) step(ids[i], nullptr, false, nullptr, img ? img[i] : -1);
+      else pass(ids + i, R, false, nullptr, nullptr, nullptr, img ? img + i : nullptr);
       i += R;
     }
   }
@@ -1584,7 +1610,11 @@ INK2_API const char* ink2_build_info(void) {
 INK2_API int ink2_abi_version(void) { return INK2_ABI_VERSION; }
 
 INK2_API int ink2_capabilities(void) {
-  return INK2_CAP_PACKED_DENSE | INK2_CAP_DRAFTER | INK2_CAP_DRAFTER_PACKED | INK2_CAP_Q3 | INK2_CAP_KV;
+  return INK2_CAP_PACKED_DENSE | INK2_CAP_DRAFTER | INK2_CAP_DRAFTER_PACKED | INK2_CAP_Q3 | INK2_CAP_KV
+#ifdef INK2_WITH_VISION
+         | INK2_CAP_VISION
+#endif
+      ;
 }
 
 // After ink2_finalize: 0 = the general kernels, else the compute capability (86, 89, 120, ...) the fast kernels run on
@@ -1694,6 +1724,7 @@ INK2_API int ink2_finalize(void* h) {
 INK2_API int ink2_reset(void* h) {
   API_BEGIN(h)
   e->reset();
+  std::fill(e->img_valid.begin(), e->img_valid.end(), (unsigned char)0);  // image rows must be written again
   return 0;
   API_END
 }
@@ -1934,6 +1965,11 @@ INK2_API int ink2_set_option(void* h, const char* name, int value) {
     if (value < 1 || (e->finalized && value > e->max_rows)) fail("chunk must be 1 .. max_rows");
     e->chunk = value;
     return 0;
+  } else if (n == "vision_capture") {
+    if (value != 0 && value != 1) fail("vision_capture must be 0 or 1");
+    if (e->vis_ready) fail("option vision_capture must be set before ink2_vision_finalize");
+    e->vis_capture = value != 0;
+    return 0;
   } else fail("unknown option " + n);
   e->f2_resolve();  // fast kernels, second set
   e->free_graphs();  // the recorded kernel sequences depend on the options
@@ -2086,6 +2122,299 @@ INK2_API int ink2_selftest(const char* backend, char* report, int report_cap) {
   delete b;
   if (report && report_cap > 0) snprintf(report, report_cap, "%s", text.c_str());
   return rc;
+}
+
+// ---------------------------------------------------------------------------
+// Image input (ink2_vision_api.h). These calls own the feature buffer and every check of the arguments; the
+// image tower itself (ink2_vision.cu, built with INK2_WITH_VISION) only sees arguments that passed them.
+// ---------------------------------------------------------------------------
+namespace {
+
+void Engine::vision_release() {
+#ifdef INK2_WITH_VISION
+  if (vis) ink2v_destroy(vis);  // waits for the stream
+  if (img_feat) ink2v_free_rows(img_feat);
+#endif
+  vis = nullptr;
+  img_feat = nullptr;
+  vis_ready = false;
+  img_valid.clear();
+}
+
+Engine* vision_engine(void* h, bool need_ready) {
+  Engine* e = (Engine*)h;
+  if (!e) fail("no engine");
+  if (!e->vis) fail("no image tower: call ink2_vision_create first");
+  if (need_ready && !e->vis_ready) fail("the image tower is not finalized: call ink2_vision_finalize first");
+  return e;
+}
+
+// [row0, row0 + n) inside the feature buffer
+void check_feature_range(const Engine* e, long long row0, long long n) {
+  const long long cap = e->vis_cfg.max_feature_rows;
+  if (n < 1) fail("at least one feature row is needed");
+  if (row0 < 0 || row0 + n > cap)
+    fail(fmt("feature rows %lld .. %lld lie outside the buffer of %lld rows (max_feature_rows)", row0, row0 + n - 1, cap));
+}
+
+[[noreturn]] void tower_fail(const char* what, const char* err) {
+  fail(std::string("image tower: ") + what + ": " + (err && err[0] ? err : "failed without a message"));
+}
+
+// The published values of the Inkling-2 Mini image tower; anything else is refused with the key named.
+void check_vision_config(const Ink2VisionConfig& v, int text_hidden) {
+  auto need = [](bool ok, const char* key, const char* expected) {
+    if (!ok) fail(std::string("vision config: ") + key + " must be " + expected);
+  };
+  need(v.hidden == 1024, "hidden_size", "1024");
+  need(v.layers == 23, "num_hidden_layers", "23");
+  need(v.heads == 16, "num_attention_heads", "16");
+  need(v.head_dim == 64, "head_dim", "64 (hidden_size / num_attention_heads)");
+  need(v.inter == 4096, "the MLP size", "4096 (mlp_ratio 4.0)");
+  need(v.patch == 20, "native_patch_size", "20");
+  need(v.merge == 2, "adapter_merge_size", "2");
+  need(v.temporal == 2, "temporal_patch_size", "2");
+  need(v.grid == 32, "posemb_grid_size", "32");
+  need(v.proj_hidden == 4096, "projection_hidden_dim", "4096");
+  need(v.projector_bias == 0, "projector_bias", "false");
+  need(v.text_hidden == text_hidden, "text_hidden_size", "the hidden size of the text model");
+  need(v.eps == 1e-5f, "layer_norm_eps", "1e-5");
+  need(v.rope_theta == 10000.0f, "rope_theta", "10000");
+  need(v.max_image_tokens >= 64 && v.max_image_tokens <= 4096, "max_image_tokens", "64 .. 4096");
+  need(v.max_feature_rows >= v.max_image_tokens && v.max_feature_rows <= 65536, "max_feature_rows",
+       "max_image_tokens .. 65536");
+}
+
+}  // namespace
+
+INK2_API int ink2_vision_create(void* h, const Ink2VisionConfig* cfg) {
+  API_BEGIN(h)
+  if (!e) fail("no engine");
+  if (std::string(e->be->name()) != "cuda") fail("image input needs the cuda backend");
+  if (!e->finalized) fail("ink2_vision_create needs the finalized text model (ink2_finalize first)");
+  if (e->vis) fail("the image tower is already created (ink2_vision_unload first)");
+  if (!cfg) fail("no vision config");
+#ifdef INK2_WITH_VISION
+  check_vision_config(*cfg, e->c.hidden);
+  char err[INK2V_ERR_LEN] = "";
+  // The engine's own stream: the encoder's kernels and the engine's passes are then ordered by the stream itself.
+  Ink2Vis* v = ink2v_create(cfg, (CUstream_st*)e->be->native_stream(), err);
+  if (!v) tower_fail("create", err);
+  e->vis = v;
+  e->vis_cfg = *cfg;
+  e->vis_ready = false;
+  return 0;
+#else
+  fail("this library was built without the image tower");
+#endif
+  API_END
+}
+
+INK2_API int ink2_vision_set_tensor(void* h, const char* name, const void* bf16, long long nbytes) {
+  API_BEGIN(h)
+  vision_engine(h, false);
+  if (e->vis_ready) fail("ink2_vision_set_tensor after ink2_vision_finalize");
+  if (!name || !bf16) fail("ink2_vision_set_tensor: no name or no data");
+  if (nbytes <= 0) fail(std::string("empty tensor ") + name);
+#ifdef INK2_WITH_VISION
+  char err[INK2V_ERR_LEN] = "";
+  if (ink2v_set_tensor(e->vis, name, bf16, nbytes, err) != 0) tower_fail(name, err);
+  return 0;
+#else
+  fail("this library was built without the image tower");
+#endif
+  API_END
+}
+
+INK2_API int ink2_vision_set_tensor_shaped(void* h, const char* name, const char* dtype, const long long* shape, int ndim,
+                                           const void* bf16, long long nbytes) {
+  API_BEGIN(h)
+  vision_engine(h, false);
+  if (e->vis_ready) fail("ink2_vision_set_tensor_shaped after ink2_vision_finalize");
+  if (!name || !bf16) fail("ink2_vision_set_tensor_shaped: no name or no data");
+  if (!dtype || strcmp(dtype, "BF16") != 0)
+    fail(fmt("tensor %.200s: dtype %.16s, expected BF16", name, dtype ? dtype : "(none)"));
+  if (!shape || ndim < 1 || ndim > 4) fail(fmt("tensor %.200s: %d dimensions given, expected 1 .. 4 with a shape", name, ndim));
+  if (nbytes <= 0) fail(std::string("empty tensor ") + name);
+#ifdef INK2_WITH_VISION
+  char err[INK2V_ERR_LEN] = "";
+  if (ink2v_set_tensor_shaped(e->vis, name, bf16, 2, shape, ndim, nbytes, err) != 0) tower_fail(name, err);
+  return 0;
+#else
+  fail("this library was built without the image tower");
+#endif
+  API_END
+}
+
+INK2_API int ink2_vision_finalize(void* h) {
+  API_BEGIN(h)
+  vision_engine(h, false);
+  if (e->vis_ready) fail("the image tower is already finalized");
+#ifdef INK2_WITH_VISION
+  // The feature buffer first (with a look at the free memory), then the encoder scratch. Both are taken outside the
+  // backend: a failed allocation here refuses image input and leaves the text engine working.
+  const size_t bytes = (size_t)e->vis_cfg.max_feature_rows * (size_t)e->c.hidden * 2;
+  long long free_b = 0, total_b = 0;
+  if (e->be->device_memory(&free_b, &total_b) && free_b < (long long)bytes + (64ll << 20))
+    fail(fmt("the feature buffer needs %lld MiB, %lld MiB are free", (long long)(bytes >> 20), free_b >> 20));
+  char err[INK2V_ERR_LEN] = "";
+  if (ink2v_set_capture(e->vis, e->vis_capture ? 1 : 0, err) != 0) tower_fail("finalize", err);
+  if (e->img_feat) ink2v_free_rows(e->img_feat);  // not reached today: a failed finalize frees its buffer
+  e->img_feat = nullptr;
+  u16* buf = ink2v_alloc_rows((long long)bytes, err);
+  if (!buf) tower_fail("finalize", err);
+  if (ink2v_finalize(e->vis, err) != 0) {
+    ink2v_free_rows(buf);
+    tower_fail("finalize", err);
+  }
+  e->img_feat = buf;
+  e->img_valid.assign((size_t)e->vis_cfg.max_feature_rows, 0);
+  e->vis_ready = true;
+  e->free_graphs();  // the embedding kernel now reads the feature buffer: record the passes again
+  return 0;
+#else
+  fail("this library was built without the image tower");
+#endif
+  API_END
+}
+
+INK2_API int ink2_vision_encode(void* h, const unsigned char* rgb, int width, int height, long long rgb_bytes, int rows,
+                                int cols, int row0) {
+  API_BEGIN(h)
+  vision_engine(h, true);
+  if (!rgb) fail("ink2_vision_encode: no pixels");
+  if (width < 1 || height < 1) fail(fmt("image size %d x %d: both sides must be at least 1", width, height));
+  if (rgb_bytes != (long long)width * (long long)height * 3)
+    fail(fmt("image %d x %d: %lld bytes given, %lld expected (RGB)", width, height, rgb_bytes,
+             (long long)width * (long long)height * 3));
+  const int side = e->vis_cfg.patch * e->vis_cfg.merge;  // pixels per image vector and side (40)
+  const long long want_rows = ((long long)height + side - 1) / side, want_cols = ((long long)width + side - 1) / side;
+  if (rows != want_rows || cols != want_cols)
+    fail(fmt("image %d x %d has a grid of %lld x %lld, not %d x %d", width, height, want_rows, want_cols, rows, cols));
+  const long long n = want_rows * want_cols;
+  if (n > e->vis_cfg.max_image_tokens)
+    fail(fmt("image %d x %d gives %lld image vectors, at most %d per image (max_image_tokens)", width, height, n,
+             e->vis_cfg.max_image_tokens));
+  check_feature_range(e, row0, n);
+#ifdef INK2_WITH_VISION
+  char err[INK2V_ERR_LEN] = "";
+  // The tower checks again and refuses before it writes anything, so a refusal leaves the rows as they were.
+  if (ink2v_encode(e->vis, rgb, width, height, rgb_bytes, rows, cols, e->img_feat + (size_t)row0 * (size_t)e->c.hidden,
+                   (long long)e->vis_cfg.max_feature_rows - row0, err) != 0)
+    tower_fail("encode", err);
+  // Queued on the engine's stream; a launch failure means the rows may be partly written: no longer valid.
+  std::fill(e->img_valid.begin() + row0, e->img_valid.begin() + row0 + n, (unsigned char)0);
+  e->check_backend();
+  std::fill(e->img_valid.begin() + row0, e->img_valid.begin() + row0 + n, (unsigned char)1);
+  return 0;
+#else
+  fail("this library was built without the image tower");
+#endif
+  API_END
+}
+
+INK2_API int ink2_vision_set_rows(void* h, const unsigned short* bf16, int row0, int n, long long nbytes) {
+  API_BEGIN(h)
+  vision_engine(h, true);
+  if (!bf16) fail("ink2_vision_set_rows: no data");
+  check_feature_range(e, row0, n);
+  const long long want = (long long)n * e->c.hidden * 2;
+  if (nbytes != want) fail(fmt("ink2_vision_set_rows: %lld bytes given, %lld expected (%d rows of %d bfloat16)", nbytes, want, n,
+                               e->c.hidden));
+  e->be->upload(e->img_feat + (size_t)row0 * (size_t)e->c.hidden, bf16, (size_t)want);
+  e->check_backend();
+  std::fill(e->img_valid.begin() + row0, e->img_valid.begin() + row0 + n, (unsigned char)1);
+  return 0;
+  API_END
+}
+
+INK2_API int ink2_vision_get_rows(void* h, float* out, int row0, int n, long long out_floats) {
+  API_BEGIN(h)
+  vision_engine(h, true);
+  if (!out) fail("ink2_vision_get_rows: no destination");
+  check_feature_range(e, row0, n);
+  const size_t H = (size_t)e->c.hidden, count = (size_t)n * H;
+  if (out_floats < (long long)count) fail(fmt("ink2_vision_get_rows: room for %lld floats, %lld needed", out_floats, (long long)count));
+  for (int r = row0; r < row0 + n; ++r)
+    if (!e->img_valid[r]) fail(fmt("feature row %d has not been written since the last reset", r));
+  std::vector<u16> tmp(count);
+  e->be->download(tmp.data(), e->img_feat + (size_t)row0 * H, count * 2);
+  e->check_backend();
+  for (size_t i = 0; i < count; ++i) {
+    unsigned u = (unsigned)tmp[i] << 16;
+    memcpy(out + i, &u, 4);
+  }
+  return 0;
+  API_END
+}
+
+INK2_API int ink2_vision_stage(void* h, int stage, float* out, long long out_floats) {
+  API_BEGIN(h)
+  vision_engine(h, true);
+  if (!out) fail("ink2_vision_stage: no destination");
+  if (stage < 0 || stage > 6) fail(fmt("ink2_vision_stage: stage %d, expected 0 .. 6", stage));
+#ifdef INK2_WITH_VISION
+  char err[INK2V_ERR_LEN] = "";
+  if (ink2v_stage(e->vis, stage, out, out_floats, err) != 0) tower_fail("stage", err);
+  return 0;
+#else
+  fail("this library was built without the image tower");
+#endif
+  API_END
+}
+
+INK2_API int ink2_vision_memory(void* h, long long* weights, long long* scratch, long long* features) {
+  API_BEGIN(h)
+  if (!e) fail("no engine");
+  long long w = 0, s = 0;
+#ifdef INK2_WITH_VISION
+  char err[INK2V_ERR_LEN] = "";
+  if (e->vis && ink2v_memory(e->vis, &w, &s, err) != 0) tower_fail("memory", err);
+#endif
+  if (weights) *weights = w;
+  if (scratch) *scratch = s;
+  if (features) *features = e->img_feat ? (long long)e->vis_cfg.max_feature_rows * e->c.hidden * 2 : 0;
+  return 0;
+  API_END
+}
+
+INK2_API int ink2_vision_unload(void* h) {
+  API_BEGIN(h)
+  if (!e) fail("no engine");
+  const bool had_buffer = e->img_feat != nullptr;
+  e->vision_release();
+  if (had_buffer) e->free_graphs();  // the recorded passes read the released buffer
+  return 0;
+  API_END
+}
+
+INK2_API int ink2_feed_many_img(void* h, const int* ids, const int* img_row, int n) {
+  API_BEGIN(h)
+  if (!e) fail("no engine");
+  if (!e->finalized) fail("feed before finalize");
+  if (n < 0) fail("negative count");
+  if (n > 0 && !ids) fail("ink2_feed_many_img: no ids");
+  if ((long long)e->pos + n > e->c.max_positions) fail(fmt("context full: %d positions", e->c.max_positions));
+  // Every row is checked before the first pass runs, so a refused call changes nothing.
+  int last = -1, first_img = -1;
+  for (int i = 0; i < n; ++i) {
+    if (ids[i] < 0 || ids[i] >= e->c.embed_rows) fail(fmt("position %d: token id %d out of range", i, ids[i]));
+    const int r = img_row ? img_row[i] : -1;
+    if (r == -1) continue;
+    if (r < -1) fail(fmt("position %d: feature row %d (expected -1 for text, else a row >= 0)", i, r));
+    if (!e->vis_ready) fail(fmt("position %d names feature row %d, but no image tower is finalized", i, r));
+    if (ids[i] != INK2_IMAGE_TOKEN)
+      fail(fmt("position %d: an image position must carry the token %d, not %d", i, INK2_IMAGE_TOKEN, ids[i]));
+    if (r >= e->vis_cfg.max_feature_rows)
+      fail(fmt("position %d: feature row %d lies outside the buffer of %d rows", i, r, e->vis_cfg.max_feature_rows));
+    if (!e->img_valid[r]) fail(fmt("position %d: feature row %d has not been written since the last reset", i, r));
+    if (r <= last) fail(fmt("position %d: feature row %d after row %d (the rows of one call must increase)", i, r, last));
+    if (first_img < 0) first_img = i;
+    last = r;
+  }
+  e->feed_many(ids, n, first_img >= 0 ? img_row : nullptr);
+  return 0;
+  API_END
 }
 
 #include "ink2_drafter.inc"  // drafter hook

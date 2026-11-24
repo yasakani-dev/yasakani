@@ -219,7 +219,8 @@ KERNEL(gemvw, GemvArgs) {
 }
 
 // ---------------------------------------------------------------------------
-// norm: RMS norm (optionally of a bfloat16 row) with optional weight
+// norm: RMS norm (optionally of a bfloat16 row) with optional weight; embedding rows of image positions
+// are copied from the feature buffer instead (NormArgs.img)
 // ---------------------------------------------------------------------------
 KERNEL(norm, NormArgs) {
   KSHARED(float, sm, 33);
@@ -233,6 +234,13 @@ KERNEL(norm, NormArgs) {
   const u8* x8 = 0;  // packed table row (mxfp8) and its exponents
   const u8* e8 = 0;
   if (a.embed_stride > 0 && jb == 0) {
+    const int pad = a.img ? a.st[row].pad : 0;
+    if (pad > 0) {  // image position: the image vector is the embedding (already normalised by the tower)
+      const u16* f = a.img + (size_t)(pad - 1) * (size_t)a.n;
+      float* o = a.job[0].out + (size_t)row * (size_t)a.n;
+      for (int j = KTID; j < a.n; j += KNT) o[j] = k_bf(f[j]);
+      return;  // the whole block returns: no barrier is left waiting
+    }
     size_t tok = (size_t)a.st[row].token;
     if (a.efmt == INK2_DFMT_MXFP8) {
       x8 = (const u8*)a.job[0].x + tok * (size_t)a.embed_stride;

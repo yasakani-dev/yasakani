@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2026 the YASAKANI authors
-// C API of the Inkling-2 Mini engine (text only). One token per call
+// C API of the Inkling-2 Mini engine. One token per call
 // (ink2_step / ink2_feed), or R consecutive positions in one pass
 // (ink2_feed_many / ink2_step_many, ABI version 2); dense matrices bfloat16 or packed
-// (ABI version 3).
+// (ABI version 3); image input (ABI version 4, ink2_vision_api.h).
 #pragma once
 
 // 1: one token per call; 2: adds ink2_abi_version, ink2_feed_many, ink2_step_many,
@@ -16,7 +16,9 @@
 // The drafter calls (ink2_drafter_api.h) are an addition within version 3, shown by INK2_CAP_DRAFTER.
 // ink2_create checks the config values (head counts, sizes, experts and top-k, kernel and window sizes)
 // and fails with a message in ink2_last_error(NULL) for values the kernels cannot take.
-#define INK2_ABI_VERSION 3
+// 4: adds the image input of ink2_vision_api.h (ink2_vision_* and ink2_feed_many_img; the calls exist in every
+// library of version 4, INK2_CAP_VISION says whether this one has the image tower). Text calls are unchanged.
+#define INK2_ABI_VERSION 4
 
 // Bits of ink2_capabilities().
 enum {
@@ -24,7 +26,8 @@ enum {
   INK2_CAP_DRAFTER = 2,       // the model's drafter (ink2_drafter_api.h: ink2_draft_abi, ink2_spec_pass, ...)
   INK2_CAP_DRAFTER_PACKED = 4,  // drafter matrices and folded head accepted packed (nvfp4 / mxfp8), ink2_draft_abi() >= 2
   INK2_CAP_Q3 = 8,              // the 3-bit format q3 (INK2_DFMT_Q3) for the drafter matrices
-  INK2_CAP_KV = 16              // options kv_mxfp8, kv_hot, kv_split and ink2_kv_memory
+  INK2_CAP_KV = 16,             // options kv_mxfp8, kv_hot, kv_split and ink2_kv_memory
+  INK2_CAP_VISION = 32          // the image tower and image positions (ink2_vision_api.h)
 };
 
 #ifdef INK2_BUILD
