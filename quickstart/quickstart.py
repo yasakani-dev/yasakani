@@ -3,8 +3,8 @@
 
 Double-click START.cmd.  This script then
   1. checks this computer (Windows, Python, GPU, NVIDIA driver, free disk space) before anything is downloaded,
-  2. lets you pick one of the four models: the three Qwen3.8-27B models and, since 0.3.2, Inkling-2 Mini (experimental, text only)
-     (on a GPU with less than 24 GB only the fastest model fits),
+  2. lets you pick one of the four models: the three Qwen3.8-27B models and, since 0.3.2, Inkling-2 Mini (experimental; text, and
+     images since 0.3.5) (on a GPU with less than 24 GB only the fastest model fits),
   3. downloads the engine zip from the release page and checks its SHA-256,
   4. makes a private Python environment in this folder and installs the package,
   5. downloads the model folder from Hugging Face,
@@ -57,10 +57,10 @@ ENGINE_ZIP = "yasakani-0.3.5-win-x64.zip"
 ENGINE_URL = "https://github.com/yasakani-dev/yasakani/releases/download/v0.3.5/" + ENGINE_ZIP
 ENGINE_SHA256 = "831576fe908c0dc52494aae6534d2a45e27f310b3ceaba9bbc0b1e65e4a8a7fc"
 # Does the engine zip of ENGINE_SHA256 read images (the image part of Inkling-2 Mini: capability CAP_VISION of its library)?  The
-# 0.3.4 zip does not.  The launcher always installs that zip, so this is what yasakani/inkling2.py library_has_vision() answers for the
-# server it starts; the context note counts the image part only when it is True.  It changes together with ENGINE_ZIP / ENGINE_SHA256
-# (a zip with image input) and must be True before INK2_IMAGE is turned on.
-ENGINE_IMAGE = False
+# zips of 0.3.5 and later do; the 0.3.4 zip did not.  The launcher always installs that zip, so this is what yasakani/inkling2.py
+# library_has_vision() answers for the server it starts; the context note counts the image part only when it is True.  It changes
+# together with ENGINE_ZIP / ENGINE_SHA256 and must be True while INK2_IMAGE is on.
+ENGINE_IMAGE = True
 REPO_URL = "https://github.com/yasakani-dev/yasakani"
 SUPPORT_URL = "https://camp-fire.jp/projects/992233/view"
 ENGINE_PORT, WEB_PORT = 8765, 8766      # `yasakani serve` and the browser chat; the next free ports are used if these are taken
@@ -89,8 +89,8 @@ END_GRACE = 2.0                     # seconds the page's server stays after Ente
 REOPEN_SECONDS = 10.0               # a model switch: how long the page's port is tried again
 PAGE_CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; "
             "base-uri 'none'; form-action 'none'")
-# The files of the published Inkling-2 Mini folder at the pinned revision below (name: bytes).  The download size of the model
-# question and of the download message is the sum of this list (with INK2_IMAGE's files when that is on).
+# The files of the published Inkling-2 Mini folder of 0.3.2 (revision 8de37e99..., name: bytes).  The download size of the model
+# question and of the download message is the sum of this list with INK2_IMAGE's files added or in their place.
 INK2_FOLDER_SIZES = {
     "inkling_2_mini_quality.yskn": 15052423172, "mtp_d4.yskn": 209688040, "tokenizer.json": 26178678,
     "SOURCE_MODEL_CARD.md": 54831, "tokenizer_config.json": 13235, "LICENSE": 11358, "chat_template.jinja": 6868,
@@ -99,16 +99,16 @@ INK2_FOLDER_SIZES = {
 }
 
 # ---- image input of Inkling-2 Mini: ONE more file in its folder (INK2_IMAGE_FILE, listed in yasakani.json under "vision").
-# THE SWITCH.  None: the launcher is that of 0.3.4 (text only; images are never mentioned).  After the folder with the file is on
-# Hugging Face, one edit turns it on: the new commit of the repository, and name: (bytes, sha256) of every file of that commit that
-# is new or differs from the pinned folder above (at least INK2_IMAGE_FILE and yasakani.json; NOTICE too when it changed):
-#   INK2_IMAGE = {"revision": "<40 hex digits>",
-#                 "files": {"inkling_2_mini_vision.yskn": (637136896, "858a5a5cacf28c1fdae0dcee23350565ac3eba77d86bc02057ce6c3bb249eabb"),
-#                           "yasakani.json": (<bytes>, "<sha256>"), "NOTICE": (<bytes>, "<sha256>")}}
-# Then a new download gets the folder of that commit (the image file included), and a folder of 0.3.2 to 0.3.4 is offered only
-# these files (about 0.64 GB; the text weights are kept and not read again).  START.cmd --image-file asks again after a no.
-# It needs an engine zip with image input at the same time (ENGINE_ZIP / ENGINE_SHA256 and ENGINE_IMAGE = True above).
-INK2_IMAGE = None
+# THE SWITCH.  None: the launcher is that of 0.3.4 (text only; images are never mentioned).  On (since 0.3.5): the commit of the
+# repository that adds the image file, and name: (bytes, sha256) of every file of that commit that is new or differs from the pinned
+# folder above (the image file, yasakani.json with its "vision" entry, NOTICE and README.md).  A new download gets the folder of that
+# commit (the image file included), and a folder of 0.3.2 to 0.3.4 is offered only these files (about 0.64 GB; the text weights are
+# kept and not read again).  START.cmd --image-file asks again after a no.  It needs an engine zip with image input (ENGINE_IMAGE).
+INK2_IMAGE = {"revision": "e186e163e6d140f767a0fd1f1d31ed93e1a3e1a8",
+              "files": {"inkling_2_mini_vision.yskn": (637136896, "858a5a5cacf28c1fdae0dcee23350565ac3eba77d86bc02057ce6c3bb249eabb"),
+                        "yasakani.json": (3162, "e201cb7f0c1247565b07dd583ca335ded8352ef09b335344fb1481570fbe28fb"),
+                        "NOTICE": (2166, "26efb9e1322dcbd3000266093f05b8718778a0c37a7da33366e0700594e282d9"),
+                        "README.md": (7581, "7c3b12a4a71eb8d35e1c0bae002289be3c4d1bab44d53fa134732e2ba100326c")}}
 INK2_IMAGE_FILE = "inkling_2_mini_vision.yskn"
 
 
@@ -125,8 +125,9 @@ MODELS = {
     "quality": {"repo": "yasakani-dev/Qwen3.8-27B-YASAKANI-quality", "need_gb": 16},
     "speed": {"repo": "yasakani-dev/Qwen3.8-27B-YASAKANI-speed", "need_gb": 14},
     "max": {"repo": "yasakani-dev/Qwen3.8-27B-YASAKANI-max-quality", "need_gb": 20},
-    # 0.3.2: the converted Inkling-2 Mini (experimental, text only, one request at a time), at a pinned revision of its repository.
-    # Its files are 15.29 GB (shown as 15.3; 15.93 with the image file); need_gb is that rounded up plus 1 GB, as for the others.
+    # 0.3.2: the converted Inkling-2 Mini (experimental, one request at a time; image input since 0.3.5), at a pinned revision of
+    # its repository.  Its files are 15.93 GB with the image file (shown as 15.9; 15.29 without); need_gb is that rounded up plus
+    # 1 GB, as for the others.
     "inkling2": {"repo": "yasakani-dev/Inkling-2-Mini-YASAKANI-quality",
                  "revision": (INK2_IMAGE or {}).get("revision") or "8de37e9980397da63b050fe008493a35f1c483e9",
                  "need_gb": 17, "get_gb": "%.1f" % (ink2_download_bytes(INK2_IMAGE) / 1e9), "model_id": "inkling-2-mini-quality"},

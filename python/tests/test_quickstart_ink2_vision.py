@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """The quickstart and the image file of Inkling-2 Mini (INK2_IMAGE, the one switch of quickstart/quickstart.py).
 
-Switch off (None, as shipped before the upload): the launcher is that of 0.3.4.  Switch on (a stand-in entry): a new download gets
-the folder of the new revision with the image file; a folder of 0.3.2 to 0.3.4 is offered the extra files once (yes: they are
-fetched, checked and put in place, the text weights are not fetched or read; no: text only and one line per start); a wrong file
-is refused and the folder stays as it was.  The context note counts the image part (the rule of yasakani/gpu.py).
+Switch on (as shipped since 0.3.5: the published commit with the image file, and an engine zip with image input; the cases below
+use a stand-in entry): a new download gets the folder of the new revision with the image file; a folder of 0.3.2 to 0.3.4 is
+offered the extra files once (yes: they are fetched, checked and put in place, the text weights are not fetched or read; no: text
+only and one line per start); a wrong file is refused and the folder stays as it was.  The context note counts the image part (the
+rule of yasakani/gpu.py).  Switch off (INK2_IMAGE None and ENGINE_IMAGE False, patched or as a module of its own): the launcher
+is that of 0.3.4.
 
 No GPU and no network: the launcher runs with the stand-ins of test_quickstart_web.LauncherTests, and the files come from a folder
 (YASAKANI_QS_TEST_MODEL_SRC_INKLING2).
@@ -15,6 +17,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import types
@@ -53,15 +56,19 @@ def entry(files=None):
     return {"revision": REV, "files": {n: (len(b), sha(b)) for n, b in files.items()}}
 
 
+SWITCH_RE = re.compile(r"\nINK2_IMAGE = (?:None|\{.*?\}\})\n", re.S)       # the shipped value: None, or {"revision": .., "files": {..}}
+ENGINE_RE = re.compile(r"\nENGINE_IMAGE = (?:True|False)\n")
+
+
 def switched_module(image, engine=True):
-    """quickstart.py with the edit of the switch (the line ``INK2_IMAGE = None``) and of the engine it needs (``ENGINE_IMAGE =
-    False``: a zip with image input), loaded as its own module."""
+    """quickstart.py with the switch set to ``image`` (the value of ``INK2_IMAGE = ...``; None: off) and the engine it needs
+    (``ENGINE_IMAGE``: a zip with image input or not), loaded as its own module."""
     text = Path(QS.__file__).read_text(encoding="utf-8")
-    assert text.count("\nINK2_IMAGE = None\n") == 1 and text.count("\nENGINE_IMAGE = False\n") == 1
+    assert len(SWITCH_RE.findall(text)) == 1 and len(ENGINE_RE.findall(text)) == 1
     tmp = Path(tempfile.mkdtemp(prefix="yskn_qs_sw_"))
     p = tmp / "quickstart_switched.py"
-    text = text.replace("\nINK2_IMAGE = None\n", "\nINK2_IMAGE = %r\n" % (image,))
-    p.write_text(text.replace("\nENGINE_IMAGE = False\n", "\nENGINE_IMAGE = %r\n" % (engine,)), encoding="utf-8")
+    text = SWITCH_RE.sub(lambda m: "\nINK2_IMAGE = %r\n" % (image,), text)
+    p.write_text(ENGINE_RE.sub(lambda m: "\nENGINE_IMAGE = %r\n" % (engine,), text), encoding="utf-8")
     spec = importlib.util.spec_from_file_location("quickstart_switched", str(p))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -71,24 +78,52 @@ def switched_module(image, engine=True):
 
 class SwitchTests(unittest.TestCase):
 
-    def test_off_is_0_3_4(self):
-        self.assertIsNone(QS.INK2_IMAGE)
-        self.assertFalse(QS.ENGINE_IMAGE)                                          # the pinned 0.3.4 engine zip reads no images
-        self.assertEqual(QS.ENGINE_SHA256, "831576fe908c0dc52494aae6534d2a45e27f310b3ceaba9bbc0b1e65e4a8a7fc")
+    def test_on_is_0_3_5(self):
+        """As shipped since 0.3.5: the published commit with the image file and an engine zip with image input."""
+        self.assertTrue(QS.ENGINE_IMAGE)                                           # the engine zip of 0.3.5 reads images
+        self.assertEqual((QS.QS_VERSION, QS.ENGINE_ZIP), ("0.3.5", "yasakani-0.3.5-win-x64.zip"))
+        self.assertRegex(QS.ENGINE_SHA256, r"^[0-9a-f]{64}$")                     # written by the release step with the zip
+        self.assertEqual(QS.INK2_IMAGE, {
+            "revision": "e186e163e6d140f767a0fd1f1d31ed93e1a3e1a8",
+            "files": {"inkling_2_mini_vision.yskn": (637136896, "858a5a5cacf28c1fdae0dcee23350565ac3eba77d86bc02057ce6c3bb249eabb"),
+                      "yasakani.json": (3162, "e201cb7f0c1247565b07dd583ca335ded8352ef09b335344fb1481570fbe28fb"),
+                      "NOTICE": (2166, "26efb9e1322dcbd3000266093f05b8718778a0c37a7da33366e0700594e282d9"),
+                      "README.md": (7581, "7c3b12a4a71eb8d35e1c0bae002289be3c4d1bab44d53fa134732e2ba100326c")}})
         e = QS.MODELS["inkling2"]
-        self.assertEqual((e["revision"], e["get_gb"]), ("8de37e9980397da63b050fe008493a35f1c483e9", "15.3"))
-        self.assertEqual(QS.ink2_download_bytes(), 15288396146)                    # the 14 files of the published folder
-        self.assertEqual(QS.INK2_FILES_BYTES, (15052423172, 209688040))
-        for lang in ("ja", "en"):
-            text = QS.Ui(lang).t("pick", d="4")
-            self.assertNotIn("画像", text)
-            self.assertNotIn("image", text)
+        self.assertEqual((e["revision"], e["get_gb"], e["need_gb"]), ("e186e163e6d140f767a0fd1f1d31ed93e1a3e1a8", "15.9", 17))
+        self.assertEqual(QS.ink2_download_bytes(QS.INK2_IMAGE), 15925534376)      # the 15 files of the folder at that commit
+        self.assertEqual(QS.INK2_FILES_BYTES, (15052423172, 209688040))           # the text weights and the drafter as before
+        self.assertIn("文章と画像", QS.Ui("ja").t("pick", d="4"))
+        self.assertIn("text and images", QS.Ui("en").t("pick", d="4"))
         self.assertFalse(QS.parse_args([]).image_file)
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            QS.parse_args(["--image-file"])
+        self.assertTrue(QS.parse_args(["--image-file"]).image_file)
         out = io.StringIO()
         with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
             QS.parse_args(["--help"])
+        self.assertIn("--image-file", out.getvalue())
+
+    def test_off_is_0_3_4(self):
+        """The switch off (INK2_IMAGE None, ENGINE_IMAGE False as in the 0.3.4 zip): the launcher of 0.3.4."""
+        off = switched_module(None, engine=False)
+        self.assertIsNone(off.INK2_IMAGE)
+        self.assertFalse(off.ENGINE_IMAGE)
+        e = off.MODELS["inkling2"]
+        self.assertEqual((e["revision"], e["get_gb"]), ("8de37e9980397da63b050fe008493a35f1c483e9", "15.3"))
+        self.assertEqual(off.ink2_download_bytes(), 15288396146)                   # the 14 files of the published folder
+        self.assertEqual(off.INK2_FILES_BYTES, (15052423172, 209688040))
+        for lang, line in (("ja", "  4) Inkling-2 Mini〈試験的〉 文章だけ。依頼は 1 件ずつ。GPU 24 GB 以上。ダウンロード約 15.3 GB\n"),
+                           ("en", "  4) Inkling-2 Mini (experimental) text only, one request at a time, a GPU with 24 GB or more;\n"
+                                  "                                  about 15.3 GB download\n")):
+            text = off.Ui(lang).t("pick", d="4")
+            self.assertIn(line, text)
+            self.assertNotIn("画像", text)
+            self.assertNotIn("image", text)
+        self.assertFalse(off.parse_args([]).image_file)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            off.parse_args(["--image-file"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            off.parse_args(["--help"])
         self.assertNotIn("image", out.getvalue())
 
     def test_one_edit_turns_it_on(self):
@@ -129,7 +164,8 @@ class SwitchTests(unittest.TestCase):
                                             environ={SRC_VAR: str(src)}), 0)
         self.assertTrue(on.ink2_has_image(str(dst)))
         self.assertTrue(on.ink2_vision_planned(str(tmp / "not_yet"), on.INK2_IMAGE, environ={}))    # planned before the download
-        self.assertFalse(QS.ink2_vision_planned(str(tmp / "not_yet"), QS.INK2_IMAGE, environ={}))   # switch off: not
+        with mock.patch.object(QS, "INK2_IMAGE", None), mock.patch.object(QS, "ENGINE_IMAGE", False):
+            self.assertFalse(QS.ink2_vision_planned(str(tmp / "not_yet"), QS.INK2_IMAGE, environ={}))   # switch off: not
         self.assertFalse(on.ink2_vision_planned(str(tmp / "not_yet"), on.INK2_IMAGE, environ={}, engine=False))  # no image engine
 
     def test_switch_needs_an_engine_with_image_input(self):
@@ -212,7 +248,7 @@ class MemoryRuleTests(unittest.TestCase):
 
     def test_planned_asks_the_engine_as_the_package_does(self):
         """The folder has the image file (made by hand, e.g. with tools/convert/inkling2_vision_convert.py): counted only when the
-        library reads images, as vision_plan_mib(); the launcher's own engine (ENGINE_IMAGE, the 0.3.4 zip) does not."""
+        library reads images, as vision_plan_mib(); the launcher's own engine (ENGINE_IMAGE) does since 0.3.5 (the 0.3.4 zip did not)."""
         tmp = Path(tempfile.mkdtemp(prefix="yskn_qs_eng_"))
         self.addCleanup(shutil.rmtree, str(tmp), True)
         (tmp / "yasakani.json").write_bytes(new_files()["yasakani.json"])
@@ -225,10 +261,12 @@ class MemoryRuleTests(unittest.TestCase):
                 want = ink.vision_plan_mib(pack, ink.vision_mode_of(None, env), has_library=engine) > 0
                 self.assertEqual(QS.ink2_vision_planned(str(tmp), None, environ=env, engine=engine), want, (mode, engine))
                 self.assertEqual(QS.ink2_vision_planned(str(tmp), entry(), environ=env, engine=engine), want, (mode, engine))
-        self.assertFalse(QS.ink2_vision_planned(str(tmp), None, environ={}))      # default: the launcher's engine pin
-        self.assertFalse(QS.ink2_vision_planned(str(tmp), QS.INK2_IMAGE, environ={}))
-        with mock.patch.object(QS, "ENGINE_IMAGE", True):
+        with mock.patch.object(QS, "ENGINE_IMAGE", False):                         # default: the launcher's engine pin (0.3.4)
+            self.assertFalse(QS.ink2_vision_planned(str(tmp), None, environ={}))
+            self.assertFalse(QS.ink2_vision_planned(str(tmp), QS.INK2_IMAGE, environ={}))
+        with mock.patch.object(QS, "ENGINE_IMAGE", True):                          # 0.3.5 and later
             self.assertTrue(QS.ink2_vision_planned(str(tmp), None, environ={}))
+            self.assertTrue(QS.ink2_vision_planned(str(tmp), QS.INK2_IMAGE, environ={}))
         (tmp / QS.INK2_IMAGE_FILE).unlink()                                         # no file: never, whatever the engine
         for engine in (False, True):
             self.assertFalse(QS.ink2_vision_planned(str(tmp), None, environ={}, engine=engine))
@@ -421,7 +459,8 @@ class OfferTests(W.LauncherTests):
         before = self.snapshot(m)
         self.out.truncate(0)
         self.out.seek(0)
-        self.assertEqual(self.run_main(h, "--action", "none"), 0)                  # QS.INK2_IMAGE is None here
+        with mock.patch.object(QS, "INK2_IMAGE", None), mock.patch.object(QS, "ENGINE_IMAGE", False):   # the switch off (0.3.4)
+            self.assertEqual(self.run_main(h, "--action", "none"), 0)
         self.assertEqual(self.prompts, [])
         self.assertNotIn("image", self.out.getvalue().lower())
         self.assertEqual(self.snapshot(m), before)
@@ -445,12 +484,13 @@ class OfferTests(W.LauncherTests):
             self.assertIn("(%s tokens with what is free now" % "{:,}".format(with_img), self.out.getvalue())
             self.out.truncate(0)
             self.out.seek(0)
-            self.assertEqual(self.run_main(h, "--action", "none"), 0)              # switch off, folder with the file, 0.3.4 engine:
+            with mock.patch.object(QS, "INK2_IMAGE", None), mock.patch.object(QS, "ENGINE_IMAGE", False):
+                self.assertEqual(self.run_main(h, "--action", "none"), 0)          # switch off, folder with the file, 0.3.4 engine:
             self.assertNotIn("tokens with what is free now", self.out.getvalue())          # not counted (serve does not load it)
             self.out.truncate(0)
             self.out.seek(0)
-            with mock.patch.object(QS, "ENGINE_IMAGE", True):                       # switch off, an engine with image input: counted
-                self.assertEqual(self.run_main(h, "--action", "none"), 0)
+            with mock.patch.object(QS, "INK2_IMAGE", None), mock.patch.object(QS, "ENGINE_IMAGE", True):
+                self.assertEqual(self.run_main(h, "--action", "none"), 0)          # switch off, an engine with image input: counted
             self.assertIn("(%s tokens with what is free now" % "{:,}".format(with_img), self.out.getvalue())
 
     def test_switch_off_note_is_0_3_4(self):
@@ -462,7 +502,8 @@ class OfferTests(W.LauncherTests):
                 self.out.truncate(0)
                 self.out.seek(0)
                 with mock.patch.object(QS, "query_gpus", lambda run=None: [dict(card)]), \
-                        mock.patch.dict(os.environ, {"YASAKANI_INK2_FAST": ""}), mock.patch.object(QS, "ENGINE_IMAGE", engine):
+                        mock.patch.dict(os.environ, {"YASAKANI_INK2_FAST": ""}), mock.patch.object(QS, "ENGINE_IMAGE", engine), \
+                        mock.patch.object(QS, "INK2_IMAGE", None):
                     self.assertEqual(self.run_main(h, "--action", "none"), 0)
                 out = self.out.getvalue()
                 self.assertNotIn("image", out.lower())

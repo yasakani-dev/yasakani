@@ -832,9 +832,10 @@ class OptionTests(unittest.TestCase):
 
     def test_model_question_has_inkling2_as_4(self):
         self.assertEqual(QS.MODEL_KEYS, {"1": "quality", "2": "speed", "3": "max", "4": "inkling2"})
-        for lang, line in (("ja", "  4) Inkling-2 Mini〈試験的〉 文章だけ。依頼は 1 件ずつ。GPU 24 GB 以上。ダウンロード約 15.3 GB\n"),
-                           ("en", "  4) Inkling-2 Mini (experimental) text only, one request at a time, a GPU with 24 GB or more;\n"
-                                  "                                  about 15.3 GB download\n")):
+        # 0.3.5: text and images, the folder with the image file (0.3.2 to 0.3.4: text only, 15.3 GB; test_quickstart_ink2_vision)
+        for lang, line in (("ja", "  4) Inkling-2 Mini〈試験的〉 文章と画像。依頼は 1 件ずつ。GPU 24 GB 以上。ダウンロード約 15.9 GB\n"),
+                           ("en", "  4) Inkling-2 Mini (experimental) text and images, one request at a time, a GPU with 24 GB or more;\n"
+                                  "                                  about 15.9 GB download\n")):
             text = QS.Ui(lang).t("pick", d="4")
             self.assertIn(line, text)
             self.assertTrue(text.endswith("[4]: "))
@@ -845,8 +846,8 @@ class OptionTests(unittest.TestCase):
     def test_download_command_pins_the_revision_of_inkling2_only(self):
         e = QS.MODELS["inkling2"]
         self.assertEqual((e["repo"], e["revision"], e["need_gb"], e["get_gb"]),
-                         ("yasakani-dev/Inkling-2-Mini-YASAKANI-quality", "8de37e9980397da63b050fe008493a35f1c483e9", 17, "15.3"))
-        self.assertGreaterEqual(e["need_gb"], 15.29 + 1)                               # the files and the margin of the others
+                         ("yasakani-dev/Inkling-2-Mini-YASAKANI-quality", "e186e163e6d140f767a0fd1f1d31ed93e1a3e1a8", 17, "15.9"))
+        self.assertGreaterEqual(e["need_gb"], 15.93 + 1)                               # the files and the margin of the others
         for name in ("quality", "speed", "max"):
             self.assertEqual(QS.download_command("py", name, "D:/m"), ["py", "-c", QS.DOWNLOAD_CODE, QS.MODELS[name]["repo"], "D:/m"])
             self.assertNotIn("revision", QS.MODELS[name])
@@ -884,7 +885,7 @@ class OptionTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual([c[0] for c in calls], [QS.download_command("py", "inkling2", str(tmp / "m"))] * 2)
         self.assertEqual((calls[0][1], calls[1][1]), ({"A": "1"}, {"A": "1", "HF_HUB_DISABLE_XET": "1"}))
-        self.assertIn("Downloading yasakani-dev/Inkling-2-Mini-YASAKANI-quality from Hugging Face (about 15.3 GB", out.getvalue())
+        self.assertIn("Downloading yasakani-dev/Inkling-2-Mini-YASAKANI-quality from Hugging Face (about 15.9 GB", out.getvalue())
         self.assertIn("Trying once more", out.getvalue())
         with contextlib.redirect_stdout(io.StringIO()) as o2:
             QS.fetch_model(QS.Ui("en"), "py", {}, "quality", str(tmp / "q"), call=lambda cmd, env=None: 0, environ={})
