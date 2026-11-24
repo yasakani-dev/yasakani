@@ -346,9 +346,10 @@ class ContextPlan:
     prefill_line: str = ""                # the one line on that choice, printed at start
     edit_copy: str = ""                   # use_edit_copy: "on" or "off" ("" = not chosen yet)
     reserve_mib: int = 0                  # GPU memory left free besides the context (prefill_reserve_mib; 0 = none)
-    given: bool = False                   # the context was given (--max-ctx; plan_given_context)
-    room_mib: Optional[int] = None        # plan_given_context: free GPU memory left beside the given context, the files, the overhead
-                                          # and MARGIN_MIB (None = not known, or a card of FULL_CONTEXT_MIN_TOTAL_MIB or more)
+    given: bool = False                   # the context was given (--max-ctx; plan_given_context, plan_given_parallel)
+    room_mib: Optional[int] = None        # plan_given_context / plan_given_parallel: free GPU memory left beside the given context(s),
+                                          # the files, the overhead and MARGIN_MIB (None = not known; plan_given_context also leaves it
+                                          # None on a card of FULL_CONTEXT_MIN_TOTAL_MIB or more)
 
 
 def _small_card_env(plan: "ContextPlan", g) -> None:
@@ -709,8 +710,10 @@ def plan_parallel(pack, det: Detected, n: int, reserve_mib: int = 0, max_ctx_lim
 def plan_given_parallel(pack, det: Detected, max_ctx: int, n: int, reserve_mib: int = 0) -> ContextPlan:
     """The plan for ``n`` requests at once with a context given by --max-ctx: the context stays as given (as for one request, it is
     tried even where the rule says it does not fit, with a warning); the draft model's output head is left out when the contexts fit
-    only without it.  Unchanged when nvidia-smi gave no answer."""
-    plan = ContextPlan(max_ctx=int(max_ctx), parallel=int(n))
+    only without it.  Unchanged when nvidia-smi gave no answer.  As plan_given_context, it sets ``room_mib``: the free memory left beside
+    the files, the overhead, MARGIN_MIB, the n slots and the n + 1 contexts (the terms of parallel_fit), so that --prefill auto can take
+    the new reading on a 24 GB-class card here too."""
+    plan = ContextPlan(max_ctx=int(max_ctx), parallel=int(n), given=True)
     g = det.worst()
     _small_card_env(plan, g)
     if g is None or g.total_mib is None or g.free_mib is None:
@@ -720,9 +723,15 @@ def plan_given_parallel(pack, det: Detected, max_ctx: int, n: int, reserve_mib: 
     over = overhead_mib(sizes[0])
     _reserve_note(plan, reserve_mib, False)
     free = g.free_mib - reserve_mib
+
+    def room(files_bytes: int) -> int:
+        return int(g.free_mib - files_bytes / MIB - over - MARGIN_MIB - n * SLOT_MIB - (n + 1) * plan.max_ctx * KV_BYTES_PER_TOKEN / MIB)
+
+    plan.room_mib = room(sum(sizes))
     if parallel_fit(free, sum(sizes), over, n) >= plan.max_ctx:
         return plan
     if parallel_fit(free, sizes[0] + sizes[1], over, n) >= plan.max_ctx:
+        plan.room_mib = room(sizes[0] + sizes[1])
         plan.env["YSKN_BDR_SHEAD"] = "0"
         plan.notes.append("note: the output head of the draft model (%s, %.1f GiB) is not loaded: it does not fit beside %d requests "
                           "with %d tokens of context each in the free GPU memory (%d of %d MiB free); each pass takes %s longer "

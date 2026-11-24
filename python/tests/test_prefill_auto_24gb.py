@@ -8,6 +8,7 @@ given and the free memory left beside it is at least NEW_PREFILL_RESERVE_MIB (wh
 stays as before.  nvidia-smi is not run: its rows are given as text.
 """
 import unittest
+from types import SimpleNamespace
 
 from tests.test_gpu import FASTEST, MAXQ, QUALITY, FakePack, det_of, smi_line
 from yasakani import gpu as G
@@ -128,14 +129,100 @@ class AutoOn24GbTests(unittest.TestCase):
         self.assertEqual(plan.prefill, "old")
         self.assertLess(plan.room_mib, G.NEW_PREFILL_RESERVE_MIB)
 
-    def test_inkling2_and_parallel_unchanged(self):
-        """An Inkling-2 folder and serve --parallel plans have no room_mib: auto stays with the reading of 0.1.7 there."""
+    def test_inkling2_unchanged(self):
+        """An Inkling-2 folder has no room_mib: auto stays with the reading of 0.1.7 there."""
         det = card(24563, 1100)
         pack = FakePack(QUALITY)
         pack.is_hf_inkling2 = True
         self.assertIsNone(G.plan_given_context(pack, det, 32768).room_mib)
-        par = G.use_prefill(G.plan_given_parallel(FakePack(QUALITY), det, 32768, 2), "auto", det)
-        self.assertEqual(par.prefill, "old")
+
+
+def given_parallel(sizes, det, ctx, n, mode="auto"):
+    """The plan `yasakani serve --parallel n --max-ctx ctx` makes (cli._open_stack: plan_given_parallel, use_prefill)."""
+    return G.use_prefill(G.plan_given_parallel(FakePack(sizes), det, ctx, n, G.prefill_reserve_mib(mode, det)), mode, det)
+
+
+class AutoOn24GbParallelTests(unittest.TestCase):
+    """serve --parallel N with --max-ctx: the same rule as for one request, with the room left beside the N + 1 contexts and N slots.
+    Measured on an RTX 3090 (24,576 MiB, Linux), quality model, --parallel 2 --max-ctx 65536, prompts read through the server: 1,315 to
+    1,400 tokens/s at 8K and 1,223 to 1,231 at 32K with --prefill new, against 1,054 to 1,104 and 947 to 957 with the reading of 0.1.7;
+    the nvidia-smi peak 22.66 against 21.97 GB; selfcheck --parallel 2 --prefill new passed (exit code 3, 2 requests at once)."""
+
+    def test_measured_card(self):
+        """The RTX 3090 of the measurement (24,576 MiB, 272 MiB in use): new at 2 x 65,536, the 0.1.7 reading at 2 x 98,304."""
+        det = card(24576, 272, "NVIDIA GeForce RTX 3090")
+        plan = given_parallel(QUALITY, det, 65536, 2)
+        self.assertEqual((plan.prefill, plan.max_ctx, plan.parallel, plan.room_mib), ("new", 65536, 2, 2530))
+        self.assertEqual({k: plan.env[k] for k in ("YSKN_Q35_PMAX", "YSKN_Q35_LAYER_ROWS")}, G.SMALL_CARD_ENV)
+        self.assertNotIn("YSKN_Q35_PF_V2", plan.env)
+        self.assertEqual(plan.reserve_mib, G.NEW_PREFILL_RESERVE_MIB)
+        self.assertEqual(plan.prefill_line, "prompt reading: new (setting auto: 24576 MiB card, 2530 MiB free beside --max-ctx 65536; "
+                                            "--prefill old for the 0.1.7 one)")
+        plan = given_parallel(QUALITY, det, 98304, 2)
+        self.assertEqual((plan.prefill, plan.reserve_mib), ("old", 0))
+        self.assertEqual(plan.env["YSKN_Q35_PF_V2"], "0")
+        self.assertIn("free beside --max-ctx 98304, new needs 1800", plan.prefill_line)
+
+    def test_the_limit_of_the_room(self):
+        """The rule is the one of one request: 1,800 MiB of room beside 2 x 65,536 counts, 1,799 does not (RTX 3090, quality model:
+        1,002 MiB in use leaves 1,800, 1,003 leaves 1,799); the room may be negative, and the line then says 0."""
+        r = lambda used: given_parallel(QUALITY, card(24576, used, "NVIDIA GeForce RTX 3090"), 65536, 2)
+        self.assertEqual((r(1002).room_mib, r(1002).prefill), (G.NEW_PREFILL_RESERVE_MIB, "new"))
+        self.assertEqual((r(1003).room_mib, r(1003).prefill), (G.NEW_PREFILL_RESERVE_MIB - 1, "old"))
+        plan = given_parallel(QUALITY, card(24576, 272, "NVIDIA GeForce RTX 3090"), 262144, 2)
+        self.assertLess(plan.room_mib, 0)
+        self.assertEqual(plan.prefill, "old")
+        self.assertIn("0 MiB free beside --max-ctx 262144", plan.prefill_line)
+
+    def test_room_is_the_reserve_of_new(self):
+        """auto takes new exactly when the same contexts fit with the reserve of --prefill new (the terms of parallel_fit)."""
+        det = card(24564, 1500)
+        for sizes in (FASTEST, QUALITY, MAXQ):
+            for n in (2, 3, 4):
+                for ctx in range(8192, 131072 + 1, 8192):
+                    plan = given_parallel(sizes, det, ctx, n)
+                    files = sum(sizes[:2]) if plan.env.get("YSKN_BDR_SHEAD") == "0" else sum(sizes)
+                    fits = G.parallel_fit(det.gpu.free_mib - G.NEW_PREFILL_RESERVE_MIB, files, G.overhead_mib(sizes[0]), n) >= ctx
+                    self.assertEqual(plan.prefill == "new", fits, (sizes[0], n, ctx, plan.room_mib))
+                    self.assertEqual(plan.max_ctx, ctx)                          # the context is never changed
+
+    def test_engine_check_keeps_every_slot(self):
+        """When auto takes new, check_parallel (the engine's own numbers, with the reserve kept) still makes all N slots."""
+        det = card(24564, 1500)
+        for sizes in (FASTEST, QUALITY, MAXQ):
+            for n in (2, 3, 4):
+                for ctx in range(8192, 131072 + 1, 8192):
+                    plan = given_parallel(sizes, det, ctx, n)
+                    if plan.prefill != "new":
+                        continue
+                    info = SimpleNamespace(unsupported=0, reason="", max_ctx=ctx, kv_bytes_per_position=22144,
+                                           slot_bytes=195887104, draft_head=plan.env.get("YSKN_BDR_SHEAD") != "0")
+                    self.assertEqual(G.check_parallel(FakePack(sizes), plan, info, n), (n, None), (sizes[0], n, ctx))
+
+    def test_reporters_card_and_line(self):
+        """The RTX 3090 Ti of #24 (desktop about 1.1 GB): new at 2 x 40,960, the 0.1.7 reading at 2 x 65,536; the line no longer
+        says "no --max-ctx" when one was given."""
+        det = card(24563, 1100)
+        self.assertEqual(given_parallel(QUALITY, det, 40960, 2).prefill, "new")
+        plan = given_parallel(QUALITY, det, 65536, 2)
+        self.assertEqual(plan.prefill, "old")
+        self.assertNotIn("no --max-ctx", plan.prefill_line)
+
+    def test_unknown_memory_and_other_settings(self):
+        """No free memory known: the 0.1.7 reading, and the line does not say "no --max-ctx".  new, old and cards outside 22,000 to
+        30,000 MiB: as before."""
+        from yasakani.gpu import Detected
+        plan = G.use_prefill(G.plan_given_parallel(FakePack(QUALITY), Detected(), 32768, 2), "auto", Detected())
+        self.assertEqual((plan.prefill, plan.room_mib), ("old", None))
+        self.assertNotIn("no --max-ctx", plan.prefill_line)
+        r = card(24576, 272, "NVIDIA GeForce RTX 3090")
+        for mode in ("new", "old"):
+            plan = given_parallel(QUALITY, r, 65536, 2, mode)
+            self.assertEqual((plan.prefill, plan.prefill_line), G.prefill_choice(mode, r)[0::2], mode)
+        for det, sizes, ctx in ((card(16311, 900, "NVIDIA GeForce RTX 5060 Ti", "12.0"), FASTEST, 8192),
+                                (card(32607, 1107, "NVIDIA GeForce RTX 5090", "12.0"), QUALITY, 65536)):
+            plan = given_parallel(sizes, det, ctx, 2)
+            self.assertEqual((plan.prefill, plan.prefill_line), G.prefill_choice("auto", det)[0::2])
 
 
 if __name__ == "__main__":
