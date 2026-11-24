@@ -563,6 +563,20 @@ void Ink2VisionEncoder::free_scratch() {
 
 void Ink2VisionEncoder::ensure_loaded() {
   if (loaded_) return;
+  try {
+    load_weights();
+  } catch (...) {
+    if (stream_) cudaStreamSynchronize(stream_);
+    (void)cudaGetLastError();  // clear a (non-sticky) allocation error so that later calls do not report it
+    for (void* p : weight_allocs_) cudaFree(p);
+    weight_allocs_.clear();
+    layers_.clear();
+    throw;
+  }
+  loaded_ = true;
+}
+
+void Ink2VisionEncoder::load_weights() {
   SafetensorsReader reader;
   reader.open_dir(dir_, "model.visual.");
 
@@ -638,10 +652,20 @@ void Ink2VisionEncoder::ensure_loaded() {
   }
   reader.close_all();
   vis_cuda_ok(cudaStreamSynchronize(stream_), "sync weights");
-  loaded_ = true;
 }
 
 void Ink2VisionEncoder::ensure_scratch(int need_S, int need_pat, int need_img, size_t need_rgb_bytes, int need_frames) {
+  try {
+    grow_scratch(need_S, need_pat, need_img, need_rgb_bytes, need_frames);
+  } catch (...) {
+    if (stream_) cudaStreamSynchronize(stream_);
+    (void)cudaGetLastError();
+    free_scratch();  // every capacity back to 0: the next encode allocates again from nothing
+    throw;
+  }
+}
+
+void Ink2VisionEncoder::grow_scratch(int need_S, int need_pat, int need_img, size_t need_rgb_bytes, int need_frames) {
   const int H = cfg_.hidden_size;
   const int I = cfg_.intermediate_size;
   const int patch_in_dim = cfg_.patch_size * cfg_.patch_size * 3;

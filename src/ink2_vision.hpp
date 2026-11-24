@@ -67,7 +67,9 @@ class Ink2VisionEncoder {
 
  private:
   void ensure_loaded();
+  void load_weights();
   void ensure_scratch(int need_S, int need_pat, int need_img, size_t need_rgb_bytes, int need_frames);
+  void grow_scratch(int need_S, int need_pat, int need_img, size_t need_rgb_bytes, int need_frames);
   void free_scratch();
   void* alloc_weight(size_t bytes);
   void linear_f32(const float* x_f32, const __nv_bfloat16* w_bf16, float* y_f32, int M, int N, int K);
