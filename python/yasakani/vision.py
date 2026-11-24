@@ -719,13 +719,13 @@ class Ink2NativeVision:
             items, pending_idx, pending_keys, pending_rgbs, pending_grids = [], [], [], [], []
             total = 0
             for i, source in enumerate(sources):
-                image = read_image(source, allow_local_files=self.allow_local_files, rgba_checkerboard=True)
-                image = _fit_ink2_image(image, self.max_image_tokens)
-                rgb = np.ascontiguousarray(np.asarray(image, dtype=np.uint8))
-                gh, gw = ink2_grid_size(image.width, image.height)
-                n = gh * gw
-                key = hashlib.sha256(identity + str(image.size).encode() + rgb.tobytes()).hexdigest()
-                del image
+                # one reading of an image for both Inkling-2 engines (inkling2_vision): the same formats, limits, EXIF and
+                # transparency rule, the same shrink above the cap, so the same image gives the same pixels on Windows and Linux
+                from . import inkling2_vision as V
+                im = V.prepare_image(V.source_bytes(source, allow_local_files=self.allow_local_files), self.max_image_tokens)
+                rgb, gh, gw, n = im.rgb, im.rows, im.cols, im.tokens
+                key = hashlib.sha256(identity + str((im.width, im.height)).encode() + rgb.tobytes()).hexdigest()
+                del im
                 if n > MAX_IMAGE_TOKENS:
                     raise RequestError("image %d needs %d image tokens; at most %d are allowed per image"
                                        % (i + 1, n, MAX_IMAGE_TOKENS))
