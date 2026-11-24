@@ -718,8 +718,8 @@ Since 0.1.7, the quickstart (`START.cmd`) can update itself; from 0.1.7 to 0.3.4
   `GET https://api.github.com/repos/yasakani-dev/yasakani/releases/latest`, with the User-Agent `yasakani-quickstart` and nothing else about
   your PC (no ID, no version of Windows, no GPU, no prompt). It waits at most 5 seconds; if GitHub cannot be reached, it says so in one line and
   goes on. Pre-releases are never offered. GitHub sees your IP address, as with any download.
-* **Checking at once (new in 0.3.4).** Because the automatic check runs at most once an hour, someone who started the quickstart
-  shortly before a release sees no **Update** button until the next check, up to an hour later (up to a day on 0.3.4 or older), and a
+* **Checking at once (new in 0.3.4).** A start within an hour of the last check does not ask again (within a day on 0.3.4 or older),
+  and a quickstart that keeps running does not check by itself, so right after a release the **Update** button can be missing, and a
   double-click does not show the menu. The Model tab of the page has **Check for updates**: it makes the quickstart send the same
   single request when you press it, and only then (also with the automatic check turned off). On any version, including 0.3.3 or
   older, you can also open a command prompt in the quickstart folder and run `START.cmd --action update` (or `START.cmd --menu` and
