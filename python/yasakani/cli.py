@@ -287,8 +287,12 @@ def _ink2_tower_problem(pack) -> str:
             header, _, _ = V.read_safetensors_header(f)
             for name, e in header.items():
                 if name.startswith(V.PREFIX) and isinstance(e, dict):
-                    off = e.get("data_offsets") or [0, 0]
-                    V.check_tensor(name, str(e.get("dtype")), e.get("shape") or [], int(off[1]) - int(off[0]))
+                    shape, off = e.get("shape"), e.get("data_offsets")   # the header is not trusted: check the types first
+                    if not isinstance(shape, list) or not all(V._int_value(s) and s >= 0 for s in shape):
+                        return "%s: the shape of %s is not a list of sizes: %r" % (f.name, name, shape)
+                    if not isinstance(off, list) or len(off) != 2 or not all(V._int_value(x) for x in off):
+                        return "%s: the data_offsets of %s are not two integers: %r" % (f.name, name, off)
+                    V.check_tensor(name, str(e.get("dtype")), shape, off[1] - off[0])
                     seen.add(name)
         missing = [n for n in V.VISION_TENSORS if n not in seen]
         if missing:

@@ -270,6 +270,59 @@ class Inkling2CliOptionTests(unittest.TestCase):
             cli._validate_ink2_vision_args(args)
 
 
+
+class Inkling2TowerHeaderTests(unittest.TestCase):
+    """The model.visual.* entries of a published folder's safetensors header are checked by type before use: a damaged entry
+    turns image input off with the reason, it does not stop the command with a traceback."""
+
+    def _folder(self, entries):
+        import struct
+        from yasakani import inkling2_vision as V
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        vc = {"model_type": "inkling2_vision", "text_hidden_size": 2304, "temporal_patch_size": 2, "native_patch_size": 20,
+              "adapter_merge_size": 2, "projection_hidden_dim": 4096, "projector_bias": False, "hidden_size": 1024,
+              "num_hidden_layers": 23, "num_attention_heads": 16, "mlp_ratio": 4.0, "posemb_grid_size": 32, "layer_norm_eps": 1e-05}
+        (d / "config.json").write_text(json.dumps({"model_type": "inkling2_loop", "text_config": {"hidden_size": 2304},
+                                                   "vision_config": vc}), encoding="utf-8")
+        header = {}
+        for n, shape in V.VISION_TENSORS.items():
+            header[n] = {"dtype": "BF16", "shape": list(shape), "data_offsets": [0, V.tensor_nbytes(n)]}
+        header.update(entries)
+        raw = json.dumps(header).encode("utf-8")
+        (d / "model.safetensors").write_bytes(struct.pack("<Q", len(raw)) + raw)
+        return SimpleNamespace(root=d, has_vision=True)
+
+    def test_good_header(self):
+        self.assertEqual(cli._ink2_tower_problem(self._folder({})), "")
+
+    def test_damaged_entries_give_a_reason(self):
+        from yasakani import inkling2_vision as V
+        name = sorted(V.VISION_TENSORS)[0]
+        good = {"dtype": "BF16", "shape": list(V.VISION_TENSORS[name]), "data_offsets": [0, V.tensor_nbytes(name)]}
+        cases = [(dict(good, shape=5), "shape"), (dict(good, shape=[None]), "shape"), (dict(good, shape=[-1]), "shape"),
+                 (dict(good, shape=None), "shape"), (dict(good, data_offsets=[3]), "data_offsets"),
+                 (dict(good, data_offsets={"a": 1}), "data_offsets"), (dict(good, data_offsets=[0, "2"]), "data_offsets"),
+                 (dict(good, data_offsets=None), "data_offsets")]
+        for entry, word in cases:
+            with self.subTest(entry=entry):
+                problem = cli._ink2_tower_problem(self._folder({name: entry}))
+                self.assertIn("the %s of %s" % (word, name), problem)
+
+    def test_auto_opens_text_only(self):
+        from yasakani import inkling2_vision as V
+        name = sorted(V.VISION_TENSORS)[0]
+        pack = self._folder({name: {"dtype": "BF16", "shape": [None], "data_offsets": [3]}})
+        args = argparse.Namespace(ink2_vision_mode="auto", image=None)
+        with mock.patch.object(cli, "_say") as say:
+            self.assertIsNone(cli._inkling2_vision(args, pack, SimpleNamespace(supports_ink2_vision=True)))
+        self.assertIn("image input is off", say.call_args[0][0])
+        self.assertIn("is not a list of sizes", args.ink2_vision_problem)
+        args = argparse.Namespace(ink2_vision_mode="on", image=None)
+        with self.assertRaisesRegex(cli.YasakaniError, "image input cannot be on: .*is not a list of sizes"):
+            cli._inkling2_vision(args, pack, SimpleNamespace(supports_ink2_vision=True))
+
+
 @unittest.skipUnless(INK2_DIR is not None and (INK2_DIR / "tokenizer.json").is_file()
                      and (INK2_DIR / "chat_template.jinja").is_file(), "YASAKANI_TEST_INK2_HF_DIR not set")
 class Inkling2VisionServerStubTests(unittest.TestCase):
