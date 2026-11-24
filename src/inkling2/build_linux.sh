@@ -13,6 +13,7 @@ ARCHS=${INK2_ARCHS:-"-gencode arch=compute_86,code=sm_86
   -gencode arch=compute_89,code=sm_89
   -gencode arch=compute_120,code=[sm_120,compute_120]"}
 CX="-std=c++17 -O2 -fPIC -fvisibility=hidden -ffp-contract=off"  # engine defines INK2_BUILD
+# (build.cmd also passes /openmp and /arch:AVX2; they serve ink2_emu.cpp, which this build leaves out)
 NVX="-std=c++17 -Xcompiler -fPIC,-fvisibility=hidden"
 CUDA_INC="${CUDA_HOME:-/usr/local/cuda}/include"
 
@@ -25,9 +26,11 @@ fi
 
 nvcc -c -O3 $ARCHS -fmad=false $NVX $TC ink2_cuda.cu  -o "$OUT/obj/ink2_cuda.o"
 nvcc -c -O3 $ARCHS -fmad=false $NVX     ink2_micro.cu -o "$OUT/obj/ink2_micro.o"
+# the image encoder (ink2_vision.cu, the image tower); the engine reaches it with INK2_WITH_VISION, as build.cmd
+nvcc -c -O3 $ARCHS -fmad=false $NVX $TC ink2_vision.cu -o "$OUT/obj/ink2_vision.o"
 nvcc -c -O3 $ARCHS $NVX ink2_fast.cu -o "$OUT/obj/ink2_fast.o"  # default -fmad, as build.cmd
 
-g++ $CX -DINK2_WITH_CUDA -I"$CUDA_INC" -c ink2_engine.cpp -o "$OUT/obj/ink2_engine.o"
+g++ $CX -DINK2_WITH_CUDA -DINK2_WITH_VISION -I"$CUDA_INC" -c ink2_engine.cpp -o "$OUT/obj/ink2_engine.o"
 g++ $CX -c ink2_selftest.cpp        -o "$OUT/obj/ink2_selftest.o"
 g++ $CX -c ink2_host_stub_linux.cpp -o "$OUT/obj/ink2_host_stub_linux.o"
 
