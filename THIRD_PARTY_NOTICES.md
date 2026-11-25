@@ -65,7 +65,6 @@ SOFTWARE.
 * These parts stay under the MIT License below; the rest of YASAKANI is under the Apache License 2.0.
 * The released Windows libraries `yskn.dll` and `yskn_inkling2.dll` do not contain this code: it is built only on Linux, with
   `-DYSKN_WITH_INK2=ON`.
-* Corrected on 2026-11-25. Until then this file said that only ideas of Strata were used and no code was taken from it.
 
 ```
 MIT License
