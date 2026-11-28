@@ -22,8 +22,11 @@ OPT_TEMPERATURE, OPT_TOP_P, OPT_TOP_K, OPT_SEED, OPT_SAMPLER, OPT_MIN_P = 10, 11
 OPT_WIDE_MASK, OPT_WIDE_T16 = 38, 39       # 0.1.7: widths of copy passes (bit 0 = 32 rows, 1 = 48, 2 = 64); 39..42 cycle times in us
 _NO_STOP = 0x7FFFFFFF                      # a stop id no token can have (ignore_eos)
 CONTEXT_MARGIN = 64                        # ids kept free at the end of the context
-READ_CHUNK = 1023                          # 0.1.7: Engine.read_prompt reads in pieces of at most this many ids (the engine sets up a
-                                           # large work area for one prompt read of 1,024 ids or more and keeps it)
+READ_CHUNK = 1 << 20                       # 0.1.8: Engine.read_prompt reads a prompt in ONE piece (see read_prompt).  0.1.7 read in pieces of
+                                           # 1,023 ids to keep the work area of long prompt reads out of memory; that put a second yskn_prefill
+                                           # on a non-empty state and the state after it is not the state of the same ids read in passes of 16
+                                           # rows (1,600 ids: 38 of 5,120 floats equal, max |d| 28.0).  One call: 5,120 of 5,120 for every length
+                                           # up to 8,192 and cheaper (293 ms against 329 ms for 1,600 ids).
 OPT_EXACT_WIDE = 31                        # passes of 17..64 rows with the exact-sum GEMV (0 = off; the engine's default is on where it can)
 
 # ---- the multi-stream pass (experimental entries of the engine library, 0.1.7) --------------------------------------------------
@@ -848,16 +851,21 @@ class Engine:
                 for i, t in enumerate(list(times_us)[:4]):
                     self._check(f(self._e, OPT_WIDE_T16 + i, max(0, min(10000000, int(round(t))))))
 
-    def read_prompt(self, ids: Sequence[int]) -> int:
-        """Read ``ids`` from a fresh state (nothing generated); returns the predicted next id.  For the checks of widecheck.  Read in
-        pieces of at most READ_CHUNK ids, so that the engine does not set up (and keep) the work area of long prompt reads."""
+    def read_prompt(self, ids: Sequence[int], chunk: int | None = None) -> int:
+        """Read ``ids`` from a fresh state (nothing generated); returns the predicted next id.  For the checks of widecheck.
+
+        0.1.8: one ``yskn_prefill`` call for the whole prompt, not pieces of READ_CHUNK ids.  A second call on a non-empty state
+        does not compute the same as the same ids read in passes of 16 rows, which is what every check of this package compares
+        against; the pieces were a memory saving (the engine keeps the work area of a read of 1,024 ids or more) that changed the
+        answers.  ``chunk`` is kept for the one caller that wants the old behaviour to look at it."""
         a = np.ascontiguousarray(np.asarray(ids, dtype=np.int32))
         first = C.c_int32(0)
+        step = int(chunk or READ_CHUNK)
         with self._lock:
             self._need_open()
             self._check(self._f["yskn_reset"](self._e))
-            for k in range(0, len(a), READ_CHUNK):
-                b = np.ascontiguousarray(a[k:k + READ_CHUNK])
+            for k in range(0, len(a), step):
+                b = np.ascontiguousarray(a[k:k + step])
                 self._check(self._f["yskn_prefill"](self._e, b.ctypes.data, len(b), C.byref(first)))
         return int(first.value)
 

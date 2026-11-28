@@ -150,7 +150,7 @@ class CorrectnessTests(unittest.TestCase):
     passes of 64 rows use kernels of their own)."""
 
     def test_positions(self):
-        self.assertEqual(wc.CHECK_VERSION, 3)
+        self.assertEqual(wc.CHECK_VERSION, 6)
         self.assertEqual((wc.LONG_START, wc.LONG_ROWS, wc.CHECK_IDS), (4064, (64, 64), 4193))
         self.assertLessEqual(wc.CHECK_IDS, wc.CONTEXT + 128)                 # the context the check asks for is enough
         eng = FakeGateEngine()
@@ -377,7 +377,7 @@ class CliTests(unittest.TestCase):
         out = io.StringIO()
         with mock.patch("sys.stdout", out), self.assertRaises(SystemExit):
             build_parser().parse_args(["--version"])
-        self.assertEqual(out.getvalue().strip(), "yasakani 0.3.5")      # a release: no "(test build)" as in 0.1.7.dev1
+        self.assertEqual(out.getvalue().strip(), "yasakani 0.4.0")      # a release: no "(test build)" as in 0.1.7.dev1
 
     def test_report_time_in_help(self):
         import io
@@ -392,7 +392,7 @@ class CliTests(unittest.TestCase):
     def test_version_is_pep440(self):
         import re as _re
         from yasakani import __version__
-        self.assertEqual(__version__, "0.3.5")
+        self.assertEqual(__version__, "0.4.0")
         self.assertIsNotNone(_re.fullmatch(r"\d+\.\d+\.\d+(\.dev\d+)?", __version__))
 
 

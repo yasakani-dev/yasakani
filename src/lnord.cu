@@ -446,6 +446,9 @@ template <int K, int MT, int UWX = 0, int MBX = 0, bool LO = false> static void 
 
 
 
+// width invariance: M <= 16 always uses the 16-row shape (M must not change the arithmetic)
+static int lno_mt16_env() { static const int v = [] { const char* e = std::getenv("YSKN_LNO_MT16");
+  return e && e[0] ? std::atoi(e) : 0; }(); return v; }
 static int lno_cfg_env() { static const int v = [] { const char* e = std::getenv("YSKN_LNO_CFG"); return e && e[0] ? std::atoi(e) : -1; }(); return v; }
 static int lno_cfg_of(int M) { static const int tab[9] = {0, 1, 2, 1, 2, 2, 2, 2, 2}; const int f = lno_cfg_env(); return f >= 0 ? f : (M <= 8 ? tab[M] : 0); }
 template <int K> static void launch_lno_m(const GemvLaunch& P, cudaStream_t st) {
@@ -454,6 +457,7 @@ template <int K> static void launch_lno_m(const GemvLaunch& P, cudaStream_t st) 
     if (!P.xsum || P.f_mode) throw std::runtime_error("launch_lnord: LO needs a XSUM launch without FIN");
     if (cfg == 1) launch_lno<K, 8, 2, 11, true>(P, st); else if (cfg == 2) launch_lno<K, 8, 4, 8, true>(P, st); else launch_lno<K, 8, 0, 0, true>(P, st);
     return; }
+  if (lno_mt16_env() && P.M <= 16 && !P.lo) { launch_lno<K, 16>(P, st); return; }
   if (P.M <= 8 && cfg == 1) { launch_lno<K, 8, 2, 11>(P, st); return; }
   if (P.M <= 8 && cfg == 2) { launch_lno<K, 8, 4, 8>(P, st); return; }
   if (P.M <= 8) launch_lno<K, 8>(P, st); else if (P.M <= 16) launch_lno<K, 16>(P, st); else if (P.M <= 32) launch_lno<K, 32>(P, st); else launch_lno<K, 64>(P, st);

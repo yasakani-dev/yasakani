@@ -51,6 +51,14 @@ template <int N> __device__ __forceinline__ void atx_waitn() { asm volatile("cp.
 __device__ __forceinline__ unsigned atx_pack(float lo, float hi) {
   const __nv_bfloat162 v = __floats2bfloat162_rn(lo, hi); return *reinterpret_cast<const unsigned*>(&v);
 }
+__device__ __forceinline__ unsigned atx_bf16_bits(float f) {
+  const __nv_bfloat16 v = __float2bfloat16_rn(f); return (unsigned)(*reinterpret_cast<const uint16_t*>(&v));
+}
+template <bool F16> __device__ __forceinline__ unsigned atx_elem16_bits(float f) {
+  if constexpr (F16) { const __half v = __float2half_rn(f); return (unsigned)(*reinterpret_cast<const uint16_t*>(&v)); }
+  else return atx_bf16_bits(f);
+}
+
 
 
 
@@ -80,6 +88,52 @@ template <bool F16> __device__ __forceinline__ float atx_hi16(unsigned w) {
   if constexpr (F16) return __half2float(__ushort_as_half((unsigned short)(w >> 16)));
   else return atx_bf_hi(w);
 }
+__device__ __forceinline__ void atx_patch_v_bb(unsigned bb[4], int k_loc, int tig, unsigned v0_bits, unsigned v1_bits) {
+  if (k_loc == 2 * tig)               { bb[0] = (bb[0] & 0xffff0000u) | v0_bits; bb[2] = (bb[2] & 0xffff0000u) | v1_bits; }
+  else if (k_loc == 2 * tig + 1)      { bb[0] = (bb[0] & 0x0000ffffu) | (v0_bits << 16); bb[2] = (bb[2] & 0x0000ffffu) | (v1_bits << 16); }
+  else if (k_loc == 8 + 2 * tig)      { bb[1] = (bb[1] & 0xffff0000u) | v0_bits; bb[3] = (bb[3] & 0xffff0000u) | v1_bits; }
+  else if (k_loc == 8 + 2 * tig + 1)  { bb[1] = (bb[1] & 0x0000ffffu) | (v0_bits << 16); bb[3] = (bb[3] & 0x0000ffffu) | (v1_bits << 16); }
+}
+template <bool KV8, bool F16>
+__device__ __forceinline__ float4 atx_pv_anc_half(
+    float4 o_in,
+    unsigned pa0, unsigned pa1, unsigned pa2, unsigned pa3,
+    unsigned b0, unsigned b1,
+    const int8_t* vg8, const uint16_t* vgb, int base, int k0_kk, int dim, int tig,
+    unsigned sig0, unsigned sig1, unsigned m0_init, unsigned m1_init) {
+  const unsigned pa[4] = {pa0, pa1, pa2, pa3};
+  float res[4] = {o_in.x, o_in.y, o_in.z, o_in.w};
+  atx_mma16<F16>(res, pa, b0, b1);
+  unsigned r0 = m0_init, r1 = m1_init;
+  while (r0 | r1) {
+    const int src = __ffs(r0 ? r0 : r1) - 1;
+    const unsigned gsig = __shfl_sync(0xffffffffu, r0 ? sig0 : sig1, src);
+    const int gmend = base + (int)(gsig >> 8), ganc = (int)(gsig & 0xffu);
+    const int ga0 = ganc & 0xf, ga1 = ganc >> 4;
+    unsigned ba0 = b0, ba1 = b1;
+    auto patch1 = [&](int arow, int akey) {
+      if (arow && akey >= k0_kk && akey < k0_kk + 16) {
+        unsigned vb;
+        if constexpr (KV8) vb = atx_elem16_bits<F16>((float)vg8[(size_t)(base + arow) * Q35_HD + dim]);
+        else vb = (unsigned)vgb[(size_t)(base + arow) * Q35_HD + dim];
+        const int kl = akey - k0_kk;
+        if (kl == 2 * tig)               ba0 = (ba0 & 0xffff0000u) | vb;
+        else if (kl == 2 * tig + 1)      ba0 = (ba0 & 0x0000ffffu) | (vb << 16);
+        else if (kl == 8 + 2 * tig)      ba1 = (ba1 & 0xffff0000u) | vb;
+        else if (kl == 8 + 2 * tig + 1)  ba1 = (ba1 & 0x0000ffffu) | (vb << 16);
+      }
+    };
+    patch1(ga0, gmend);
+    patch1(ga1, gmend + 1);
+    float og[4] = {o_in.x, o_in.y, o_in.z, o_in.w};
+    atx_mma16<F16>(og, pa, ba0, ba1);
+    if (sig0 == gsig) { res[0] = og[0]; res[1] = og[1]; }
+    if (sig1 == gsig) { res[2] = og[2]; res[3] = og[3]; }
+    r0 &= ~__ballot_sync(0xffffffffu, sig0 == gsig);
+    r1 &= ~__ballot_sync(0xffffffffu, sig1 == gsig);
+  }
+  return make_float4(res[0], res[1], res[2], res[3]);
+}
 }  
 
 struct Q35AtxArgs { Q35AttnArgs a; const uint8_t* wk; int cs_split = 0; };   
@@ -89,7 +143,7 @@ struct Q35AtxArgs { Q35AttnArgs a; const uint8_t* wk; int cs_split = 0; };
 
 
 
-template <bool KV8, int NW, int NS = (NW == 6 ? 2 : 1), bool FP16KV = false>
+template <bool KV8, int NW, int NS = (NW == 6 ? 2 : 1), bool FP16KV = false, bool WITH_WK = true>
 __global__ void __launch_bounds__(NW * 32, NW == 6 ? 1 : 2) q35_atx_kernel(Q35AtxArgs U) {
   constexpr int TPC = NW == 6 ? 16 : 2, NST = NS;                       
   static_assert(KV8 || NS <= 2, "BF16 tiles: at most 2 stages (shared memory)");
@@ -104,18 +158,28 @@ __global__ void __launch_bounds__(NW * 32, NW == 6 ? 1 : 2) q35_atx_kernel(Q35At
   const int base = *A.d_pos, M = A.M;
   
   int tk[2], hd[2], lo[2], ph[2], own[2], len[2]; bool self_[2], vrow[2];
+  uint32_t anc_pack = 0u;
   bool need = false;                                                 
   #pragma unroll
   for (int h = 0; h < 2; ++h) {
     const int i = 16 * warp + gi + 8 * h; tk[h] = t0 + i / G; hd[h] = kvh * G + i % G; vrow[h] = i < G * TPC && tk[h] < M;
-    const int dp = vrow[h] ? (U.wk ? (int)U.wk[tk[h]] : tk[h]) : -1;
+    const int dp = vrow[h] ? ((WITH_WK && U.wk) ? (int)U.wk[tk[h]] : tk[h]) : -1;
     len[h] = vrow[h] ? base + dp + 1 : 0; own[h] = base + tk[h];
-    const int S = (A.splits_short > 0 && len[h] < A.long_len) ? A.splits_short : A.splits;   
+    const int S = (A.splits_short > 0 && len[h] < A.long_len) ? A.splits_short : A.splits;
     need |= vrow[h] && split < S;
     const int per = (len[h] + S - 1) / S;
     lo[h] = split * per; const int hi = min(len[h], lo[h] + per);
-    ph[h] = max(lo[h], min(hi, len[h] - 1));                          
+    ph[h] = max(lo[h], min(hi, len[h] - 1));
     self_[h] = vrow[h] && lo[h] <= len[h] - 1 && len[h] - 1 < lo[h] + per;
+  }
+  if constexpr (WITH_WK) {
+    if (U.wk && U.wk[48] == 2) {
+      const uint32_t a0 = vrow[0] ? (uint32_t)U.wk[112 + tk[0]] : 0u;
+      const uint32_t a1 = vrow[1] ? (uint32_t)U.wk[112 + tk[1]] : 0u;
+      const uint32_t m0o = vrow[0] ? ((uint32_t)U.wk[96 + tk[0]] & 31u) : 0u;
+      const uint32_t m1o = vrow[1] ? ((uint32_t)U.wk[96 + tk[1]] & 31u) : 0u;
+      anc_pack = a0 | (a1 << 8) | (m0o << 16) | (m1o << 21) | (__any_sync(0xffffffffu, (a0 | a1) != 0u) ? 0x80000000u : 0u);
+    }
   }
   if (!__syncthreads_or(need)) { if (early) { pdl_wait(); pdl_trigger(); } return; }   
   if (threadIdx.x == 0) { s_lo = 0x7fffffff; s_hi = 0; }
@@ -214,6 +278,7 @@ __global__ void __launch_bounds__(NW * 32, NW == 6 ? 1 : 2) q35_atx_kernel(Q35At
     }
     if (busy) {
       const int kt0 = tbeg + t * ATX_KT;
+      const bool tile_anc = WITH_WK && ((anc_pack & 0x80000000u) != 0u) && (kt0 + ATX_KT > base);
       float s[4][4];
       #pragma unroll
       for (int j = 0; j < 4; ++j) {
@@ -226,7 +291,6 @@ __global__ void __launch_bounds__(NW * 32, NW == 6 ? 1 : 2) q35_atx_kernel(Q35At
           atx_mma16<FP16KV>(s[j], qa[2 * kp + 1], b[2], b[3]);
         }
       }
-      float x0 = m0, x1 = m1;
       #pragma unroll
       for (int j = 0; j < 4; ++j) {
         #pragma unroll
@@ -234,8 +298,73 @@ __global__ void __launch_bounds__(NW * 32, NW == 6 ? 1 : 2) q35_atx_kernel(Q35At
           const int kk = 8 * j + 2 * tig + (c & 1), key = kt0 + kk, h = c >> 1;
           float v = s[j][c] * 0.0625f;
           if constexpr (KV8) v = s[j][c] * (ksc[kk] * 0.0625f);
-          s[j][c] = (key >= lo[h] && key < ph[h]) ? v : -INFINITY;
+          s[j][c] = (key >= lo[h] && key < ph[h]) ? v : -__int_as_float(0x7f800000u);
         }
+      }
+      if constexpr (WITH_WK) {
+        if (tile_anc) {
+          int arow_in[2][2];
+          #pragma unroll
+          for (int h = 0; h < 2; ++h) {
+            const int ah = (int)((anc_pack >> (8 * h)) & 0xffu);
+            const int mh = base + (int)((anc_pack >> (16 + 5 * h)) & 31u);
+            #pragma unroll
+            for (int ai = 0; ai < 2; ++ai) {
+              const int arow = ai == 0 ? (ah & 0xf) : (ah >> 4);
+              const int akey = mh + ai;
+              arow_in[h][ai] = (arow && akey >= lo[h] && akey < ph[h] && akey >= kt0 && akey < kt0 + ATX_KT) ? arow : 0;
+            }
+          }
+          unsigned rem = __ballot_sync(0xffffffffu, (arow_in[0][0] | arow_in[0][1] | arow_in[1][0] | arow_in[1][1]) != 0);
+          while (rem) {
+            const int src = __ffs(rem) - 1;
+            const int loc_r = arow_in[0][0] ? arow_in[0][0] : (arow_in[0][1] ? arow_in[0][1] : (arow_in[1][0] ? arow_in[1][0] : arow_in[1][1]));
+            const int garow = __shfl_sync(0xffffffffu, loc_r, src);
+            const int apos = base + garow;
+            float sa[4] = {0.f, 0.f, 0.f, 0.f};
+            #pragma unroll
+            for (int kp = 0; kp < 8; ++kp) {
+              unsigned b[4];
+              if constexpr (KV8) {
+                const int8_t* kr0 = kg8 + (size_t)apos * D + 32 * kp + 2 * tig;
+                b[0] = atx_pack16<FP16KV>((float)kr0[0], (float)kr0[1]);
+                b[1] = atx_pack16<FP16KV>((float)kr0[8], (float)kr0[9]);
+                b[2] = atx_pack16<FP16KV>((float)kr0[16], (float)kr0[17]);
+                b[3] = atx_pack16<FP16KV>((float)kr0[24], (float)kr0[25]);
+              } else {
+                const unsigned* kr = reinterpret_cast<const unsigned*>(kgb + (size_t)apos * D);
+                b[0] = kr[kp * 16 + tig]; b[1] = kr[kp * 16 + 4 + tig];
+                b[2] = kr[kp * 16 + 8 + tig]; b[3] = kr[kp * 16 + 12 + tig];
+              }
+              atx_mma16<FP16KV>(sa, qa[2 * kp], b[0], b[1]);
+              atx_mma16<FP16KV>(sa, qa[2 * kp + 1], b[2], b[3]);
+            }
+            const float ksf = KV8 ? (ksg[apos] * 0.0625f) : 0.0625f;
+            #pragma unroll
+            for (int h = 0; h < 2; ++h) {
+              const float sh = (h ? sa[2] : sa[0]) * ksf;
+              const int mh = base + (int)((anc_pack >> (16 + 5 * h)) & 31u);
+              #pragma unroll
+              for (int ai = 0; ai < 2; ++ai) {
+                if (arow_in[h][ai] == garow) {
+                  const int akey = mh + ai;
+                  #pragma unroll
+                  for (int j = 0; j < 4; ++j) {
+                    const int k0j = kt0 + 8 * j + 2 * tig;
+                    if (akey == k0j) s[j][2 * h] = sh;
+                    else if (akey == k0j + 1) s[j][2 * h + 1] = sh;
+                  }
+                  arow_in[h][ai] = 0;
+                }
+              }
+            }
+            rem = __ballot_sync(0xffffffffu, (arow_in[0][0] | arow_in[0][1] | arow_in[1][0] | arow_in[1][1]) != 0);
+          }
+        }
+      }
+      float x0 = m0, x1 = m1;
+      #pragma unroll
+      for (int j = 0; j < 4; ++j) {
         x0 = fmaxf(x0, fmaxf(s[j][0], s[j][1])); x1 = fmaxf(x1, fmaxf(s[j][2], s[j][3]));
       }
       x0 = fmaxf(x0, __shfl_xor_sync(0xffffffffu, x0, 1)); x0 = fmaxf(x0, __shfl_xor_sync(0xffffffffu, x0, 2));
@@ -259,22 +388,76 @@ __global__ void __launch_bounds__(NW * 32, NW == 6 ? 1 : 2) q35_atx_kernel(Q35At
       }
       #pragma unroll
       for (int kk = 0; kk < 2; ++kk) {
-        float va = 1.f, vb = 1.f, vc2 = 1.f, vd2 = 1.f;
-        if constexpr (KV8) { va = vsc[16 * kk + 2 * tig]; vb = vsc[16 * kk + 2 * tig + 1]; vc2 = vsc[16 * kk + 8 + 2 * tig]; vd2 = vsc[16 * kk + 8 + 2 * tig + 1]; }
+        const int k0_kk = kt0 + 16 * kk;
         unsigned pa[4];
         if constexpr (KV8) {
-          pa[0] = atx_pack16<FP16KV>(s[2 * kk][0] * va, s[2 * kk][1] * vb); pa[1] = atx_pack16<FP16KV>(s[2 * kk][2] * va, s[2 * kk][3] * vb);
-          pa[2] = atx_pack16<FP16KV>(s[2 * kk + 1][0] * vc2, s[2 * kk + 1][1] * vd2); pa[3] = atx_pack16<FP16KV>(s[2 * kk + 1][2] * vc2, s[2 * kk + 1][3] * vd2);
+          const float va = vsc[16 * kk + 2 * tig], vb = vsc[16 * kk + 2 * tig + 1], vc2 = vsc[16 * kk + 8 + 2 * tig], vd2 = vsc[16 * kk + 8 + 2 * tig + 1];
+          if constexpr (!WITH_WK) {
+            pa[0] = atx_pack16<FP16KV>(s[2 * kk][0] * va, s[2 * kk][1] * vb); pa[1] = atx_pack16<FP16KV>(s[2 * kk][2] * va, s[2 * kk][3] * vb);
+            pa[2] = atx_pack16<FP16KV>(s[2 * kk + 1][0] * vc2, s[2 * kk + 1][1] * vd2); pa[3] = atx_pack16<FP16KV>(s[2 * kk + 1][2] * vc2, s[2 * kk + 1][3] * vd2);
+          } else if (!tile_anc) {
+            pa[0] = atx_pack16<FP16KV>(s[2 * kk][0] * va, s[2 * kk][1] * vb); pa[1] = atx_pack16<FP16KV>(s[2 * kk][2] * va, s[2 * kk][3] * vb);
+            pa[2] = atx_pack16<FP16KV>(s[2 * kk + 1][0] * vc2, s[2 * kk + 1][1] * vd2); pa[3] = atx_pack16<FP16KV>(s[2 * kk + 1][2] * vc2, s[2 * kk + 1][3] * vd2);
+          } else {
+            auto vsc_of = [&](int h, int key, float def_v) -> float {
+              const int mh = base + (int)((anc_pack >> (16 + 5 * h)) & 31u);
+              if (key >= lo[h] && key < ph[h] && key >= mh) {
+                const int ah = (int)((anc_pack >> (8 * h)) & 0xffu);
+                const int arow = (key == mh) ? (ah & 0xf) : (ah >> 4);
+                if (arow) return vsg[base + arow];
+              }
+              return def_v;
+            };
+            const int ka = k0_kk + 2 * tig, kb = k0_kk + 8 + 2 * tig;
+            pa[0] = atx_pack16<FP16KV>(s[2 * kk][0] * vsc_of(0, ka, va), s[2 * kk][1] * vsc_of(0, ka + 1, vb));
+            pa[1] = atx_pack16<FP16KV>(s[2 * kk][2] * vsc_of(1, ka, va), s[2 * kk][3] * vsc_of(1, ka + 1, vb));
+            pa[2] = atx_pack16<FP16KV>(s[2 * kk + 1][0] * vsc_of(0, kb, vc2), s[2 * kk + 1][1] * vsc_of(0, kb + 1, vd2));
+            pa[3] = atx_pack16<FP16KV>(s[2 * kk + 1][2] * vsc_of(1, kb, vc2), s[2 * kk + 1][3] * vsc_of(1, kb + 1, vd2));
+          }
         } else {
           pa[0] = atx_pack16<FP16KV>(s[2 * kk][0], s[2 * kk][1]); pa[1] = atx_pack16<FP16KV>(s[2 * kk][2], s[2 * kk][3]);
           pa[2] = atx_pack16<FP16KV>(s[2 * kk + 1][0], s[2 * kk + 1][1]); pa[3] = atx_pack16<FP16KV>(s[2 * kk + 1][2], s[2 * kk + 1][3]);
         }
-        #pragma unroll
-        for (int np = 0; np < 16; ++np) {
-          unsigned b[4];
-          atx_ldm4t(b, vs + (16 * kk + ((lane >> 3) & 1) * 8 + (lane & 7)) * ATX_LD + 16 * np + (lane >> 4) * 8);
-          atx_mma16<FP16KV>(o[2 * np], pa, b[0], b[1]);
-          atx_mma16<FP16KV>(o[2 * np + 1], pa, b[2], b[3]);
+        if constexpr (!WITH_WK) {
+          #pragma unroll
+          for (int np = 0; np < 16; ++np) {
+            unsigned b[4];
+            atx_ldm4t(b, vs + (16 * kk + ((lane >> 3) & 1) * 8 + (lane & 7)) * ATX_LD + 16 * np + (lane >> 4) * 8);
+            atx_mma16<FP16KV>(o[2 * np], pa, b[0], b[1]);
+            atx_mma16<FP16KV>(o[2 * np + 1], pa, b[2], b[3]);
+          }
+        } else {
+          unsigned sig0 = 0u, sig1 = 0u, m0_init = 0u, m1_init = 0u;
+          if (tile_anc) {
+            auto mk_sig = [&](int h) -> unsigned {
+              const int ah = (int)((anc_pack >> (8 * h)) & 0xffu);
+              if (!ah) return 0u;
+              const int mo = (int)((anc_pack >> (16 + 5 * h)) & 31u);
+              const int mh = base + mo;
+              const bool h0 = (ah & 0xf) && mh >= lo[h] && mh < ph[h] && mh >= k0_kk && mh < k0_kk + 16;
+              const bool h1 = (ah >> 4) && (mh + 1) >= lo[h] && (mh + 1) < ph[h] && (mh + 1) >= k0_kk && (mh + 1) < k0_kk + 16;
+              return (h0 || h1) ? (((unsigned)mo << 8) | (unsigned)ah) : 0u;
+            };
+            sig0 = mk_sig(0); sig1 = mk_sig(1);
+            m0_init = __ballot_sync(0xffffffffu, sig0 != 0u);
+            m1_init = __ballot_sync(0xffffffffu, sig1 != 0u);
+          }
+          #pragma unroll
+          for (int np = 0; np < 16; ++np) {
+            unsigned b[4];
+            atx_ldm4t(b, vs + (16 * kk + ((lane >> 3) & 1) * 8 + (lane & 7)) * ATX_LD + 16 * np + (lane >> 4) * 8);
+            if ((m0_init | m1_init) == 0u) {
+              atx_mma16<FP16KV>(o[2 * np], pa, b[0], b[1]);
+              atx_mma16<FP16KV>(o[2 * np + 1], pa, b[2], b[3]);
+            } else {
+              float4 r0 = atx_pv_anc_half<KV8, FP16KV>(make_float4(o[2 * np][0], o[2 * np][1], o[2 * np][2], o[2 * np][3]),
+                  pa[0], pa[1], pa[2], pa[3], b[0], b[1], vg8, vgb, base, k0_kk, 16 * np + gi, tig, sig0, sig1, m0_init, m1_init);
+              o[2 * np][0] = r0.x; o[2 * np][1] = r0.y; o[2 * np][2] = r0.z; o[2 * np][3] = r0.w;
+              float4 r1 = atx_pv_anc_half<KV8, FP16KV>(make_float4(o[2 * np + 1][0], o[2 * np + 1][1], o[2 * np + 1][2], o[2 * np + 1][3]),
+                  pa[0], pa[1], pa[2], pa[3], b[2], b[3], vg8, vgb, base, k0_kk, 16 * np + 8 + gi, tig, sig0, sig1, m0_init, m1_init);
+              o[2 * np + 1][0] = r1.x; o[2 * np + 1][1] = r1.y; o[2 * np + 1][2] = r1.z; o[2 * np + 1][3] = r1.w;
+            }
+          }
         }
       }
     }
@@ -284,11 +467,10 @@ __global__ void __launch_bounds__(NW * 32, NW == 6 ? 1 : 2) q35_atx_kernel(Q35At
   if (busy) {
     #pragma unroll
     for (int h = 0; h < 2; ++h) {
-      const bool sf = self_[h];                                       
+      const bool sf = self_[h];
       float part = 0.f;
       if (sf) {
         const size_t row = (size_t)own[h];
-        #pragma unroll
         for (int ks = 0; ks < 16; ++ks) {
           const unsigned qlo = qa[ks][h], qhi = qa[ks][2 + h];        
           float k0, k1, k2, k3;
@@ -347,7 +529,7 @@ __global__ void __launch_bounds__(NW * 32, NW == 6 ? 1 : 2) q35_atx_kernel(Q35At
 
 
 
-template <int RT, int WPT>
+template <int RT, int WPT, bool WITH_WK = true>
 __global__ void __launch_bounds__(RT * WPT * 32, 1) q35_atx_vsp_kernel(Q35AtxArgs U) {
   constexpr int TPC = (16 * RT) / 6, JW = 4 / WPT, NB = 32 / WPT, TL = 256;   
   const Q35AttnArgs& A = U.a;
@@ -363,11 +545,12 @@ __global__ void __launch_bounds__(RT * WPT * 32, 1) q35_atx_vsp_kernel(Q35AtxArg
   if (!early) { pdl_wait(); pdl_trigger(); }
   const int base = *A.d_pos, M = A.M;
   int tk[2], hd[2], lo[2], ph[2], own[2], len[2]; bool self_[2], vrow[2];
+  uint32_t anc_pack = 0u;
   bool need = false;
   #pragma unroll
   for (int h = 0; h < 2; ++h) {
     const int i = 16 * tile + gi + 8 * h; tk[h] = t0 + i / G; hd[h] = kvh * G + i % G; vrow[h] = i < G * TPC && tk[h] < M;
-    const int dp = vrow[h] ? (U.wk ? (int)U.wk[tk[h]] : tk[h]) : -1;
+    const int dp = vrow[h] ? ((WITH_WK && U.wk) ? (int)U.wk[tk[h]] : tk[h]) : -1;
     len[h] = vrow[h] ? base + dp + 1 : 0; own[h] = base + tk[h];
     const int S = (A.splits_short > 0 && len[h] < A.long_len) ? A.splits_short : A.splits;
     need |= vrow[h] && split < S;
@@ -375,6 +558,15 @@ __global__ void __launch_bounds__(RT * WPT * 32, 1) q35_atx_vsp_kernel(Q35AtxArg
     lo[h] = split * per; const int hi = min(len[h], lo[h] + per);
     ph[h] = max(lo[h], min(hi, len[h] - 1));
     self_[h] = vrow[h] && lo[h] <= len[h] - 1 && len[h] - 1 < lo[h] + per;
+  }
+  if constexpr (WITH_WK) {
+    if (U.wk && U.wk[48] == 2) {
+      const uint32_t a0 = vrow[0] ? (uint32_t)U.wk[112 + tk[0]] : 0u;
+      const uint32_t a1 = vrow[1] ? (uint32_t)U.wk[112 + tk[1]] : 0u;
+      const uint32_t m0o = vrow[0] ? ((uint32_t)U.wk[96 + tk[0]] & 31u) : 0u;
+      const uint32_t m1o = vrow[1] ? ((uint32_t)U.wk[96 + tk[1]] & 31u) : 0u;
+      anc_pack = a0 | (a1 << 8) | (m0o << 16) | (m1o << 21) | (__any_sync(0xffffffffu, (a0 | a1) != 0u) ? 0x80000000u : 0u);
+    }
   }
   if (!__syncthreads_or(need)) { if (early) { pdl_wait(); pdl_trigger(); } return; }
   if (threadIdx.x == 0) { s_lo = 0x7fffffff; s_hi = 0; }
@@ -458,18 +650,76 @@ __global__ void __launch_bounds__(RT * WPT * 32, 1) q35_atx_vsp_kernel(Q35AtxArg
         for (int n = 0; n < NB; ++n) { o[n][0] *= c0; o[n][1] *= c0; o[n][2] *= c1; o[n][3] *= c1; }
       }
       const uint16_t* const vs = kt_b + (size_t)((t - 1) & 1) * 2 * ATX_KT * TL + ATX_KT * TL;
+      const int kt0_prev = tbeg + (t - 1) * ATX_KT;
+      const bool pv_tile_anc = WITH_WK && ((anc_pack & 0x80000000u) != 0u) && (kt0_prev + ATX_KT > base);
       #pragma unroll
       for (int kk = 0; kk < 2; ++kk) {
         const uint2 pA = x_pf[tile][2 * kk][lane], pB = x_pf[tile][2 * kk + 1][lane];
         const unsigned pa[4] = {pA.x, pA.y, pB.x, pB.y};
-        #pragma unroll
-        for (int q = 0; q < NB / 2; ++q) {
-          const int np = (NB / 2) * part + q;
-          unsigned bb[4];
-          const int r = 16 * kk + ((lane >> 3) & 1) * 8 + (lane & 7), c = 2 * np + (lane >> 4);
-          atx_ldm4t(bb, vs + r * TL + 8 * (c ^ (r & 7)));
-          atx_mma(o[2 * q], pa, bb[0], bb[1]);
-          atx_mma(o[2 * q + 1], pa, bb[2], bb[3]);
+        if constexpr (!WITH_WK) {
+          #pragma unroll
+          for (int q = 0; q < NB / 2; ++q) {
+            const int np = (NB / 2) * part + q;
+            unsigned bb[4];
+            const int r = 16 * kk + ((lane >> 3) & 1) * 8 + (lane & 7), c = 2 * np + (lane >> 4);
+            atx_ldm4t(bb, vs + r * TL + 8 * (c ^ (r & 7)));
+            atx_mma(o[2 * q], pa, bb[0], bb[1]);
+            atx_mma(o[2 * q + 1], pa, bb[2], bb[3]);
+          }
+        } else {
+          const int k0_kk = kt0_prev + 16 * kk;
+          unsigned sig0 = 0u, sig1 = 0u, m0_init = 0u, m1_init = 0u;
+          if (pv_tile_anc) {
+            auto mk_sig = [&](int h) -> unsigned {
+              const int ah = (int)((anc_pack >> (8 * h)) & 0xffu);
+              if (!ah) return 0u;
+              const int mo = (int)((anc_pack >> (16 + 5 * h)) & 31u);
+              const int mh = base + mo;
+              const bool h0 = (ah & 0xf) && mh >= lo[h] && mh < ph[h] && mh >= k0_kk && mh < k0_kk + 16;
+              const bool h1 = (ah >> 4) && (mh + 1) >= lo[h] && (mh + 1) < ph[h] && (mh + 1) >= k0_kk && (mh + 1) < k0_kk + 16;
+              return (h0 || h1) ? (((unsigned)mo << 8) | (unsigned)ah) : 0u;
+            };
+            sig0 = mk_sig(0); sig1 = mk_sig(1);
+            m0_init = __ballot_sync(0xffffffffu, sig0 != 0u);
+            m1_init = __ballot_sync(0xffffffffu, sig1 != 0u);
+          }
+          #pragma unroll
+          for (int q = 0; q < NB / 2; ++q) {
+            const int np = (NB / 2) * part + q;
+            unsigned bb[4];
+            const int r = 16 * kk + ((lane >> 3) & 1) * 8 + (lane & 7), c = 2 * np + (lane >> 4);
+            atx_ldm4t(bb, vs + r * TL + 8 * (c ^ (r & 7)));
+            if ((m0_init | m1_init) == 0u) {
+              atx_mma(o[2 * q], pa, bb[0], bb[1]);
+              atx_mma(o[2 * q + 1], pa, bb[2], bb[3]);
+            } else {
+              float sv0[4] = {o[2 * q][0], o[2 * q][1], o[2 * q][2], o[2 * q][3]};
+              float sv1[4] = {o[2 * q + 1][0], o[2 * q + 1][1], o[2 * q + 1][2], o[2 * q + 1][3]};
+              atx_mma(o[2 * q], pa, bb[0], bb[1]);
+              atx_mma(o[2 * q + 1], pa, bb[2], bb[3]);
+              unsigned r0 = m0_init, r1 = m1_init;
+              const int d0 = 16 * np + gi, d1 = 16 * np + 8 + gi;
+              while (r0 | r1) {
+                const int src = __ffs(r0 ? r0 : r1) - 1;
+                const unsigned gsig = __shfl_sync(0xffffffffu, r0 ? sig0 : sig1, src);
+                const int gmend = base + (int)(gsig >> 8), ganc = (int)(gsig & 0xffu);
+                const int ga0 = ganc & 0xf, ga1 = ganc >> 4;
+                unsigned ba[4] = {bb[0], bb[1], bb[2], bb[3]};
+                if (ga0 && gmend >= k0_kk && gmend < k0_kk + 16)
+                  atx_patch_v_bb(ba, gmend - k0_kk, tig, atx_bf16_bits((float)vg8[(size_t)(base + ga0) * D + d0]), atx_bf16_bits((float)vg8[(size_t)(base + ga0) * D + d1]));
+                if (ga1 && (gmend + 1) >= k0_kk && (gmend + 1) < k0_kk + 16)
+                  atx_patch_v_bb(ba, gmend + 1 - k0_kk, tig, atx_bf16_bits((float)vg8[(size_t)(base + ga1) * D + d0]), atx_bf16_bits((float)vg8[(size_t)(base + ga1) * D + d1]));
+                float og0[4] = {sv0[0], sv0[1], sv0[2], sv0[3]};
+                float og1[4] = {sv1[0], sv1[1], sv1[2], sv1[3]};
+                atx_mma(og0, pa, ba[0], ba[1]);
+                atx_mma(og1, pa, ba[2], ba[3]);
+                if (sig0 == gsig) { o[2 * q][0] = og0[0]; o[2 * q][1] = og0[1]; o[2 * q + 1][0] = og1[0]; o[2 * q + 1][1] = og1[1]; }
+                if (sig1 == gsig) { o[2 * q][2] = og0[2]; o[2 * q][3] = og0[3]; o[2 * q + 1][2] = og1[2]; o[2 * q + 1][3] = og1[3]; }
+                r0 &= ~__ballot_sync(0xffffffffu, sig0 == gsig);
+                r1 &= ~__ballot_sync(0xffffffffu, sig1 == gsig);
+              }
+            }
+          }
         }
       }
     }
@@ -478,6 +728,51 @@ __global__ void __launch_bounds__(RT * WPT * 32, 1) q35_atx_vsp_kernel(Q35AtxArg
     if (busy) {                                                      
       const uint16_t* const ks = kt_b + (size_t)b * 2 * ATX_KT * TL; const float* const ksc = sc2[b][0];
       const int kt0 = tbeg + t * ATX_KT;
+      float anc_sc[2][2];
+      const bool qk_tile_anc = WITH_WK && ((anc_pack & 0x80000000u) != 0u) && (kt0 + ATX_KT > base);
+      if constexpr (WITH_WK) {
+        #pragma unroll
+        for (int h = 0; h < 2; ++h) { anc_sc[h][0] = -__int_as_float(0x7f800000u); anc_sc[h][1] = -__int_as_float(0x7f800000u); }
+        if (qk_tile_anc) {
+          const int wlo = kt0 + 8 * JW * part, whi = wlo + 8 * JW;
+          int arow_in[2][2];
+          #pragma unroll
+          for (int h = 0; h < 2; ++h) {
+            const int ah = (int)((anc_pack >> (8 * h)) & 0xffu);
+            const int mh = base + (int)((anc_pack >> (16 + 5 * h)) & 31u);
+            #pragma unroll
+            for (int ai = 0; ai < 2; ++ai) {
+              const int arow = ai == 0 ? (ah & 0xf) : (ah >> 4);
+              const int akey = mh + ai;
+              arow_in[h][ai] = (arow && akey >= lo[h] && akey < ph[h] && akey >= wlo && akey < whi) ? arow : 0;
+            }
+          }
+          unsigned rem = __ballot_sync(0xffffffffu, (arow_in[0][0] | arow_in[0][1] | arow_in[1][0] | arow_in[1][1]) != 0);
+          while (rem) {
+            const int src = __ffs(rem) - 1;
+            const int loc_r = arow_in[0][0] ? arow_in[0][0] : (arow_in[0][1] ? arow_in[0][1] : (arow_in[1][0] ? arow_in[1][0] : arow_in[1][1]));
+            const int garow = __shfl_sync(0xffffffffu, loc_r, src);
+            const int apos = base + garow;
+            float sa[4] = {0.f, 0.f, 0.f, 0.f};
+            #pragma unroll
+            for (int kp = 0; kp < 8; ++kp) {
+              const int8_t* kr0 = kg8 + (size_t)apos * D + 32 * kp + 2 * tig;
+              atx_mma(sa, qa[2 * kp], atx_pack((float)kr0[0], (float)kr0[1]), atx_pack((float)kr0[8], (float)kr0[9]));
+              atx_mma(sa, qa[2 * kp + 1], atx_pack((float)kr0[16], (float)kr0[17]), atx_pack((float)kr0[24], (float)kr0[25]));
+            }
+            const float ksf = ksg[apos] * 0.0625f;
+            #pragma unroll
+            for (int h = 0; h < 2; ++h) {
+              const float sh = (h ? sa[2] : sa[0]) * ksf;
+              #pragma unroll
+              for (int ai = 0; ai < 2; ++ai) {
+                if (arow_in[h][ai] == garow) { anc_sc[h][ai] = sh; arow_in[h][ai] = 0; }
+              }
+            }
+            rem = __ballot_sync(0xffffffffu, (arow_in[0][0] | arow_in[0][1] | arow_in[1][0] | arow_in[1][1]) != 0);
+          }
+        }
+      }
       #pragma unroll
       for (int w = 0; w < JW; ++w) {
         const int j = JW * part + w;
@@ -493,8 +788,16 @@ __global__ void __launch_bounds__(RT * WPT * 32, 1) q35_atx_vsp_kernel(Q35AtxArg
         #pragma unroll
         for (int c = 0; c < 4; ++c) {
           const int kk = 8 * j + 2 * tig + (c & 1), key = kt0 + kk, h = c >> 1;
-          const float v = s[w][c] * (ksc[kk] * 0.0625f);
-          s[w][c] = (key >= lo[h] && key < ph[h]) ? v : -INFINITY;
+          float v = s[w][c] * (ksc[kk] * 0.0625f);
+          if (key >= lo[h] && key < ph[h]) {
+            if constexpr (WITH_WK) {
+              if (qk_tile_anc) {
+                const int mh = base + (int)((anc_pack >> (16 + 5 * h)) & 31u);
+                if (key >= mh) v = (key == mh) ? anc_sc[h][0] : anc_sc[h][1];
+              }
+            }
+          } else v = -__int_as_float(0x7f800000u);
+          s[w][c] = v;
         }
         x_mx[tile][j][lane] = make_float2(fmaxf(s[w][0], s[w][1]), fmaxf(s[w][2], s[w][3]));
       }
@@ -502,6 +805,7 @@ __global__ void __launch_bounds__(RT * WPT * 32, 1) q35_atx_vsp_kernel(Q35AtxArg
     __syncthreads();                                                 
     if (busy) {                                                      
       const float* const vsc = sc2[b][1];
+      const int kt0 = tbeg + t * ATX_KT;
       float x0 = m0, x1 = m1;
       #pragma unroll
       for (int jj = 0; jj < 4; ++jj) { const float2 q = x_mx[tile][jj][lane]; x0 = fmaxf(x0, q.x); x1 = fmaxf(x1, q.y); }
@@ -510,6 +814,7 @@ __global__ void __launch_bounds__(RT * WPT * 32, 1) q35_atx_vsp_kernel(Q35AtxArg
       c0 = exp2f((m0 - x0) * ATX_LOG2E); c1 = exp2f((m1 - x1) * ATX_LOG2E);
       m0 = x0; m1 = x1;
       const float y0 = x0 * ATX_LOG2E, y1 = x1 * ATX_LOG2E;
+      const bool vsc_tile_anc = WITH_WK && ((anc_pack & 0x80000000u) != 0u) && (kt0 + ATX_KT > base);
       #pragma unroll
       for (int w = 0; w < JW; ++w) {
         const int j = JW * part + w;
@@ -517,7 +822,25 @@ __global__ void __launch_bounds__(RT * WPT * 32, 1) q35_atx_vsp_kernel(Q35AtxArg
         s[w][2] = exp2f(s[w][2] * ATX_LOG2E - y1); s[w][3] = exp2f(s[w][3] * ATX_LOG2E - y1);
         x_sm[tile][j][lane] = make_float2(s[w][0] + s[w][1], s[w][2] + s[w][3]);
         const float va = vsc[8 * j + 2 * tig], vb = vsc[8 * j + 2 * tig + 1];
-        x_pf[tile][j][lane] = make_uint2(atx_pack(s[w][0] * va, s[w][1] * vb), atx_pack(s[w][2] * va, s[w][3] * vb));
+        if constexpr (!WITH_WK) {
+          x_pf[tile][j][lane] = make_uint2(atx_pack(s[w][0] * va, s[w][1] * vb), atx_pack(s[w][2] * va, s[w][3] * vb));
+        } else if (!vsc_tile_anc) {
+          x_pf[tile][j][lane] = make_uint2(atx_pack(s[w][0] * va, s[w][1] * vb), atx_pack(s[w][2] * va, s[w][3] * vb));
+        } else {
+          auto vsc_of = [&](int h, int key, float def_v) -> float {
+            const int mh = base + (int)((anc_pack >> (16 + 5 * h)) & 31u);
+            if (key >= lo[h] && key < ph[h] && key >= mh) {
+              const int ah = (int)((anc_pack >> (8 * h)) & 0xffu);
+              const int arow = (key == mh) ? (ah & 0xf) : (ah >> 4);
+              if (arow) return vsg[base + arow];
+            }
+            return def_v;
+          };
+          const int k0c = kt0 + 8 * j + 2 * tig;
+          x_pf[tile][j][lane] = make_uint2(
+              atx_pack(s[w][0] * vsc_of(0, k0c, va), s[w][1] * vsc_of(0, k0c + 1, vb)),
+              atx_pack(s[w][2] * vsc_of(1, k0c, va), s[w][3] * vsc_of(1, k0c + 1, vb)));
+        }
       }
     }
     if (t + 1 < ntiles) {                                            
@@ -797,40 +1120,56 @@ constexpr size_t ATX_T_SMEM = (size_t)2 * 2 * ATX_KT * Q35_HD * 2 + (size_t)2 * 
 constexpr size_t atx_smem8(int ns) { return (size_t)2 * ATX_KT * ATX_LD * 2 + (size_t)ns * 2 * ATX_KT * Q35_HD + (size_t)ns * 2 * ATX_KT * 4; }   
 void launch_q35_atx(const Q35AttnArgs& A, const uint8_t* wk, cudaStream_t st) {
   static bool attr = false;
-  if (!attr) { cudaFuncSetAttribute(q35_atx_kernel<false, 6>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
-               cudaFuncSetAttribute(q35_atx_kernel<false, 6, 2, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
-               cudaFuncSetAttribute(q35_atx_kernel<true, 6>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
-               cudaFuncSetAttribute(q35_atx_kernel<false, 1>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
-               cudaFuncSetAttribute(q35_atx_kernel<true, 1>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
-               cudaFuncSetAttribute(q35_atx_kernel<true, 6, 3>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)atx_smem8(3));
-               cudaFuncSetAttribute(q35_atx_kernel<true, 6, 4>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)atx_smem8(4));
+  if (!attr) { cudaFuncSetAttribute(q35_atx_kernel<false, 6, 2, false, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
+               cudaFuncSetAttribute(q35_atx_kernel<false, 6, 2, false, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
+               cudaFuncSetAttribute(q35_atx_kernel<false, 6, 2, true, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
+               cudaFuncSetAttribute(q35_atx_kernel<false, 6, 2, true, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
+               cudaFuncSetAttribute(q35_atx_kernel<true, 6, 2, false, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
+               cudaFuncSetAttribute(q35_atx_kernel<true, 6, 2, false, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
+               cudaFuncSetAttribute(q35_atx_kernel<false, 1, 1, false, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
+               cudaFuncSetAttribute(q35_atx_kernel<true, 1, 1, false, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, ATX_SMEM);
+               cudaFuncSetAttribute(q35_atx_kernel<true, 6, 3, false, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)atx_smem8(3));
+               cudaFuncSetAttribute(q35_atx_kernel<true, 6, 3, false, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)atx_smem8(3));
+               cudaFuncSetAttribute(q35_atx_kernel<true, 6, 4, false, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)atx_smem8(4));
+               cudaFuncSetAttribute(q35_atx_kernel<true, 6, 4, false, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)atx_smem8(4));
                cudaFuncSetAttribute(q35_atx2_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)ATX2_SMEM);
-               cudaFuncSetAttribute(q35_atx_vsp_kernel<1, 4>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)ATX_T_SMEM);
-               cudaFuncSetAttribute(q35_atx_vsp_kernel<3, 4>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)ATX_T_SMEM);
-               cudaFuncSetAttribute(q35_atx_vsp_kernel<6, 2>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)ATX_T_SMEM); attr = true; }
+               cudaFuncSetAttribute(q35_atx_vsp_kernel<1, 4, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)ATX_T_SMEM);
+               cudaFuncSetAttribute(q35_atx_vsp_kernel<1, 4, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)ATX_T_SMEM);
+               cudaFuncSetAttribute(q35_atx_vsp_kernel<3, 4, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)ATX_T_SMEM);
+               cudaFuncSetAttribute(q35_atx_vsp_kernel<3, 4, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)ATX_T_SMEM);
+               cudaFuncSetAttribute(q35_atx_vsp_kernel<6, 2, false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)ATX_T_SMEM);
+               cudaFuncSetAttribute(q35_atx_vsp_kernel<6, 2, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)ATX_T_SMEM); attr = true; }
   if (A.kv_fp16) {
     if (A.k8) throw std::runtime_error("FP16 ATX received INT8 cache");
-    launch_k(q35_atx_kernel<false, 6, 2, true>, dim3((A.M + 15) / 16, A.splits, Q35_KVH), dim3(192), (size_t)ATX_SMEM, st, Q35AtxArgs{A, wk});
+    if (wk) launch_k(q35_atx_kernel<false, 6, 2, true, true>, dim3((A.M + 15) / 16, A.splits, Q35_KVH), dim3(192), (size_t)ATX_SMEM, st, Q35AtxArgs{A, wk});
+    else launch_k(q35_atx_kernel<false, 6, 2, true, false>, dim3((A.M + 15) / 16, A.splits, Q35_KVH), dim3(192), (size_t)ATX_SMEM, st, Q35AtxArgs{A, wk});
     return;
   }
   constexpr int SM1_BF = 2 * ATX_KT * ATX_LD * 2, SM1_K8 = 2 * ATX_KT * ATX_LD * 2 + 2 * ATX_KT * Q35_HD + 2 * ATX_KT * 4;   
   if (A.M <= 2 && false) {                                            
     const dim3 grid((A.M + 1) / 2, A.splits, Q35_KVH);
-    if (A.k8) launch_k(q35_atx_kernel<true, 1>, grid, dim3(32), (size_t)SM1_K8, st, Q35AtxArgs{A, wk});
-    else launch_k(q35_atx_kernel<false, 1>, grid, dim3(32), (size_t)SM1_BF, st, Q35AtxArgs{A, wk});
+    if (A.k8) launch_k(q35_atx_kernel<true, 1, 1, false, false>, grid, dim3(32), (size_t)SM1_K8, st, Q35AtxArgs{A, wk});
+    else launch_k(q35_atx_kernel<false, 1, 1, false, false>, grid, dim3(32), (size_t)SM1_BF, st, Q35AtxArgs{A, wk});
     return; }
   if (A.k8 && ((A.vsp & 1) && A.M <= 8 || (A.vsp & 2) && A.M > 8 && A.M <= 16 || (A.vsp & 4) && A.M > 16)) {   
     const Q35AtxArgs UT{A, wk};
-    if (A.M <= 2) launch_k(q35_atx_vsp_kernel<1, 4>, dim3((A.M + 1) / 2, A.splits, Q35_KVH), dim3(128), ATX_T_SMEM, st, UT);
-    else if (A.M <= 8) launch_k(q35_atx_vsp_kernel<3, 4>, dim3((A.M + 7) / 8, A.splits, Q35_KVH), dim3(384), ATX_T_SMEM, st, UT);
-    else launch_k(q35_atx_vsp_kernel<6, 2>, dim3((A.M + 15) / 16, A.splits, Q35_KVH), dim3(384), ATX_T_SMEM, st, UT);
+    if (A.M <= 2) {
+      if (wk) launch_k(q35_atx_vsp_kernel<1, 4, true>, dim3((A.M + 1) / 2, A.splits, Q35_KVH), dim3(128), ATX_T_SMEM, st, UT);
+      else launch_k(q35_atx_vsp_kernel<1, 4, false>, dim3((A.M + 1) / 2, A.splits, Q35_KVH), dim3(128), ATX_T_SMEM, st, UT);
+    } else if (A.M <= 8) {
+      if (wk) launch_k(q35_atx_vsp_kernel<3, 4, true>, dim3((A.M + 7) / 8, A.splits, Q35_KVH), dim3(384), ATX_T_SMEM, st, UT);
+      else launch_k(q35_atx_vsp_kernel<3, 4, false>, dim3((A.M + 7) / 8, A.splits, Q35_KVH), dim3(384), ATX_T_SMEM, st, UT);
+    } else {
+      if (wk) launch_k(q35_atx_vsp_kernel<6, 2, true>, dim3((A.M + 15) / 16, A.splits, Q35_KVH), dim3(384), ATX_T_SMEM, st, UT);
+      else launch_k(q35_atx_vsp_kernel<6, 2, false>, dim3((A.M + 15) / 16, A.splits, Q35_KVH), dim3(384), ATX_T_SMEM, st, UT);
+    }
     return; }
   const dim3 grid((A.M + 15) / 16, A.splits, Q35_KVH);
   if (A.k8 && atx2_env()) { Q35AtxArgs ATX{A, wk}; ATX.cs_split = atx2_env() == 2; launch_k(q35_atx2_kernel, grid, dim3(192), ATX2_SMEM, st, ATX); return; }   
   if (A.k8) { const int ns = atx_ns_env();
-    if (ns == 4) launch_k(q35_atx_kernel<true, 6, 4>, grid, dim3(192), atx_smem8(4), st, Q35AtxArgs{A, wk});
-    else if (ns == 3) launch_k(q35_atx_kernel<true, 6, 3>, grid, dim3(192), atx_smem8(3), st, Q35AtxArgs{A, wk});
-    else launch_k(q35_atx_kernel<true, 6>, grid, dim3(192), (size_t)ATX_SMEM, st, Q35AtxArgs{A, wk}); }
-  else launch_k(q35_atx_kernel<false, 6>, grid, dim3(192), (size_t)ATX_SMEM, st, Q35AtxArgs{A, wk});
+    if (ns == 4) { if (wk) launch_k(q35_atx_kernel<true, 6, 4, false, true>, grid, dim3(192), atx_smem8(4), st, Q35AtxArgs{A, wk}); else launch_k(q35_atx_kernel<true, 6, 4, false, false>, grid, dim3(192), atx_smem8(4), st, Q35AtxArgs{A, wk}); }
+    else if (ns == 3) { if (wk) launch_k(q35_atx_kernel<true, 6, 3, false, true>, grid, dim3(192), atx_smem8(3), st, Q35AtxArgs{A, wk}); else launch_k(q35_atx_kernel<true, 6, 3, false, false>, grid, dim3(192), atx_smem8(3), st, Q35AtxArgs{A, wk}); }
+    else { if (wk) launch_k(q35_atx_kernel<true, 6, 2, false, true>, grid, dim3(192), (size_t)ATX_SMEM, st, Q35AtxArgs{A, wk}); else launch_k(q35_atx_kernel<true, 6, 2, false, false>, grid, dim3(192), (size_t)ATX_SMEM, st, Q35AtxArgs{A, wk}); } }
+  else { if (wk) launch_k(q35_atx_kernel<false, 6, 2, false, true>, grid, dim3(192), (size_t)ATX_SMEM, st, Q35AtxArgs{A, wk}); else launch_k(q35_atx_kernel<false, 6, 2, false, false>, grid, dim3(192), (size_t)ATX_SMEM, st, Q35AtxArgs{A, wk}); }
 }
 }  

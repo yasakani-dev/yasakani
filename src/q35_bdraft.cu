@@ -656,57 +656,391 @@ void launch_bdr_select(const float* hp, const float* val, const int* idx, const 
 
 
 
-__global__ void bdr_hcap_kernel(int* __restrict__ toks, const int* __restrict__ alt, const int* __restrict__ alt3, const float* __restrict__ marg,
-                                  const float* __restrict__ tab, uint8_t* __restrict__ wk, int* __restrict__ cfg, const int* __restrict__ cpl, const int* __restrict__ go) {
-  
-  
+__device__ __forceinline__ float hb_lu(const float* ed, const float* row12, float m) {
+  int b = 0;
+  #pragma unroll
+  for (int e = 0; e < 11; ++e) b += m >= ed[e] ? 1 : 0;
+  return row12[b];
+}
+
+__global__ void __launch_bounds__(32 * DTOPK) bdr_omega_tree_kernel(
+    const float* __restrict__ hp, const float* __restrict__ val, const int* __restrict__ idx,
+    const uint16_t* __restrict__ pc, const uint16_t* __restrict__ sc,
+    int* __restrict__ toks, const int* __restrict__ alt, const int* __restrict__ alt3,
+    const float* __restrict__ marg, const float* __restrict__ tab,
+    uint8_t* __restrict__ wk, int* __restrict__ cfg, const int* __restrict__ cpl, const int* __restrict__ go, int nj) {
   constexpr int NB = 12, NT = (NB - 1) + 3 * 7 * NB;
-  __shared__ float s_tab[NT], s_m[7]; __shared__ int s_alt[7], s_alt3[7], s_go, s_cpl;
+  __shared__ float s_tab[NT], s_m[7], s_a[DRANK], s_score[DTOPK], s_rsc[5];
+  __shared__ int s_alt[7], s_alt3[7], s_go, s_cpl, s_toks[16], s_rtok[5];
   for (int q = threadIdx.x; q < NT; q += blockDim.x) s_tab[q] = tab[q];
   pdl_wait(); pdl_trigger();
+  const int w = threadIdx.x >> 5, lane = threadIdx.x & 31;
   if (threadIdx.x < 7) { s_m[threadIdx.x] = marg[threadIdx.x]; s_alt[threadIdx.x] = alt[threadIdx.x]; s_alt3[threadIdx.x] = alt3[threadIdx.x]; }
+  if (threadIdx.x < 8) s_toks[threadIdx.x] = toks[threadIdx.x];
   if (threadIdx.x == 0) { s_go = *go; s_cpl = *cpl; }
   __syncthreads();
-  if (threadIdx.x != 0 || !s_go) return;
-  const float* ed = s_tab; const float* pi = s_tab + (NB - 1); const float* rho = pi + 7 * NB; const float* rho3 = rho + 7 * NB;
-  float v2[7], v3[7], R[8]; R[0] = 1.f;
-  for (int j = 0; j < 7; ++j) {
-    int b = 0; for (int e = 0; e < NB - 1; ++e) b += s_m[j] >= ed[e] ? 1 : 0;
-    const float p = pi[j * NB + b];
-    v2[j] = s_alt[j] >= 0 ? R[j] * (1.f - p) * rho[j * NB + b] : -1.f;
-    v3[j] = (s_alt[j] >= 0 && s_alt3[j] >= 0) ? R[j] * (1.f - p) * rho3[j * NB + b] : -1.f;
-    R[j + 1] = R[j] * p;
-  }
-  int L = 7, nl = 0, dep[3] = {0, 0, 0}, rk[3] = {0, 0, 0}; float bestE = -1.f;
-  for (int Lc = 7; Lc >= 4 && s_cpl > 0; --Lc) {
-    const int want = 7 - Lc; bool c2[7] = {}, c3[7] = {}; int pd[3], pr[3], got = 0; float e = 1.f;
-    for (int q = 1; q <= Lc; ++q) e += R[q];
-    for (int q = 0; q < want; ++q) {                                     
-      float bv = -0.5f; int bj = -1, br = 0;
-      for (int jj = 0; jj < Lc; ++jj) {
-        if (!c2[jj] && v2[jj] > bv) { bv = v2[jj]; bj = jj; br = 2; }
-        if (c2[jj] && !c3[jj] && v3[jj] > bv) { bv = v3[jj]; bj = jj; br = 3; }
-      }
-      if (bj < 0) break;
-      if (br == 2) c2[bj] = true; else c3[bj] = true;
-      pd[got] = bj + 1; pr[got] = br; ++got; e += bv;
+  if (s_go <= 0) return;
+
+  const float* ed = s_tab;
+  const float* t_pi = s_tab + (NB - 1);
+  const float* t_rho = t_pi + 7 * NB;
+  const float* t_rho3 = t_rho + 7 * NB;
+
+  // Stochastic sampling (temperature > 0): 100% unchanged Gumbel-coupled HCAP-8
+  if (s_cpl > 0) {
+    if (threadIdx.x != 0) return;
+    float v2[7], v3[7], R[8]; R[0] = 1.f;
+    for (int j = 0; j < 7; ++j) {
+      int b = 0; for (int e = 0; e < NB - 1; ++e) b += s_m[j] >= ed[e] ? 1 : 0;
+      const float p = t_pi[j * NB + b];
+      v2[j] = s_alt[j] >= 0 ? R[j] * (1.f - p) * t_rho[j * NB + b] : -1.f;
+      v3[j] = (s_alt[j] >= 0 && s_alt3[j] >= 0) ? R[j] * (1.f - p) * t_rho3[j * NB + b] : -1.f;
+      R[j + 1] = R[j] * p;
     }
-    if (got < want) continue;                                             
-    if (e > bestE) { bestE = e; L = Lc; nl = want; for (int q = 0; q < want; ++q) { dep[q] = pd[q]; rk[q] = pr[q]; } }
+    int L = 7, nl = 0, dep[3] = {0, 0, 0}, rk[3] = {0, 0, 0}; float bestE = -1.f;
+    for (int Lc = 7; Lc >= 4; --Lc) {
+      const int want = 7 - Lc; bool c2[7] = {}, c3[7] = {}; int pd[3], pr[3], got = 0; float e = 1.f;
+      for (int q = 1; q <= Lc; ++q) e += R[q];
+      for (int q = 0; q < want; ++q) {
+        float bv = -0.5f; int bj = -1, br = 0;
+        for (int jj = 0; jj < Lc; ++jj) {
+          if (!c2[jj] && v2[jj] > bv) { bv = v2[jj]; bj = jj; br = 2; }
+          if (c2[jj] && !c3[jj] && v3[jj] > bv) { bv = v3[jj]; bj = jj; br = 3; }
+        }
+        if (bj < 0) break;
+        if (br == 2) c2[bj] = true; else c3[bj] = true;
+        pd[got] = bj + 1; pr[got] = br; ++got; e += bv;
+      }
+      if (got < want) continue;
+      if (e > bestE) { bestE = e; L = Lc; nl = want; for (int q = 0; q < want; ++q) { dep[q] = pd[q]; rk[q] = pr[q]; } }
+    }
+    for (int x = 0; x < nl; ++x) for (int y = x + 1; y < nl; ++y)
+      if (dep[y] < dep[x] || (dep[y] == dep[x] && rk[y] < rk[x])) { int tmp = dep[x]; dep[x] = dep[y]; dep[y] = tmp; tmp = rk[x]; rk[x] = rk[y]; rk[y] = tmp; }
+    uint8_t t[48]; for (int q = 0; q < 48; ++q) t[q] = 0;
+    for (int r = 0; r <= L; ++r) t[r] = (uint8_t)r;
+    for (int q = 0; q < nl; ++q) { const int row = L + 1 + q; t[row] = (uint8_t)dep[q]; t[32 + row] = (uint8_t)(rk[q] - 1);
+                                   toks[row] = rk[q] == 2 ? s_alt[dep[q] - 1] : s_alt3[dep[q] - 1]; }
+    int o = 16; for (int r = 0; r <= L; ++r) { t[o++] = (uint8_t)r; for (int q = 0; q < nl; ++q) if (dep[q] == r + 1) t[o++] = (uint8_t)((L + 1 + q) | 0x80); }
+    for (int q = 0; q < 48; ++q) wk[q] = t[q];
+    for (int q = 48; q < 128; ++q) wk[q] = 0;
+    cfg[0] = L; cfg[1] = nl;
+    for (int q = 0; q < 14; ++q) cfg[2 + q] = q < nl ? (((dep[q] - 1) << 8) | dep[q]) : 0;
+    return;
   }
-  for (int x = 0; x < nl; ++x) for (int y = x + 1; y < nl; ++y)          
-    if (dep[y] < dep[x] || (dep[y] == dep[x] && rk[y] < rk[x])) { int t = dep[x]; dep[x] = dep[y]; dep[y] = t; t = rk[x]; rk[x] = rk[y]; rk[y] = t; }
-  uint8_t t[48]; for (int q = 0; q < 48; ++q) t[q] = 0;
-  for (int r = 0; r <= L; ++r) t[r] = (uint8_t)r;
-  for (int q = 0; q < nl; ++q) { const int row = L + 1 + q; t[row] = (uint8_t)dep[q]; t[32 + row] = (uint8_t)(rk[q] - 1);
-                                 toks[row] = rk[q] == 2 ? s_alt[dep[q] - 1] : s_alt3[dep[q] - 1]; }
-  int o = 16; for (int r = 0; r <= L; ++r) { t[o++] = (uint8_t)r; for (int q = 0; q < nl; ++q) if (dep[q] == r + 1) t[o++] = (uint8_t)((L + 1 + q) | 0x80); }
-  for (int q = 0; q < 48; ++q) wk[q] = t[q];
-  cfg[0] = L; cfg[1] = nl; for (int q = 0; q < 3; ++q) cfg[2 + q] = q < nl ? dep[q] : 0;
+
+  // Deterministic Greedy WBDT-16 + BNCR Neural Conditional Rollout
+  const int M_tree = (s_go >= 8 && s_go <= 16) ? s_go : 8;
+  const int N_draft = M_tree - 1;
+  const int J = nj < 7 ? nj : 7;
+
+  auto eval_rank5 = [&](int j, int prev_tok) {
+    const int pt = (prev_tok >= 0 && prev_tok < 248320) ? prev_tok : s_toks[0];
+    if (threadIdx.x < DRANK)
+      s_a[threadIdx.x] = bf2f(pc[(size_t)pt * DRANK + threadIdx.x]) * hp[(size_t)j * DRANK + threadIdx.x];
+    if (w == 0 && lane < 5) { s_rtok[lane] = -1; s_rsc[lane] = -1e30f; }
+    __syncthreads();
+    {
+      const uint16_t* scr = sc + (size_t)idx[j * DTOPK + w] * DRANK;
+      float sm = 0.f;
+      for (int r = lane; r < DRANK; r += 32) sm = fmaf(s_a[r], bf2f(scr[r]), sm);
+      for (int o = 16; o; o >>= 1) sm += __shfl_xor_sync(0xffffffffu, sm, o);
+      if (lane == 0) s_score[w] = val[j * DTOPK + w] + sm;
+    }
+    __syncthreads();
+    if (w == 0 && lane < DTOPK) {
+      const float sl = s_score[lane];
+      const int il = idx[j * DTOPK + lane];
+      int rk = 0;
+      #pragma unroll
+      for (int k = 0; k < DTOPK; ++k) {
+        const float sk = s_score[k];
+        rk += (sk > sl || (sk == sl && k < lane)) ? 1 : 0;
+      }
+      if (rk < 5) { s_rtok[rk] = il; s_rsc[rk] = sl; }
+    }
+    __syncthreads();
+  };
+
+  __shared__ int sp_tok[7][5];
+  __shared__ float sp_m[7][5];
+  for (int j = 0; j < J; ++j) {
+    eval_rank5(j, s_toks[j]);
+    if (w == 0 && lane < 5) {
+      sp_tok[j][lane] = s_rtok[lane];
+      sp_m[j][lane] = lane == 0 ? 0.f : (s_rtok[lane] >= 0 ? fmaxf(0.f, s_rsc[0] - s_rsc[lane]) : 1e30f);
+    }
+    __syncthreads();
+  }
+
+  __shared__ int bn_tok[7];
+  __shared__ float bn_m[7];
+  if (w == 0 && lane < 7) { bn_tok[lane] = -1; bn_m[lane] = 1e30f; }
+  __syncthreads();
+
+  if (J >= 2) {
+    eval_rank5(1, sp_tok[0][1]);
+    if (threadIdx.x == 0 && sp_tok[0][1] >= 0) {
+      bn_tok[0] = s_rtok[0]; bn_m[0] = s_rtok[1] >= 0 ? fmaxf(0.f, s_rsc[0] - s_rsc[1]) : 1e30f;
+      bn_tok[1] = s_rtok[1]; bn_m[1] = bn_m[0];
+    }
+    __syncthreads();
+    eval_rank5(1, sp_tok[0][2]);
+    if (threadIdx.x == 0 && sp_tok[0][2] >= 0) {
+      bn_tok[3] = s_rtok[0]; bn_m[3] = s_rtok[1] >= 0 ? fmaxf(0.f, s_rsc[0] - s_rsc[1]) : 1e30f;
+    }
+    __syncthreads();
+  }
+  if (J >= 3) {
+    eval_rank5(2, bn_tok[0]);
+    if (threadIdx.x == 0 && bn_tok[0] >= 0) {
+      bn_tok[2] = s_rtok[0]; bn_m[2] = s_rtok[1] >= 0 ? fmaxf(0.f, s_rsc[0] - s_rsc[1]) : 1e30f;
+    }
+    __syncthreads();
+    eval_rank5(2, sp_tok[1][1]);
+    if (threadIdx.x == 0 && sp_tok[1][1] >= 0) {
+      bn_tok[4] = s_rtok[0]; bn_m[4] = s_rtok[1] >= 0 ? fmaxf(0.f, s_rsc[0] - s_rsc[1]) : 1e30f;
+    }
+    __syncthreads();
+  }
+  if (J >= 4) {
+    eval_rank5(3, bn_tok[4]);
+    if (threadIdx.x == 0 && bn_tok[4] >= 0) {
+      bn_tok[5] = s_rtok[0]; bn_m[5] = s_rtok[1] >= 0 ? fmaxf(0.f, s_rsc[0] - s_rsc[1]) : 1e30f;
+    }
+    __syncthreads();
+    eval_rank5(3, sp_tok[2][1]);
+    if (threadIdx.x == 0 && sp_tok[2][1] >= 0) {
+      bn_tok[6] = s_rtok[0]; bn_m[6] = s_rtok[1] >= 0 ? fmaxf(0.f, s_rsc[0] - s_rsc[1]) : 1e30f;
+    }
+    __syncthreads();
+  }
+
+  if (threadIdx.x != 0) return;
+
+  constexpr float GMUL = 1.45f;
+  float pi[7], rho2[7], rho3[7], R[8];
+  R[0] = 1.f;
+  for (int j = 0; j < 7; ++j) {
+    const float ms = j < J ? sp_m[j][1] * GMUL : 10.f;
+    pi[j]   = hb_lu(ed, t_pi + j * NB, ms);
+    rho2[j] = hb_lu(ed, t_rho + j * NB, ms);
+    rho3[j] = hb_lu(ed, t_rho3 + j * NB, ms);
+    R[j + 1] = R[j] * pi[j];
+  }
+
+  constexpr int NP = 22;
+  int   p_tok[NP], p_sf[NP], p_req[NP];
+  float p_ev[NP];
+  for (int j = 0; j < 7; ++j) {
+    const int t2 = (j < J && sp_tok[j][1] != s_toks[1 + j]) ? sp_tok[j][1] : -1;
+    p_tok[j] = t2; p_sf[j] = j; p_req[j] = -1;
+    p_ev[j] = t2 >= 0 ? R[j] * (1.f - pi[j]) * rho2[j] : -1.f;
+  }
+  for (int j = 0; j < 5; ++j) {
+    const int u = 7 + j;
+    const int t3 = (j < J && sp_tok[j][2] != s_toks[1 + j] && sp_tok[j][2] != sp_tok[j][1]) ? sp_tok[j][2] : -1;
+    const float decay = expf(-0.45f * fmaxf(0.f, sp_m[j][2] - sp_m[j][1] - 0.30f));
+    p_tok[u] = t3; p_sf[u] = j; p_req[u] = -1;
+    p_ev[u] = t3 >= 0 ? R[j] * (1.f - pi[j]) * rho3[j] * decay : -1.f;
+  }
+  {
+    const int t40 = J >= 1 ? sp_tok[0][3] : -1;
+    p_tok[12] = t40; p_sf[12] = 0; p_req[12] = -1;
+    p_ev[12] = t40 >= 0 ? R[0] * (1.f - pi[0]) * rho3[0] * 0.58f * expf(-0.55f * fmaxf(0.f, sp_m[0][3] - sp_m[0][2])) : -1.f;
+    const int t41 = J >= 2 ? sp_tok[1][3] : -1;
+    p_tok[13] = t41; p_sf[13] = 1; p_req[13] = -1;
+    p_ev[13] = t41 >= 0 ? R[1] * (1.f - pi[1]) * rho3[1] * 0.55f * expf(-0.55f * fmaxf(0.f, sp_m[1][3] - sp_m[1][2])) : -1.f;
+    const int t50 = J >= 1 ? sp_tok[0][4] : -1;
+    p_tok[14] = t50; p_sf[14] = 0; p_req[14] = -1;
+    p_ev[14] = t50 >= 0 ? R[0] * (1.f - pi[0]) * rho3[0] * 0.36f * expf(-0.55f * fmaxf(0.f, sp_m[0][4] - sp_m[0][3])) : -1.f;
+  }
+  {
+    const float pic0 = hb_lu(ed, t_pi + 1 * NB, bn_m[0] * GMUL);
+    const float rhc0 = hb_lu(ed, t_rho + 1 * NB, bn_m[0] * GMUL);
+    p_tok[15] = bn_tok[0]; p_sf[15] = 0; p_req[15] = 0;
+    p_ev[15] = (bn_tok[0] >= 0 && p_ev[0] > 0.f) ? p_ev[0] * pic0 : -1.f;
+
+    p_tok[16] = (bn_tok[1] >= 0 && bn_tok[1] != bn_tok[0]) ? bn_tok[1] : -1; p_sf[16] = 0; p_req[16] = 0;
+    p_ev[16] = (p_tok[16] >= 0 && p_ev[0] > 0.f) ? p_ev[0] * (1.f - pic0) * rhc0 : -1.f;
+
+    const float pic02 = hb_lu(ed, t_pi + 2 * NB, bn_m[2] * GMUL);
+    p_tok[17] = bn_tok[2]; p_sf[17] = 0; p_req[17] = 15;
+    p_ev[17] = (bn_tok[2] >= 0 && p_ev[15] > 0.f) ? p_ev[15] * pic02 : -1.f;
+
+    const float pic03 = hb_lu(ed, t_pi + 1 * NB, bn_m[3] * GMUL);
+    p_tok[18] = bn_tok[3]; p_sf[18] = 0; p_req[18] = 7;
+    p_ev[18] = (bn_tok[3] >= 0 && p_ev[7] > 0.f) ? p_ev[7] * pic03 : -1.f;
+
+    const float pic1 = hb_lu(ed, t_pi + 2 * NB, bn_m[4] * GMUL);
+    p_tok[19] = bn_tok[4]; p_sf[19] = 1; p_req[19] = 1;
+    p_ev[19] = (bn_tok[4] >= 0 && p_ev[1] > 0.f) ? p_ev[1] * pic1 : -1.f;
+
+    const float pic12 = hb_lu(ed, t_pi + 3 * NB, bn_m[5] * GMUL);
+    p_tok[20] = bn_tok[5]; p_sf[20] = 1; p_req[20] = 19;
+    p_ev[20] = (bn_tok[5] >= 0 && p_ev[19] > 0.f) ? p_ev[19] * pic12 : -1.f;
+
+    const float pic2 = hb_lu(ed, t_pi + 3 * NB, bn_m[6] * GMUL);
+    p_tok[21] = bn_tok[6]; p_sf[21] = 2; p_req[21] = 2;
+    p_ev[21] = (bn_tok[6] >= 0 && p_ev[2] > 0.f) ? p_ev[2] * pic2 : -1.f;
+  }
+
+  const int L_max = J < N_draft ? J : N_draft;
+  const int L_min = L_max < 3 ? L_max : 3;
+  int best_L = L_max;
+  int best_sel[13]; for (int q = 0; q < 13; ++q) best_sel[q] = -1;
+  float best_val = -1.f;
+
+  for (int Lc = L_max; Lc >= L_min; --Lc) {
+    const int want = N_draft - Lc;
+    if (want > 12) continue;
+    bool sel[NP];
+    for (int u = 0; u < NP; ++u) sel[u] = false;
+    int chosen[13]; int got = 0; float lsum = 0.f;
+    for (int q = 0; q < want; ++q) {
+      int bu = -1; float bev = -1.f;
+      for (int u = 0; u < NP; ++u) {
+        if (sel[u] || p_tok[u] < 0 || p_sf[u] >= Lc) continue;
+        if (p_req[u] >= 0 && !sel[p_req[u]]) continue;
+        if (p_ev[u] > bev) { bev = p_ev[u]; bu = u; }
+      }
+      if (bu < 0) break;
+      sel[bu] = true; chosen[got++] = bu;
+      lsum += fmaxf(0.f, bev);
+    }
+    if (got < want) continue;
+    float csum = 1.f; for (int d = 1; d <= Lc; ++d) csum += R[d];
+    if (csum + lsum > best_val) {
+      best_val = csum + lsum; best_L = Lc;
+      for (int q = 0; q < want; ++q) best_sel[q] = chosen[q];
+    }
+  }
+
+  const int L = best_L;
+  const int nl = N_draft - L;
+  int u_row[NP]; for (int u = 0; u < NP; ++u) u_row[u] = -1;
+  uint8_t par[16], dp[16], flen[16], anc[16];
+  bool has_ch[16];
+  for (int r = 0; r < 16; ++r) { par[r] = 0xffu; dp[r] = 0; flen[r] = 0; anc[r] = 0; has_ch[r] = false; }
+  for (int r = 0; r <= L; ++r) {
+    par[r] = r == 0 ? 0xffu : (uint8_t)(r - 1);
+    dp[r] = (uint8_t)r;
+    flen[r] = (uint8_t)r;
+    anc[r] = 0u;
+  }
+  bool multi_depth = false;
+  for (int q = 0; q < nl; ++q) {
+    const int u = best_sel[q];
+    const int row = L + 1 + q;
+    u_row[u] = row;
+    const int pr = p_req[u] < 0 ? p_sf[u] : u_row[p_req[u]];
+    par[row] = (uint8_t)pr;
+    dp[row] = (uint8_t)(dp[pr] + 1);
+    flen[row] = (uint8_t)(p_sf[u] + 1);
+    if (pr > L) {
+      multi_depth = true;
+      has_ch[pr] = true;
+      const int gpr = (int)par[pr];
+      if (gpr <= L) anc[row] = (uint8_t)(pr & 0xf);
+      else anc[row] = (uint8_t)((gpr & 0xf) | ((pr & 0xf) << 4));
+    }
+    toks[row] = p_tok[u];
+  }
+
+  uint8_t t[128];
+  for (int q = 0; q < 128; ++q) t[q] = 0u;
+  for (int r = 0; r < M_tree; ++r) {
+    t[r] = dp[r];
+    t[64 + r] = par[r];
+    t[96 + r] = flen[r];
+    t[112 + r] = anc[r];
+  }
+
+  if (!multi_depth) {
+    t[48] = 0u;
+    int o = 16;
+    for (int r = 0; r <= L; ++r) {
+      t[o++] = (uint8_t)r;
+      for (int q = 0; q < nl; ++q) {
+        const int row = L + 1 + q;
+        if ((int)par[row] == r) t[o++] = (uint8_t)(row | 0x80);
+      }
+    }
+  } else {
+    t[48] = 2u;
+    int o = 0;
+    bool prev_f_dirty = false;
+    for (int f = 0; f <= L; ++f) {
+      bool need_fork = false;
+      if (f < L) {
+        for (int q = 0; q < nl; ++q) {
+          const int r1 = L + 1 + q;
+          if ((int)par[r1] == f && has_ch[r1]) { need_fork = true; break; }
+        }
+      }
+      const uint8_t pop_f = prev_f_dirty ? 1u : 0u;
+      const uint8_t push_f = need_fork ? 16u : 0u;
+      t[16 + o] = (uint8_t)f;
+      t[80 + o] = pop_f | push_f;
+      ++o;
+      bool reg_is_f = true;
+      if (f < L) {
+        for (int q = 0; q < nl; ++q) {
+          const int r1 = L + 1 + q;
+          if ((int)par[r1] == f && !has_ch[r1]) {
+            t[16 + o] = (uint8_t)(r1 | 0x80);
+            t[80 + o] = 4u;
+            ++o;
+          }
+        }
+        for (int q = 0; q < nl; ++q) {
+          const int r1 = L + 1 + q;
+          if ((int)par[r1] == f && has_ch[r1]) {
+            t[16 + o] = (uint8_t)r1;
+            t[80 + o] = reg_is_f ? 0u : 1u;
+            ++o;
+            reg_is_f = false;
+            for (int q2 = 0; q2 < nl; ++q2) {
+              const int r2 = L + 1 + q2;
+              if ((int)par[r2] == r1 && !has_ch[r2]) {
+                t[16 + o] = (uint8_t)(r2 | 0x80);
+                t[80 + o] = 4u;
+                ++o;
+              }
+            }
+            for (int q2 = 0; q2 < nl; ++q2) {
+              const int r2 = L + 1 + q2;
+              if ((int)par[r2] == r1 && has_ch[r2]) {
+                t[16 + o] = (uint8_t)r2;
+                t[80 + o] = 0u;
+                ++o;
+                for (int q3 = 0; q3 < nl; ++q3) {
+                  const int r3 = L + 1 + q3;
+                  if ((int)par[r3] == r2) {
+                    t[16 + o] = (uint8_t)(r3 | 0x80);
+                    t[80 + o] = 4u;
+                    ++o;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      prev_f_dirty = !reg_is_f;
+    }
+  }
+
+  for (int q = 0; q < 128; ++q) wk[q] = t[q];
+  cfg[0] = L; cfg[1] = nl;
+  for (int q = 0; q < 14; ++q) {
+    const int row = L + 1 + q;
+    cfg[2 + q] = q < nl ? (((int)par[row] << 8) | (int)dp[row]) : 0;
+  }
 }
-void launch_bdr_hcap(int* toks, const int* alt, const int* alt3, const float* marg, const float* tab, uint8_t* wk, int* cfg, const int* cpl, const int* go,
-                       cudaStream_t st) {
-  launch_k(bdr_hcap_kernel, dim3(1), dim3(32), 0, st, toks, alt, alt3, marg, tab, wk, cfg, cpl, go); }
+void launch_bdr_hcap(const float* hp, const float* val, const int* idx, const uint16_t* pc, const uint16_t* sc,
+                     int* toks, const int* alt, const int* alt3, const float* marg, const float* tab,
+                     uint8_t* wk, int* cfg, const int* cpl, const int* go, int nj, cudaStream_t st) {
+  launch_k(bdr_omega_tree_kernel, dim3(1), dim3(32 * DTOPK), 0, st, hp, val, idx, pc, sc, toks, alt, alt3, marg, tab, wk, cfg, cpl, go, nj); }
 void launch_bdr_a8n(const float* x, int ld, int n, float eps, const uint16_t* w, const int8_t* signs, float* xn, int8_t* qx, float* alpha, int M, cudaStream_t st) {
   launch_k(bdr_a8n_kernel, dim3(n / 512, M), dim3(512), 0, st, x, ld, n, eps, w, signs, xn, qx, alpha); }
 void launch_bdr_a8_cap(const float* cap, int pmax, int row0, const int8_t* signs, int8_t* qx, float* alpha, int M, cudaStream_t st) {

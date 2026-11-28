@@ -256,7 +256,8 @@ void launch_bdr_glu_a8(long long* ag, long long* au, const float* us, const floa
 void launch_bdr_hproj(const float* hf, const uint16_t* w, float* hp, int rows, cudaStream_t);
 void launch_bdr_select(const float* hp, const float* val, const int* idx, const uint16_t* pc, const uint16_t* sc, int* toks, int* out,
                        const Q35SmpParams* prm, const int* cpl, const int* pos, int nj, cudaStream_t, int* alt = nullptr, float* marg = nullptr, int* alt3 = nullptr);   
-void launch_bdr_hcap(int* toks, const int* alt, const int* alt3, const float* marg, const float* tab, uint8_t* wk, int* cfg, const int* cpl, const int* go, cudaStream_t);
+void launch_bdr_hcap(const float* hp, const float* val, const int* idx, const uint16_t* pc, const uint16_t* sc,
+                     int* toks, const int* alt, const int* alt3, const float* marg, const float* tab, uint8_t* wk, int* cfg, const int* cpl, const int* go, int nj, cudaStream_t);
 // the drafter kernels of a multi-stream block (BdrMs / BdrMsCtx above); the single-stream launchers above are not changed by them
 void launch_bdr_block_ids_ms(const int* toks, int mask, int* ids, int M, const BdrMs& ms, cudaStream_t);
 void launch_bdr_a8n_rows(const float* x, int ld, int n, float eps, const uint16_t* w, const int8_t* signs, float* xn, int8_t* qx, float* alpha, int M,

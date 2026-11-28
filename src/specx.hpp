@@ -73,6 +73,11 @@ struct SpecxConfig {
   // experimental (a stream handed back from a slot, yskn_ms.h): the engine holds the prompt without its last token as its live
   // sequence, and that last token is the one the stream emitted last.  Nothing is read: the first pass checks it with its drafts.
   int frontier = 0;
+  // det: the copy loop decides by what the passes carried and never by their measured times, so that the same prompt
+  // gives the same widths, the same passes and the same ids on every run (speed no longer steers the width).
+  int det = 0;
+  // wide_need0: how many fully accepted copy passes a run must have before a wide pass is tried (2 = as before, 1 or 0 = sooner)
+  int wide_need0 = 2;
 };
 struct SpecxStats {
   int64_t passes = 0, tokens = 0, rows_hist[65] = {};

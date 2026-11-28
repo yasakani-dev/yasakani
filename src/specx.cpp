@@ -305,7 +305,7 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
   }
   stats.wide_mask = wide_on ? wmask : 0;
   if (c_.copy_index && bdr) ci_.reset((int)S_.size() + std::max(0, n_tokens) + 64);
-  cur_ = -1; last_src_ = -1; last_src_at_ = -1; wide_need_ = 2; wide_run_ = 0; wst_tok_ = 0; wst_ms_ = 0; wide_k_ = 0; wpv_tok_ = 0; wpv_ms_ = 0; wpv_k_ = 0;
+  cur_ = -1; last_src_ = -1; last_src_at_ = -1; wide_need_ = std::max(0, c_.wide_need0); wide_run_ = 0; wst_tok_ = 0; wst_ms_ = 0; wide_k_ = 0; wpv_tok_ = 0; wpv_ms_ = 0; wpv_k_ = 0;
   bool xw32 = false;                                               // 32-row copy passes: only with the exact-sum wide GEMV (cheap)
   if constexpr (std::is_same_v<Eng, Engine35>) xw32 = e_.xw_rows() >= 32;
   // drafter context of the rows committed by the last pass (more than 16 after a wide pass)
@@ -334,7 +334,7 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
   struct WkOff { Eng& e; bool on; FILE*& f; ~WkOff() { if constexpr (std::is_same_v<Eng, Engine35>) { if (on) { e.set_opt(6, 0); if (!f) e.set_opt(4, 0); } } } } wk_off{e_, wk_on, dump};
   for (double& x : wq_n_) x = 0; for (double& x : wq_h_) x = 0;
   const double wq0 = c_.wk_q_pm / 1000.0;
-  int nleaf = 0, kch = 0, leaf_row[16] = {}, leaf_depth[16] = {};
+  int nleaf = 0, kch = 0, leaf_row[16] = {}, leaf_depth[16] = {}, leaf_parent[16] = {};
   bool edit_enabled = false;
   if constexpr (std::is_same_v<Eng, Engine35>)
     edit_enabled = bdr && c_.use_d0 && c_.copy_index && e_.edit_copy_enabled();
@@ -383,7 +383,7 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
       }
     }
     int wideW = 0;                                                  // rows of this pass when it is a wide copy pass
-    bool hb_pass = false;
+    bool hb_pass = false; int hb_M = 0;
     
     const int g_eff0 = (c_.gamma_long > gamma && ((full_prev && n0 >= c_.long_n) || (c_.long_d0 > 0 && n0 >= c_.long_d0))) ? g_all : g_short;
     const int g_eff = bdr ? std::min(g_eff0, std::max(BDR_J, c_.bdr_d0_len)) : g_eff0;   
@@ -419,8 +419,19 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
         const bool run = !bdr_d0 || probe;                         
         if (probe && blk_mode && room16 > 7) { kdfl = room16; b16_pass = true; }   
                                                                                   
-        hb_pass = hb && !bdr_d0 && !b16_pass && kdfl == 7 && e_.position() + 8 <= e_.max_ctx();   
-        if (hb) e_.hcap_pass(hb_pass ? 1 : 0);
+        static const int omega_mode = [] { const char* e = std::getenv("YSKN_OMEGA"); return (e && e[0]) ? std::atoi(e) : 2; }();
+        static const double omega_t12 = [] { const char* e = std::getenv("YSKN_OMEGA_T12"); return (e && e[0]) ? std::atof(e) : 3.35; }();
+        static const double omega_t16 = [] { const char* e = std::getenv("YSKN_OMEGA_T16"); return (e && e[0]) ? std::atof(e) : 2.55; }();
+        const bool grd = e_.greedy_on();
+        hb_pass = hb && (omega_mode > 0 || !grd) && !bdr_d0 && !b16_pass && kdfl == 7 && e_.position() + 8 <= e_.max_ctx();
+        if (hb_pass) {
+          hb_M = 8;
+          if (false && grd) {
+            if (omega_mode >= 3 && b8_ema < omega_t16 && room >= 15 && e_.position() + 16 <= e_.max_ctx()) hb_M = 16;
+            else if (omega_mode >= 2 && b8_ema < omega_t12 && room >= 11 && e_.position() + 12 <= e_.max_ctx()) hb_M = 12;
+          }
+        }
+        if (hb) e_.hcap_pass(hb_pass ? hb_M : 0);
         const auto t_d = clk::now();
         if (run) e_.set_verify_tokens(&xF, 0, 1);
         feed_ctx(dctx_n, dctx_pos);
@@ -490,7 +501,7 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
               int rows = steps + 1;
               for (int x = 0; x < nc && nleaf < c_.lfrow && rows < 16 && e_.position() + rows + 1 <= e_.max_ctx(); ++x) {
                 if (gv[x] <= row_us(rows + 1)) break;
-                leaf_depth[nleaf] = gd[x]; leaf_row[nleaf] = rows; ++nleaf; ++rows; }
+                leaf_depth[nleaf] = gd[x]; leaf_parent[nleaf] = gd[x] - 1; leaf_row[nleaf] = rows; ++nleaf; ++rows; }
               if (nleaf) {                                         
                 uint8_t tab[48] = {}; for (int t = 0; t <= steps; ++t) tab[t] = (uint8_t)t;
                 int o = 16; for (int r = 0; r <= steps; ++r) { tab[o++] = (uint8_t)r;
@@ -523,7 +534,7 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
       else if (n0 > 0) take_d0();
     }
     
-    kch = (int)chain.size(); const int M = kch + 1 + nleaf;              
+    kch = (int)chain.size(); const int M = hb_pass ? hb_M : (kch + 1 + nleaf);
     const auto t_v = clk::now();
     bool hist_done = false;
     if constexpr (Eng::kVerifyRows) {
@@ -540,10 +551,10 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
       e_.verify_device(M, c_.use_graph, am.data(), dev_ids.data(), ti.data(), want_vals ? tv.data() : nullptr);
       if constexpr (std::is_same_v<Eng, Engine35>) {
         if (hb_pass) {                                             
-          int cf[8]; e_.hcap_cfg(cf); const int L = cf[0];
-          if (L < 4 || L > 7 || cf[1] != 7 - L) throw std::runtime_error("specx: bad HCAP cfg");
+          int cf[16]; e_.hcap_cfg(cf); const int L = cf[0];
+          if (L < 3 || L > 7 || cf[1] != (M - 1) - L) throw std::runtime_error("specx: bad HCAP cfg");
           chain.resize(L); src.resize(L); kch = L; nleaf = cf[1];
-          for (int i = 0; i < nleaf; ++i) { leaf_row[i] = L + 1 + i; leaf_depth[i] = cf[2 + i]; }
+          for (int i = 0; i < nleaf; ++i) { leaf_row[i] = L + 1 + i; leaf_depth[i] = cf[2 + i] & 0xff; leaf_parent[i] = cf[2 + i] >> 8; }
         }
       }
       if (dev_ids[0] != xF) throw std::runtime_error("specx: verify row 0 is not the frontier token");
@@ -603,33 +614,65 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
         if (a == edit_first) edits.missed();                      // the target rejected the edit itself: count it against the rule
       }
     }
-    int hit_row = -1;                                             
+    int acc_rows[4] = {-1, -1, -1, -1}; int n_off_acc = 0;
     if (nleaf && !stop && a == a_all && a < kch) {
       bool any = false;
-      for (int i = 0; i < nleaf; ++i) if (leaf_depth[i] == a + 1) { any = true; if (hit_row < 0 && dev_ids[leaf_row[i]] == am[a]) hit_row = leaf_row[i]; }
-      if (any) { wq_n_[a] = 0.97 * wq_n_[a] + 1.0; wq_h_[a] = 0.97 * wq_h_[a] + (hit_row >= 0 ? 1.0 : 0.0); stats.leaf_breaks++; }
-      if (hit_row >= 0) stats.leaf_hits++;
+      for (int i = 0; i < nleaf; ++i) if (leaf_parent[i] == a) { any = true; if (acc_rows[0] < 0 && dev_ids[leaf_row[i]] == am[a]) acc_rows[0] = leaf_row[i]; }
+      if (any) { wq_n_[a] = 0.97 * wq_n_[a] + 1.0; wq_h_[a] = 0.97 * wq_h_[a] + (acc_rows[0] >= 0 ? 1.0 : 0.0); stats.leaf_breaks++; }
+      if (acc_rows[0] >= 0) {
+        n_off_acc = 1;
+        stats.leaf_hits++;
+        int cur_r = acc_rows[0];
+        if (is_eos(am[cur_r])) stop = true;
+        while (!stop && n_off_acc < 4) {
+          int nxt_r = -1;
+          for (int i = 0; i < nleaf; ++i) {
+            if (leaf_parent[i] == cur_r && dev_ids[leaf_row[i]] == am[cur_r]) { nxt_r = leaf_row[i]; break; }
+          }
+          if (nxt_r < 0) break;
+          acc_rows[n_off_acc++] = nxt_r;
+          stats.leaf_hits++;
+          cur_r = nxt_r;
+          if (is_eos(am[cur_r])) stop = true;
+        }
+      }
     }
     stats.leaves += nleaf;
-    if constexpr (std::is_same_v<Eng, Engine35>) { if (hit_row >= 0) e_.lfrow_promote(hit_row, a + 1); }   
-    const int n_commit = hit_row >= 0 ? a + 1 : a;
-    if (d3l && !hist_done) e_.hist_store(F, n_commit + 1);         
-    const float* tvp = want_vals ? tv.data() : nullptr;           
-    
+    if constexpr (std::is_same_v<Eng, Engine35>) {
+      for (int m = 0; m < n_off_acc; ++m) e_.lfrow_promote(acc_rows[m], a + 1 + m);
+    }
+    const int n_commit = a + n_off_acc;
+    if (d3l && !hist_done) e_.hist_store(F, n_commit + 1);
+    const float* tvp = want_vals ? tv.data() : nullptr;
+
     const auto t_r = clk::now();
-    auto in_tok = [&](int j) -> int32_t { return j >= 0 ? ids[j] : (j == -1 ? xP : xQ); };   
+    auto in_tok = [&](int j) -> int32_t { return j >= 0 ? ids[j] : (j == -1 ? xP : xQ); };
     if (c_.d1_rejected) for (int j = a + 1; j <= kch; ++j) record(in_tok(j - 2), in_tok(j - 1), ids[j], ti.data() + j * 8, tvp ? tvp + j * 8 : nullptr);
     for (int j = 0; j <= a; ++j) record(in_tok(j - 2), in_tok(j - 1), ids[j], ti.data() + j * 8, tvp ? tvp + j * 8 : nullptr);
-    if (hit_row >= 0) record(in_tok(a - 1), in_tok(a), am[a], ti.data() + hit_row * 8, tvp ? tvp + hit_row * 8 : nullptr);   
+    for (int m = 0; m < n_off_acc; ++m) {
+      const int32_t t_m2 = m == 0 ? in_tok(a - 1) : (m == 1 ? in_tok(a) : dev_ids[acc_rows[m - 2]]);
+      const int32_t t_m1 = m == 0 ? in_tok(a)     : dev_ids[acc_rows[m - 1]];
+      const int r_cur = acc_rows[m];
+      record(t_m2, t_m1, dev_ids[r_cur], ti.data() + r_cur * 8, tvp ? tvp + r_cur * 8 : nullptr);
+    }
     stats.ms_record += ms_since(t_r);
     full_prev = !chain.empty() && a == (int)chain.size();
-    
+
     const auto t_c = clk::now(); e_.commit(n_commit); stats.ms_commit += ms_since(t_c); prev_a = n_commit;
-    if constexpr (std::is_same_v<Eng, Engine35>) {                
-      if (bdr) { dctx_n = n_commit + 1; dctx_pos = F; } }       
+    if constexpr (std::is_same_v<Eng, Engine35>) {
+      if (bdr) { dctx_n = n_commit + 1; dctx_pos = F; } }
     for (int j = 0; j < a; ++j) { S_.push_back(chain[j]); if (produced < n_tokens) out[produced] = chain[j]; ++produced; }
-    S_.push_back(am[a]); if (produced < n_tokens) out[produced] = am[a]; ++produced;   
-    if (hit_row >= 0) { S_.push_back(am[hit_row]); if (produced < n_tokens) out[produced] = am[hit_row]; ++produced; if (is_eos(am[hit_row])) stop = true; }
+    if (n_off_acc == 0) {
+      S_.push_back(am[a]); if (produced < n_tokens) out[produced] = am[a]; ++produced;
+    } else {
+      for (int m = 0; m < n_off_acc; ++m) {
+        const int32_t tk_m = dev_ids[acc_rows[m]];
+        S_.push_back(tk_m); if (produced < n_tokens) out[produced] = tk_m; ++produced;
+      }
+      const int32_t tk_last = am[acc_rows[n_off_acc - 1]];
+      S_.push_back(tk_last); if (produced < n_tokens) out[produced] = tk_last; ++produced;
+      if (is_eos(tk_last)) stop = true;
+    }
     {                                                               // the copy cursor follows the source while the output does
       const int ne = (int)S_.size() - (F + 1);
       if (exp_src >= 0) {
@@ -644,7 +687,7 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
         if (wideW) {
           double& tw = wideW == 64 ? t64_ : (wideW == 48 ? t48_ : t32_);
           const double tp = std::min(t_pass, 2.0 * tw);              // a stall (e.g. of the OS) counts as at most twice the usual time
-          tw += (tp - tw) / 8.0;
+          if (!c_.det) tw += (tp - tw) / 8.0;      // det: the width that was measured does not steer the next one
           stats.wide_passes++; stats.wide_tok += a + 1; if (full) stats.wide_full++;
           // an edit pass (edit copy) is not part of a copy run: only its time counts (above), not the wide statistics or the run
           if (edit_rows == 0) { wst_tok_ += a + 1; wst_ms_ += tp; ++wide_k_; }   // 0.1.7: the measured time of each pass (was the running mean)
@@ -653,14 +696,16 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
             // is judged together with the window checked before it (so a partly accepted pass at the end of a copy is not judged alone)
             const bool merge = !full && wide_k_ < 4 && wpv_k_ > 0;
             const double tok = wst_tok_ + (merge ? wpv_tok_ : 0.0), ms = wst_ms_ + (merge ? wpv_ms_ : 0.0);
-            const bool won = tok * std::max(1.0, t16_) >= 16.0 * ms;
-            if (won) wide_need_ = 2; else { wide_need_ = std::min(16, wide_need_ * 2); stats.wide_backoffs++; }
+            const int nk = wide_k_ + (merge ? wpv_k_ : 0);
+            // det: the same question without the clock - did these passes carry at least 16 tokens each (the rate of a 16-row pass)?
+            const bool won = c_.det ? (tok >= 16.0 * nk) : (tok * std::max(1.0, t16_) >= 16.0 * ms);
+            if (won) wide_need_ = std::max(0, c_.wide_need0); else { wide_need_ = std::min(16, wide_need_ * 2); stats.wide_backoffs++; }
             if (full && won) { wpv_tok_ = wst_tok_; wpv_ms_ = wst_ms_; wpv_k_ = wide_k_; } else { wpv_tok_ = 0; wpv_ms_ = 0; wpv_k_ = 0; }
             wst_tok_ = 0; wst_ms_ = 0; wide_k_ = 0;
             if (!full || !won) wide_run_ = 0;                       // back to 16 rows (a slower run stops at once)
           }
         } else {
-          if (M == 16) t16_ += (std::min(t_pass, 2.0 * t16_) - t16_) / 8.0;
+          if (M == 16 && !c_.det) t16_ += (std::min(t_pass, 2.0 * t16_) - t16_) / 8.0;
           if (edit_rows > 0) {} else if (full && (int)chain.size() >= BDR_J) ++wide_run_; else wide_run_ = 0;   // edit passes leave the run
         }
       } else wide_run_ = 0;
@@ -675,10 +720,10 @@ template <class Eng> void SpecxT<Eng>::generate(int n_tokens, int32_t* out) {
                   dpend_.erase(dpend_.begin() + (std::ptrdiff_t)i); } else ++i;
     }
     if (c_.mark_tok >= 0 && stats.mark_at < 0)                    
-      for (int64_t q = std::max<int64_t>(0, produced - (a + 1 + (hit_row >= 0 ? 1 : 0))); q < std::min<int64_t>(produced, n_tokens); ++q)
+      for (int64_t q = std::max<int64_t>(0, produced - (a + 1 + n_off_acc)); q < std::min<int64_t>(produced, n_tokens); ++q)
         if (out[q] == c_.mark_tok) { stats.mark_at = q + 1; stats.ms_mark = ms_since(t_loop); break; }   
     
-    const int emitted = a + 1 + (hit_row >= 0 ? 1 : 0);
+    const int emitted = a + 1 + n_off_acc;
     stats.passes++; stats.tokens += emitted; stats.rows_hist[M]++; if (chain.empty()) stats.chain_none++;
     for (int k = 0; k < (int)chain.size(); ++k) { stats.drafted[src[k]]++; if (k < a) stats.accepted[src[k]]++; }
     recent_.push_back(emitted); if (recent_.size() > 64) recent_.erase(recent_.begin());

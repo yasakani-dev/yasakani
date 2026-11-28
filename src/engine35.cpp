@@ -453,7 +453,7 @@ Engine35::Engine35(const std::string& path, int max_ctx, int flags) : flags_(fla
   { const char* f = std::getenv("YSKN_Q35_FA"); if (f && f[0]) fa_ = std::atoi(f); const char* s = std::getenv("YSKN_Q35_FA_SPLITS"); if (s && std::atoi(s) > 0) fa_splits_ = std::min(32, std::atoi(s)); }
   if (xsm_) { us_ = dz35<float>((size_t)M * 4); S_ = dz35<float>((size_t)M * Q35_SST * 4); ybuf_ = dz35<float>(part_floats_ * 4); }
   cudaMallocHost(&h_pin_, (size_t)PIN_N * 4); cudaMallocHost(&h_pinf_, (size_t)PINF_N * 4); cudaMallocHost(&h_dec_, (size_t)max_ctx_ * 4);
-  d_wk_ = dz35<uint8_t>(64); cudaMallocHost(&h_wk_, 4 * 64);           
+  d_wk_ = dz35<uint8_t>(128); cudaMallocHost(&h_wk_, 4 * 128);           
   cudaStreamSynchronize(st_);
   const cudaError_t e = cudaGetLastError(); if (e != cudaSuccess) throw std::runtime_error(std::string("Engine35 load: ") + cudaGetErrorString(e));
   size_t fr = 0, tot = 0; cudaMemGetInfo(&fr, &tot);
@@ -947,6 +947,8 @@ void Engine35::attn_block(Q35Layer& Y, int M, const int* dpos, int* slices) {
 #endif
     }
   }
+  if (cap_ && cap_stage_ == 3) for (size_t k = 0; k < cap_layers_.size(); ++k) if (cap_layers_[k] == &Y - L_.data())
+    cudaMemcpyAsync(cap_ + k * (size_t)Pmax_ * H_, q16_, (size_t)M * H_ * 2, cudaMemcpyDeviceToDevice, st_);
   const bool fa = fa_ && M > HM_; const int sp = atx_ ? atx_splits_ : (fa ? fa_splits_ : splits_);   
   const bool kz = kz_ && atx_ && Y.k8;                                    
   float* const kdbg = (kz && kz_dbg_ && (int)(&Y - L_.data()) == kz_dbg_layer_) ? kz_dbg_ : nullptr;
@@ -1082,9 +1084,14 @@ void Engine35::layer(int l, int M, int n_commit) {
                                          launch_q35_state_ms(SA, Q35StateMs{ms_rows(), ms_tab_[l].S, ms_tab_[l].hist, Kp.tk, Kp.tv, Kp.tbeta, Kp.tg}, st_); }
                           else if (wk_now_) launch_wk_state(SA, d_wk_, st_); else launch_q35_state(SA, st_); }
     if (S && !ks(4096)) launch_q35_gdn_out(Q35GdnOutArgs{core_, z_, Y.gnorm, eps_, M, Y.out.signs_in, qx_, alpha_, lo_now_ ? 1 : 0}, st_);
+    if (cap_ && cap_stage_ == 2) for (size_t k = 0; k < cap_layers_.size(); ++k) if (cap_layers_[k] == l) {
+      for (int rr = 0; rr < M; ++rr) cudaMemcpyAsync(cap_ + k * (size_t)Pmax_ * H_ + (size_t)rr * H_, core_ + (size_t)rr * Q35_Z,
+                                                 (size_t)H_ * 4, cudaMemcpyDeviceToDevice, st_); }
     if (pf_on(4, M)) next_pf_ = pf_of({&Y.gate, &Y.up}, l2pf_mb_[0]);
     gemv_res(Y.out, M, Y.ln2, Y.gate.signs_in, nullptr);
   } else attn_block(Y, M, d_pos_, pos_slices_);
+  if (cap_ && cap_stage_ == 1) for (size_t k = 0; k < cap_layers_.size(); ++k) if (cap_layers_[k] == l)
+    cudaMemcpyAsync(cap_ + k * (size_t)Pmax_ * H_, h_, (size_t)M * H_ * 4, cudaMemcpyDeviceToDevice, st_);
   if (!tq_qx_ && flow_ok(M)) { flow_mlp(Y, M, l); return; }                       
   mlp_block(Y, M, false);
   if (l + 1 < nlayers_ && pf_on(16, M)) { const Q35Layer& Nx = L_[l + 1]; next_pf_ = Nx.full ? pf_of({&Nx.q, &Nx.k}, l2pf_mb_[2]) : pf_of({&Nx.qkv, &Nx.z}, l2pf_mb_[2]); }
@@ -1165,11 +1172,12 @@ void Engine35::pass_body(int M, bool commit, int upto, int head_mode, bool topk,
   g_pdl_rows = M; xsmc_ = xsm_ != 0; wk_now_ = wk_pass(M, commit, head_mode);
   pf2_live_ = l2pf2_mb_ > 0 && xsmc_ && M <= 16; if (pf2_live_) cudaEventRecord(ev_g_, st_);   
   lo_now_ = opt_lo_ && xsmc_ && M <= 8 && !opt_flow_ && !(opt_fin_ && M == 1) && !(chk_on_ && !chk_.empty());   
+  const int pass_nc = run_nc_ >= 0 ? run_nc_ : (commit ? M : 0);
   const Q35Layer& L0 = L_[0];
   res_norm(nullptr, M, L0.ln1, L0.full ? L0.q.signs_in : L0.qkv.signs_in, L0.full ? nullptr : xn_);   
   for (int l = 0; l < upto; ++l) {
-    layer(l, M, commit ? M : 0);
-    if (cap_) for (size_t k = 0; k < cap_layers_.size(); ++k) if (cap_layers_[k] == l)   
+    layer(l, M, pass_nc);
+    if (cap_ && cap_stage_ == 0) for (size_t k = 0; k < cap_layers_.size(); ++k) if (cap_layers_[k] == l)   
       cudaMemcpyAsync(cap_ + k * (size_t)Pmax_ * H_, h_, (size_t)M * H_ * 4, cudaMemcpyDeviceToDevice, st_);
   }
   g_pdl_rows = std::min(M, HM_);
@@ -1208,15 +1216,15 @@ void Engine35::replay_commit(int rows) {
   replay_fence(); cudaGraphLaunch(it->second, st_);
 }
 void Engine35::lfrow_table(const uint8_t* tab48) {
-  uint8_t* stg = h_wk_ + 64 * (wk_slot_++ & 3); std::memcpy(stg, tab48, 48);
-  cudaMemcpyAsync(d_wk_, stg, 48, cudaMemcpyHostToDevice, st_); wk_set_ = true;
+  uint8_t* stg = h_wk_ + 128 * (wk_slot_++ & 3); std::memset(stg, 0, 128); std::memcpy(stg, tab48, 48);
+  cudaMemcpyAsync(d_wk_, stg, 128, cudaMemcpyHostToDevice, st_); wk_set_ = true;
 }
 void Engine35::wk_plain_table() {
   uint8_t t[48] = {}; for (int i = 0; i < 16; ++i) { t[i] = (uint8_t)i; t[16 + i] = (uint8_t)i; }
   lfrow_table(t);
 }
 void Engine35::lfrow_fill(int k, int M) { if (mtp_.on) launch_wk_fill(d_toks_, d_wk_, mtp_.lg_idx, k, M, st_); }
-void Engine35::hcap_cfg(int* out8) const { std::memcpy(out8, h_pin_ + PIN_HB, 8 * 4); }
+void Engine35::hcap_cfg(int* out16) const { std::memcpy(out16, h_pin_ + PIN_HB, 16 * 4); }
 void Engine35::lfrow_promote(int src, int dst) {
   if (!d_wkcopy_) {                                                   
     std::vector<WkCopy> v;
@@ -1317,6 +1325,9 @@ void Engine35::set_opt(int key, int value) {
     else smp_p_.seed = (unsigned long long)(unsigned)value;
     cudaStreamSynchronize(st_); cudaMemcpy(d_smp_, &smp_p_, sizeof(Q35SmpParams), cudaMemcpyHostToDevice);
   }
+  else if (key == 45) { if (value < 0 || value > 3) throw std::runtime_error("set_opt 45: capture stage must be 0..3");
+  else if (value != cap_stage_) drop_pass_graphs(); cap_stage_ = value; }
+  else if (key == 44) { const int n = std::max(0, std::min(HM_, value)); if (n != decl_nc_) drop_pass_graphs(); decl_nc_ = n; }
   else throw std::runtime_error("set_opt: unknown key " + std::to_string(key));
 }
 
@@ -2010,7 +2021,7 @@ void Engine35::run_pass(int M, bool commit, int head_mode, bool topk, bool nll, 
   if (!commit) last_keep_ = (opt_kconv_ && M <= HM_) ? 1 : 0;          // what layer() does; the commit replay must match it
   if (!use_graph) { pass_body(M, commit, nlayers_, head_mode, topk, nll, false); return; }
   const int key = M * 64 + (commit ? 32 : 0) + head_mode * 4 + (topk ? 2 : 0) + (nll ? 1 : 0) + (opt_kconv_ ? (1 << 30) : 0)
-                  + (wk_pass(M, commit, head_mode) ? (1 << 29) : 0) + (atx_ ? (1 << 28) : 0) + (smp_ ? (1 << 27) : 0); auto it = pgraph_.find(key);
+                  + (wk_pass(M, commit, head_mode) ? (1 << 29) : 0) + ((!commit && decl_nc_ > 0) ? (decl_nc_ << 20) : 0) + (atx_ ? (1 << 28) : 0) + (smp_ ? (1 << 27) : 0); auto it = pgraph_.find(key);
   const bool rd = commit && M > HM_;                                     // a pass of a read (its graphs are kept LRU, read_graph_room)
   if (it == pgraph_.end()) {
     if (rd) read_graph_room();
@@ -2432,7 +2443,9 @@ void Engine35::verify(const int32_t* ids, int M, int use_graph, int32_t* out_arg
   upload_rows(ids, M, targets);
   const bool c1 = M == 1 && (opt_single_commit_ == 2 || (opt_single_commit_ == 1 && specx_scope_));   
   if (wk_pass(M, c1, HEAD_ALL) && !wk_set_) wk_plain_table();          
+  run_nc_ = (!c1 && decl_nc_ > 0 && decl_nc_ <= M) ? decl_nc_ : -1;
   run_pass(M, c1, HEAD_ALL, true, targets != nullptr, use_graph != 0); pre_committed_ = c1; wk_set_ = false;
+  run_nc_ = -1;
   if (mtp_.on) cudaMemcpyAsync(mtp_.vtoks, d_toks_, (size_t)M * 4, cudaMemcpyDeviceToDevice, st_);
   if (targets) cudaMemcpyAsync(h_pinf_ + PINF_NLL, d_nll8_, (size_t)M * 4, cudaMemcpyDeviceToHost, st_);
   cudaMemcpyAsync(h_pin_ + PIN_AM, d_next8_, (size_t)M * 4, cudaMemcpyDeviceToHost, st_);
@@ -2450,7 +2463,7 @@ void Engine35::commit(int n_accept) {
   ++sh_epoch_;
   if (n_accept < 0 || n_accept >= last_M_) throw std::runtime_error("commit: n_accept out of range of the last verify pass");
   if (pre_committed_) { if (n_accept != 0) throw std::runtime_error("commit: the 1-row verify pass committed already"); }
-  else replay_commit(n_accept + 1);                                     
+  else if (!(decl_nc_ > 0 && n_accept + 1 == decl_nc_)) replay_commit(n_accept + 1);   // in-pass state write (set_opt 44)                                     
   pre_committed_ = false;
   pos_ += n_accept + 1;
   if (opt_rp_defer_) { SetInts S; S.set(d_pos_, pos_); S.copy(d_toks_, d_next8_ + n_accept); launch_set_ints(S, st_); }   
@@ -2659,7 +2672,7 @@ void Engine35::verify_device(int M, int use_graph, int32_t* out_argmax, int32_t*
   cudaMemcpyAsync(h_pin_ + PIN_IDS, d_toks_, (size_t)M * 4, cudaMemcpyDeviceToHost, st_);
   if (top_ids) cudaMemcpyAsync(h_pin_ + PIN_TI, top_idx_, (size_t)M * 32, cudaMemcpyDeviceToHost, st_);
   if (top_vals) cudaMemcpyAsync(h_pinf_ + PINF_TV, top_val_, (size_t)M * 32, cudaMemcpyDeviceToHost, st_);
-  if (bdr_.on && bdr_.hb_on) cudaMemcpyAsync(h_pin_ + PIN_HB, bdr_.hb_cfg, 8 * 4, cudaMemcpyDeviceToHost, st_);   
+  if (bdr_.on && bdr_.hb_on) cudaMemcpyAsync(h_pin_ + PIN_HB, bdr_.hb_cfg, 16 * 4, cudaMemcpyDeviceToHost, st_);   
   cudaStreamSynchronize(st_);
   const cudaError_t e = cudaGetLastError(); if (e != cudaSuccess) throw std::runtime_error(std::string("verify_device: ") + cudaGetErrorString(e));
   if (out_argmax) std::memcpy(out_argmax, h_pin_ + PIN_AM, (size_t)M * 4);
@@ -2875,6 +2888,7 @@ int Engine35::state_hash(uint64_t* out, int max_out) {
   put((uint64_t)pos_);
   for (Q35Layer& Y : L_) {
     if (!Y.full) { put(dev(H0, Y.S, (size_t)Q35_GV * Q35_GD * Q35_GD * 4)); put(dev(H0, Y.hist, (size_t)3 * Q35_CONV * 2)); continue; }
+    put(dev(H0, Y.hist, (size_t)3 * Q35_CONV * 2));     // ARENA-r22: the conv history of an attention layer is state too (it was not hashed)
     uint64_t hk = H0, hv = H0, hks = H0, hvs = H0;
     for (int kh = 0; kh < Q35_KVH; ++kh) {
       const size_t r = (size_t)kh * max_ctx_;
@@ -2891,6 +2905,30 @@ int Engine35::state_hash(uint64_t* out, int max_out) {
   const cudaError_t e = cudaGetLastError();
   if (e != cudaSuccess) throw std::runtime_error(std::string("state_hash: ") + cudaGetErrorString(e));
   return n;
+}
+
+int Engine35::hist_dump(int layer, uint16_t* out, int max_words) {
+  if (layer < 0 || layer >= (int)L_.size()) throw std::runtime_error("hist_dump: layer");
+  const int n = 3 * Q35_CONV;
+  if (!out || max_words < n) throw std::runtime_error("hist_dump: buffer too small");
+  cudaStreamSynchronize(st_);        // no replay_fence: it disturbs the pass that follows the dump
+  if (cudaMemcpy(out, L_[(size_t)layer].hist, (size_t)n * 2, cudaMemcpyDeviceToHost) != cudaSuccess)
+    throw std::runtime_error("hist_dump: copy failed");
+  return n;
+}
+
+int Engine35::layer_hash(int layer, int which, uint64_t* out) {
+  if (layer < 0 || layer >= (int)L_.size()) throw std::runtime_error("layer_hash: layer");
+  if (!out) throw std::runtime_error("layer_hash: out");
+  const Q35Layer& Y = L_[(size_t)layer];
+  const void* p = which == 0 ? (const void*)Y.hist : (const void*)Y.S;
+  const size_t bytes = which == 0 ? (size_t)3 * Q35_CONV * 2 : (size_t)Q35_GV * Q35_GD * Q35_GD * 4;
+  if (!p) { *out = 0ull; return 0; }        // a layer without this buffer (never a failure)
+  std::vector<uint8_t> b(bytes);
+  cudaStreamSynchronize(st_);
+  if (cudaMemcpy(b.data(), p, bytes, cudaMemcpyDeviceToHost) != cudaSuccess) throw std::runtime_error("layer_hash: copy failed");
+  *out = fnv_words(0xcbf29ce484222325ull, b);
+  return 0;
 }
 
 void Engine35::load_bdraft(const std::string& path) {
@@ -2971,7 +3009,7 @@ void Engine35::load_bdraft(const std::string& path) {
         }
       }
     } }
-  { bdr_.alt = dz35<int>(BDR_B * 4); bdr_.alt3 = dz35<int>(BDR_B * 4); bdr_.marg = dz35<float>(BDR_B * 4); bdr_.hb_cfg = dz35<int>(8 * 4); bdr_.hb_go = dz35<int>(4);   
+  { bdr_.alt = dz35<int>(BDR_B * 4); bdr_.alt3 = dz35<int>(BDR_B * 4); bdr_.marg = dz35<float>(BDR_B * 4); bdr_.hb_cfg = dz35<int>(16 * 4); bdr_.hb_go = dz35<int>(4);   
     #include "hcap_tables.inc"
     std::vector<float> tb; tb.insert(tb.end(), HB_EDGES, HB_EDGES + 11); tb.insert(tb.end(), HB_PI, HB_PI + 84); tb.insert(tb.end(), HB_RHO, HB_RHO + 84); tb.insert(tb.end(), HB_RHO3, HB_RHO3 + 84);
     bdr_.hb_tab = dz35<float>(tb.size() * 4); cudaMemcpy(bdr_.hb_tab, tb.data(), tb.size() * 4, cudaMemcpyHostToDevice);
@@ -3117,7 +3155,7 @@ void Engine35::bdr_block_impl(int* toks, bool hcap, int rows) {
   }
   launch_bdr_hproj(bdr_.hf, bdr_.hp, bdr_.hpv, J, st_);
   launch_bdr_select(bdr_.hpv, bdr_.tval, bdr_.tidx, bdr_.pc, bdr_.sc, toks, bdr_.out, d_smp_, bdr_.cpl, bdr_.pos, J, st_, bdr_.alt, bdr_.marg, bdr_.alt3);
-  if (hcap && bdr_.hb_on) launch_bdr_hcap(toks, bdr_.alt, bdr_.alt3, bdr_.marg, bdr_.hb_tab, d_wk_, bdr_.hb_cfg, bdr_.cpl, bdr_.hb_go, st_);   
+  if (hcap && bdr_.hb_on) launch_bdr_hcap(bdr_.hpv, bdr_.tval, bdr_.tidx, bdr_.pc, bdr_.sc, toks, bdr_.alt, bdr_.alt3, bdr_.marg, bdr_.hb_tab, d_wk_, bdr_.hb_cfg, bdr_.cpl, bdr_.hb_go, J, st_);   
 }
 void Engine35::bdraft_draft(int use_graph) { bdraft_step(0, 0, 1, use_graph); }
 void Engine35::bdraft_step(int n_ctx, int pos_ctx, int draft, int use_graph) {
@@ -3149,6 +3187,14 @@ void Engine35::bdraft_ring(int layer, int slot0, int n, uint16_t* k_out, uint16_
     cudaMemcpy(k_out + (size_t)hh * n * 128, bdr_.rk[layer] + ((size_t)hh * 2048 + slot0) * 128, (size_t)n * 128 * 2, cudaMemcpyDeviceToHost);
     cudaMemcpy(v_out + (size_t)hh * n * 128, bdr_.rv[layer] + ((size_t)hh * 2048 + slot0) * 128, (size_t)n * 128 * 2, cudaMemcpyDeviceToHost);
   }
+}
+int Engine35::bdraft_cands(int32_t* ids, float* vals) {
+  if (!bdr_.on) throw std::runtime_error("bdraft_cands: no drafter loaded");
+  cudaStreamSynchronize(st_);
+  const cudaError_t e = cudaGetLastError(); if (e != cudaSuccess) throw std::runtime_error(std::string("bdraft_cands: ") + cudaGetErrorString(e));
+  cudaMemcpy(ids, bdr_.tidx, (size_t)BDR_J * 16 * 4, cudaMemcpyDeviceToHost);
+  cudaMemcpy(vals, bdr_.tval, (size_t)BDR_J * 16 * 4, cudaMemcpyDeviceToHost);
+  return BDR_J;
 }
 int Engine35::bdraft_out(int32_t* drafts) {
   cudaMemcpyAsync(h_pin_ + PIN_GT, bdr_.out, BDR_J * 4, cudaMemcpyDeviceToHost, st_); cudaStreamSynchronize(st_);

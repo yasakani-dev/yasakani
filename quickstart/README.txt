@@ -1,4 +1,4 @@
-﻿YASAKANI quickstart 0.3.5
+﻿YASAKANI quickstart 0.4.0
 =========================
 
 日本語

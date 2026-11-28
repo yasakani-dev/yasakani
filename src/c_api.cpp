@@ -153,7 +153,9 @@ extern "C" int yskn_spec_generate(yskn_engine* e, const int32_t* prompt, int n_p
     if (n_cfg > 41) c.prefill_head = cfg[41]; if (n_cfg > 42) c.snap = cfg[42]; if (n_cfg > 43) c.snap_tok = cfg[43];
     if (n_cfg > 44) c.copy_rows = std::max(1, std::min(yskn::Engine35::kVerifyMax, (int)cfg[44]));
     if (n_cfg > 45) c.copy_index = cfg[45];   
-    if (n_cfg > 46) c.frontier = cfg[46];      // experimental (yskn_ms.h): the last prompt token is the frontier, not read
+    if (n_cfg > 46) c.frontier = cfg[46];
+  if (n_cfg > 47) c.det = cfg[47];      // det: no decision of the copy loop depends on a measured time
+  if (n_cfg > 48) c.wide_need0 = std::max(0, cfg[48]);   // wide_need0: accepted copy passes before a wide pass is tried      // experimental (yskn_ms.h): the last prompt token is the frontier, not read
     auto run = [&](auto& y) {
       using clk = std::chrono::steady_clock; using ms = std::chrono::duration<double, std::milli>;
       // the frontier form reads nothing: its first pass checks the frontier, so out_ids[0] is that pass's first token, and the
@@ -291,6 +293,8 @@ extern "C" unsigned yskn_xsum_nonfinite(yskn_engine* e) { try { on_gpu(e); } cat
 extern "C" int yskn_draft_catchup(yskn_engine* e, int p0, int n, const int32_t* toks, int use_graph) { YSKN_TRY(YSKN_NO_INK2("draft_catchup") ms_gate(e); if (e->q) e->q->draft_catchup(p0, n, toks, use_graph); else e->e->draft_catchup(p0, n, toks, use_graph)) }
 extern "C"  int yskn_debug_kv_hash(yskn_engine* e, uint64_t* out) { YSKN_TRY(*out = E(e).debug_kv_hash()) }
 extern "C" YSKN_API int yskn_state_hash(yskn_engine* e, uint64_t* out, int max_out, int* n_out) { YSKN_TRY(if (!e->q) throw std::runtime_error("state_hash: qwen3_5 engine only"); *n_out = e->q->state_hash(out, max_out)) }
+extern "C" YSKN_API int yskn_layer_hash(yskn_engine* e, int layer, int which, uint64_t* out) { YSKN_TRY(if (!e->q) throw std::runtime_error("layer_hash: qwen3_5 engine only"); return e->q->layer_hash(layer, which, out)) }
+extern "C" YSKN_API int yskn_hist_dump(yskn_engine* e, int layer, uint16_t* out, int max_words) { YSKN_TRY(if (!e->q) throw std::runtime_error("hist_dump: qwen3_5 engine only"); return e->q->hist_dump(layer, out, max_words)) }
 extern "C"  int yskn_chk_set(yskn_engine* e, const char* name, const long long* c, int Kc, unsigned long long key, int w_max, int* idx) { YSKN_TRY(if (!e->q) throw std::runtime_error("chk: qwen3_5 engine only"); *idx = e->q->chk_set(name, c, Kc, key, w_max)) }
 extern "C"  int yskn_chk_stats(yskn_engine* e, unsigned long long* out, int reset) { YSKN_TRY(if (!e->q) throw std::runtime_error("chk: qwen3_5 engine only"); e->q->chk_stats(out, reset)) }
 extern "C"  int yskn_chk_fault(yskn_engine* e, int kind, const char* name, int a, int b) { YSKN_TRY(if (!e->q) throw std::runtime_error("chk: qwen3_5 engine only"); e->q->chk_fault(kind, name, a, b)) }
@@ -301,6 +305,7 @@ extern "C" YSKN_API int yskn_prefill_rows_k20(yskn_engine* e, const int32_t* ids
   YSKN_TRY(if (!e->q) throw std::runtime_error("prefill_rows_k20: qwen3_5 engine only"); ms_gate(e); *out_first = e->q->prefill_rows_k20(ids, n, out_argmax, k20_ids, k20_vals)) }
 extern "C" YSKN_API int yskn_bdraft_step(yskn_engine* e, int n_ctx, int pos_ctx, int draft, int use_graph) { YSKN_TRY(ms_gate(e); if (!e->q) throw std::runtime_error("bdraft: qwen3_5 engine only"); e->q->bdraft_step(n_ctx, pos_ctx, draft, use_graph)) }
 extern "C" YSKN_API int yskn_bdraft_draft(yskn_engine* e, int use_graph, int32_t* drafts) { YSKN_TRY(ms_gate(e); if (!e->q) throw std::runtime_error("bdraft: qwen3_5 engine only"); e->q->bdraft_draft(use_graph); if (drafts) e->q->bdraft_out(drafts)) }
+extern "C" YSKN_API int yskn_bdraft_cands(yskn_engine* e, int32_t* ids, float* vals) { int n = 0; YSKN_TRY(ms_gate(e); if (!e->q) throw std::runtime_error("bdraft: qwen3_5 engine only"); n = e->q->bdraft_cands(ids, vals)); return n; }
 extern "C"  int yskn_bdraft_debug(yskn_engine* e, const float* feats, int n, int pos0, int32_t anchor, float* hidden, int32_t* top_ids, float* top_vals, int32_t* path) {
   YSKN_TRY(if (!e->q) throw std::runtime_error("bdraft: qwen3_5 engine only"); ms_gate(e); e->q->bdraft_debug(feats, n, pos0, anchor, hidden, top_ids, top_vals, path)) }
 extern "C" YSKN_API int yskn_bdraft_ring(yskn_engine* e, int layer, int slot0, int n, uint16_t* k_out, uint16_t* v_out) { YSKN_TRY(if (!e->q) throw std::runtime_error("bdraft: qwen3_5 engine only"); e->q->bdraft_ring(layer, slot0, n, k_out, v_out)) }

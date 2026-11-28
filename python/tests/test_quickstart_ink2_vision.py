@@ -94,7 +94,7 @@ class SwitchTests(unittest.TestCase):
     def test_on_is_0_3_5(self):
         """As shipped since 0.3.5: the published commit with the image file and an engine zip with image input."""
         self.assertTrue(QS.ENGINE_IMAGE)                                           # the engine zip of 0.3.5 reads images
-        self.assertEqual((QS.QS_VERSION, QS.ENGINE_ZIP), ("0.3.5", "yasakani-0.3.5-win-x64.zip"))
+        self.assertEqual((QS.QS_VERSION, QS.ENGINE_ZIP), ("0.4.0", "yasakani-0.4.0-win-x64.zip"))
         self.assertRegex(QS.ENGINE_SHA256, r"^[0-9a-f]{64}$")                     # written by the release step with the zip
         self.assertEqual(QS.INK2_IMAGE, {
             "revision": "e186e163e6d140f767a0fd1f1d31ed93e1a3e1a8",

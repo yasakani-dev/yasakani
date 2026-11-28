@@ -120,6 +120,11 @@ public:
   
   
   int state_hash(uint64_t* out, int max_out);
+  // hist_dump: the conv history of one layer (3 x Q35_CONV uint16) into host memory, for the width tests.  Read only.
+  int hist_dump(int layer, uint16_t* out, int max_words);
+  // layer_hash: FNV of one layer's conv history (which = 0) or recurrent state S (which = 1), for the width tests.  Read only;
+  // call it only after a read is finished (a dump in the middle of a read disturbs the next pass).
+  int layer_hash(int layer, int which, uint64_t* out);
   
   
   
@@ -205,7 +210,8 @@ public:
   
   int prefill_rows_k20(const int32_t* ids, int n, int32_t* out_argmax, int32_t* k20_ids, float* k20_vals);
   void bdraft_debug(const float* feats, int n, int pos0, int32_t anchor, float* hidden, int32_t* top_ids, float* top_vals, int32_t* path);
-  int  bdraft_out(int32_t* drafts);            
+  int  bdraft_out(int32_t* drafts);
+  int  bdraft_cands(int32_t* ids, float* vals);   // J x 16 drafter candidates (host out)            
   void bdraft_ring(int layer, int slot0, int n, uint16_t* k_out, uint16_t* v_out);   
   // multi-stream pass (experimental): the rows of several streams (requests) ride in one pass of this engine (the carrier).  A pass
   // has at most 16 rows.  ms_bind sets the stream slots: n_light light slots (the state containers of a stream: recurrent states,
@@ -336,7 +342,7 @@ private:
   void bdr_block(int rows);                                                       
   void bdr_block_impl(int* toks, bool hcap, int rows);   
   void chk_after(std::initializer_list<DevTensor*> ts, int M, const int8_t* qx, const float* alpha);
-  float* cap_ = nullptr; std::vector<int> cap_layers_;
+  float* cap_ = nullptr; std::vector<int> cap_layers_; int cap_stage_ = 0;   // 0: h_ after the layer, 1: h_ after the SSM/attn block, 2: core_
   float* d_k20v_ = nullptr; int* d_k20i_ = nullptr; bool k20_on_ = false;   
   struct ChkEntry { long long* c = nullptr; unsigned long long key = 0; int w_max = 127; int idx = 0; };
   std::map<const DevTensor*, ChkEntry> chk_; Q35ChkStats* d_mstats_ = nullptr; int chk_on_ = 1;
@@ -344,10 +350,11 @@ private:
   DevTensor* tensor_by_name(const std::string& name);
   void drop_pass_graphs();
 public:
-  bool hcap_on() const { return bdr_.on && bdr_.hb_on; }            
-  void hcap_pass(int on) { bdr_.hb_pass = on; }                     
-  void hcap_cfg(int* out8) const;                                     
-  void lfrow_device_table() { wk_set_ = true; }                       
+  bool hcap_on() const { return bdr_.on && bdr_.hb_on && tbcap_ == 0; }
+  bool greedy_on() const { return smp_ == 0; }
+  void hcap_pass(int on) { bdr_.hb_pass = on; }
+  void hcap_cfg(int* out16) const;
+  void lfrow_device_table() { wk_set_ = true; }
 private:
   void apply_kz();   
   [[noreturn]] static void no_d3() { throw std::runtime_error("qwen3_5 engine: lazy D3 mode is not supported (use the eager MTP draft)"); }
@@ -520,9 +527,10 @@ private:
   cudaGraphExec_t gexec_alt_ = nullptr;   
   std::map<int, cudaGraphExec_t> rgraph_;                     
   int opt_replay_graph_ = 1, opt_single_commit_ = 1, opt_catchup_nosync_ = 1, opt_mtp_log_ = 0;
+  int decl_nc_ = 0; int run_nc_ = -1;   // in-pass state write: rows the caller will commit
   int opt_lfrow_ = 0; bool wk_now_ = false, wk_set_ = false; uint8_t* d_wk_ = nullptr; uint8_t* h_wk_ = nullptr; int wk_slot_ = 0;
   WkCopy* d_wkcopy_ = nullptr; int n_wkcopy_ = 0;
-  bool wk_pass(int M, bool commit, int head_mode) const { return opt_lfrow_ && !commit && M <= HM_ && head_mode == HEAD_ALL; }
+  bool wk_pass(int M, bool commit, int head_mode) const { return opt_lfrow_ && wk_set_ && !commit && M <= HM_ && head_mode == HEAD_ALL; }
   void wk_plain_table();
   int opt_kconv_ = 1;      
   bool specx_scope_ = false;  

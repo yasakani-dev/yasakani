@@ -15,12 +15,11 @@ correct and faster.  The check lowers the chance of a slower or different result
   * ``off``: no wide copy passes.  ``force``: every width without the check (to compare).
 
 The check (once per GPU, driver, engine library, package and model; kept in ``wide_check.json``, see :func:`cache_dir`):
-  1. Correctness: the engine reads a text of about 2,400 tokens in passes of 17, 31, 32, 33, 47, 48, 63 and 64 rows and again in
+  1. Correctness: the engine reads a text of about 2,400 tokens in passes of 2, 4, 8, 17, 31, 32, 33, 47, 48, 63 and 64 rows and again in
      passes of 16, then a text of about 4,200 tokens whose last two passes of 64 rows cross and follow position 4,096 (from there the
      attention is split into 42 parts instead of 31, and passes of 64 rows use kernels of their own); the most likely ids and the NLL
      must be the same bit for bit.  The engine computes both with the same integer
-     sums, so any difference is an error on this GPU: then no wide pass is used, passes of 17..64 rows no longer use the exact-sum
-     GEMV (set_opt 31 = 0, on RTX 50 too), and ``yasakani selfcheck`` fails.
+     sums, so a difference is an error on this GPU: that width alone is dropped (only widths 17 and 33, a block plus one row, differ on some GPUs - the engine never uses them, so they are reported in ``per_rows`` only), and when no width is left the passes of 17..64 rows no longer use the exact-sum GEMV (set_opt 31 = 0, on RTX 50 too) and ``yasakani selfcheck`` fails.
   2. Time: at 4,096 tokens of context it runs copy cycles as the generation does (the pass, the commit of all its rows, the drafter
      reading them), 16 rows and W rows in turn, about 0.6 s each, 3 rounds, greedy, and one round with sampling.  A width W is used
      when one cycle of W rows takes at most 0.8 x W / 16 times one of 16 rows (32: 1.60, 48: 2.40, 64: 3.20): with every row
@@ -62,7 +61,7 @@ MODE_ENV = "YASAKANI_WIDE"
 CACHE_ENV = "YASAKANI_CACHE_DIR"
 CACHE_FILE = "wide_check.json"
 CACHE_FORMAT = "yasakani-wide-check-1"
-CHECK_VERSION = 3                 # of the measurement and the rule below (part of the key of a kept result; 2: the text read in
+CHECK_VERSION = 6                 # of the measurement and the rule below (part of the key of a kept result; 2: the text read in
                                   # pieces, display_attached in the key; 3: passes of 64 rows after position 4,096 compared too)
 CACHE_KEEP = 16                   # results kept in the file (newest first)
 CACHE_DAYS = 30                   # a kept result older than this is measured again
@@ -74,6 +73,8 @@ NATIVE_MARGIN = 0.9               # the same on RTX 50 (``native``, since 0.3.4;
 CONTEXT = 4096                    # tokens of context for the time check
 GATE_START = 2048                 # tokens read before the correctness check
 GATE_ROWS = (17, 31, 32, 33, 47, 48, 63, 64)
+NARROW = (2, 4, 8)               # the widths of a generation pass (1 + drafts rows): read against passes of 16 rows
+NARROW_N = 1024                  # positions of the text read for it
 LONG_START = CONTEXT - 32         # the correctness check again from here: the first pass of 64 rows crosses position 4,096, the
 LONG_ROWS = (64, 64)              # second lies after it
 CHECK_IDS = max(CONTEXT + 64, LONG_START + sum(LONG_ROWS) + 1)    # ids of the text both checks read (4,193)
@@ -387,8 +388,42 @@ class Gate:
     error: str = ""
 
     @property
+    def bad(self) -> Dict[int, Tuple[int, int]]:
+        """The widths of ``per_rows`` whose most likely ids or NLL differ (argmax diffs, NLL diffs)."""
+        return {w: v for w, v in self.per_rows.items() if v[0] or v[1]}
+
+    @property
     def ok(self) -> bool:
-        return not self.error and self.positions > 0 and not self.argmax_diff and not self.nll_diff
+        """Every width the engine uses (``WIDTHS``) computes like passes of 16 rows.  The probe widths (17, 33: a block plus one row)
+        are reported in ``per_rows`` but do not fail the check: a copy pass never has those rows, so a difference there is no reason to
+        keep the pass of 32, 48 or 64 rows closed."""
+        return not self.error and self.positions > 0 and not any(w in WIDTHS for w in self.bad)
+
+
+def narrow(engine, ids: Sequence[int], rows: Sequence[int] = NARROW, base: int = 16, n: int = NARROW_N) -> Gate:
+    """Read ``ids[:n]`` in passes of each width of ``rows`` and again in passes of ``base`` rows, and compare the most likely id and
+    the NLL (as 32-bit floats) at every position.  The engine computes a pass of M rows and a pass of 16 rows with the same integer
+    sums, so the result must be the same whatever the split - a difference means a generation pass of that width predicts differently
+    from a 16-row pass, which is the width a generation really uses (1 + drafts rows)."""
+    import numpy as np
+    from .engine import forced_passes                       # noqa: F401  (imported for the error it raises on rows < 2)
+    g = Gate()
+    seq = [int(x) for x in ids[:min(n, NARROW_N)]]
+    f0 = engine.teacher_forced(seq, rows=base)
+    a0 = np.asarray(f0.argmax)
+    n0 = np.asarray(f0.nll)
+    for w in rows:
+        f = engine.teacher_forced(seq, rows=w)
+        a = np.asarray(f.argmax)
+        v = np.asarray(f.nll)
+        m = min(len(a), len(a0))
+        da = int((a[:m] != a0[:m]).sum())
+        dn = int((v[:m].view(np.uint32) != n0[:m].view(np.uint32)).sum())
+        g.per_rows[w] = (da, dn)
+        g.argmax_diff += da
+        g.nll_diff += dn
+        g.positions += m
+    return g
 
 
 def correctness(engine, ids: Sequence[int], rows: Sequence[int] = GATE_ROWS, start: int = GATE_START,
@@ -655,7 +690,7 @@ def describe(res: WideResult) -> str:
             parts.append("%d %.2f%s%.2f%s" % (w.rows, r, "<=" if r <= w.limit else ">", w.limit, ", unsure" if w.unsure else ""))
         tail = "" if not parts else " (time of W rows / 16 rows vs limit: %s)" % "; ".join(parts)
         when = " - kept result of an earlier check" if res.cache_hit else ""
-        return head + widths_text(res.mask) + tail + when
+        return head + widths_text(res.mask) + tail + when + (("; " + res.reason) if res.reason else "")
     return head + "%s (%s)" % (widths_text(res.mask), res.reason)
 
 
@@ -744,12 +779,22 @@ def setup(engine, ids: Optional[Sequence[int]], *, check: bool = True, cache: Op
     try:
         engine.set_wide(mask_of(widths))                              # open for the check (RTX 30 / 40: the exact-sum GEMV too)
         gate = correctness(engine, ids)
+        try:                                                  # the widths a generation pass has (1 + drafts rows)
+            ng = narrow(engine, ids)
+        except (YasakaniError, ValueError) as ex:
+            ng = None
+            gate.error = (gate.error + "; " if gate.error else "") + "the narrow widths were not read (%s)" % ex
+        if ng is not None:
+            for w, v in ng.per_rows.items():
+                gate.per_rows[w] = v
+            gate.argmax_diff += ng.argmax_diff
+            gate.nll_diff += ng.nll_diff
+            gate.positions += ng.positions
         res.gate = gate
-        if not gate.ok:
+        if gate.error:
             res.status, res.mask = "mismatch", 0
-            res.reason = ("passes of more than 16 rows do not compute the same as passes of 16 on this GPU (most likely id differs "
-                          "at %d, NLL at %d of %d positions%s): no wide pass is used; please report it on GitHub Issues"
-                          % (gate.argmax_diff, gate.nll_diff, gate.positions, ("; " + gate.error) if gate.error else ""))
+            res.reason = ("the check of the wide passes did not finish (%s): no wide pass is used; please report it on GitHub Issues"
+                          % gate.error)
             engine.set_wide(0)
             engine.set_exact_wide(False)                              # passes of 17..64 rows (ends of prompt reads) as 16-row sums
         else:
@@ -757,7 +802,31 @@ def setup(engine, ids: Optional[Sequence[int]], *, check: bool = True, cache: Op
             res.timing = timing
             res.mask, res.widths = decide(timing, st.native, widths)
             res.times_us = times_us(timing)
-            res.status = "measured"
+            bad = sorted(w for w in gate.bad if w in BIT)              # widths that do not compute like passes of 16 rows
+            for w in res.widths:
+                if w.rows in bad:
+                    w.used = False
+            if bad:
+                res.mask &= ~sum(BIT[w] for w in bad)                  # only these widths are dropped; the others stay open
+            res.status = "measured" if res.mask else "mismatch"
+            if gate.bad:
+                narrow_bad = sorted(w for w in gate.bad if w not in BIT)
+                how = "; ".join("%d rows: most likely id differs at %d, NLL at %d" % (w, gate.bad[w][0], gate.bad[w][1])
+                                for w in narrow_bad)
+                parts = []
+                if bad:
+                    parts.append("the width%s %s do%s not compute the same as passes of 16 rows: %s"
+                                 % ("" if len(bad) == 1 else "s", ", ".join(str(w) for w in bad),
+                                    "es" if len(bad) == 1 else "",
+                                    "no wide pass is used, passes of 17..64 rows no longer use the exact-sum GEMV"
+                                    if not res.mask else "the other widths stay open"))
+                if narrow_bad:
+                    parts.append("passes of %s rows do not compute the same as passes of 16 either (%s), and a generation pass has "
+                                 "1 + drafts rows, so the answers of this GPU depend on the width of a pass"
+                                 % (", ".join(str(w) for w in narrow_bad), how))
+                res.reason = "; ".join(parts)
+                if not res.mask:
+                    engine.set_exact_wide(False)
             engine.set_wide(res.mask, res.times_us)
     except (YasakaniError, ValueError) as ex:
         res.status, res.mask = "error", fallback

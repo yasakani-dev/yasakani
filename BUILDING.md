@@ -15,8 +15,14 @@ Linux では CUDA Toolkit 13、GCC、CMake を入れ、下の「Linux (building 
 | Build tools | CMake (3.24 or newer is required) and Ninja |
 | Target | one DLL with machine code for compute capability 8.6 (`sm_86`, RTX 30 series), 8.9 (`sm_89`, RTX 40 series) and 12.0 (`sm_120`, RTX 50 series), plus PTX for `compute_120`. Tested on the RTX 5090 only |
 
-The `yskn.dll` on the release page is the build of 0.3.1 (SHA-256 `41a6bbd9bc1f865c79fb77274b84c26f7d167acb3a58097e7e5933bc723d3f5c`,
-64,692,736 bytes): the source of 0.2.0 plus two options that are off by default, `--suppress-tokens`
+The `yskn.dll` on the release page is the build of 0.4.0 (SHA-256 `9b4d867c75f8fd99c73adb4310e00770aeffe6f3fdd3c29858131f78ea6fadcc`,
+70,103,040 bytes), compiled cleanly from the 0.4.0 source for all three GPU generations (`86-real;89-real;120`) with the tool versions of
+the table above (MSVC 19.44.35226, CUDA 13.2.78, CMake + Ninja). It adds the multi-branch speculative look-ahead tree (ω mode) with exact
+Tensor Core ancestor attention (`src/q35_atx.cu`, `src/q35_bdraft.cu`, `src/lfrow_kernels.cuh`, `src/engine35.cpp`, `src/engine35.hpp`,
+`src/specx.cpp`, `src/specx.hpp`, `src/q35.hpp`), pattern edit copy (`src/edit_copy.hpp`), and deterministic copy-loop / width-invariance
+controls (`src/c_api.cpp`, `src/lnord.cu`).
+Earlier, the `yskn.dll` of 0.3.1 to 0.3.5 (SHA-256 `41a6bbd9bc1f865c79fb77274b84c26f7d167acb3a58097e7e5933bc723d3f5c`,
+64,692,736 bytes) was the source of 0.2.0 plus two options that are off by default, `--suppress-tokens`
 ([#26](https://github.com/yasakani-dev/yasakani/pull/26)) and `--yarn2` ([#27](https://github.com/yasakani-dev/yasakani/pull/27)), in
 `include/yskn_abi.h`, `src/args.hpp`, `src/c_api.cpp`, `src/engine35.cpp`, `src/engine35.hpp`, `src/misc_kernels.cu`, `src/pm_test.cu`,
 `src/q35.hpp` and `src/q35_kernels.cu`. These files were compiled again in a copy of the build folder of 0.2.0 with the tool versions of

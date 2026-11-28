@@ -44,8 +44,12 @@ __global__ void __launch_bounds__(128) wk_conv_kernel(WkConvArgs W) {
   if (kind == 2 && tid == 0) { c_dt = A.dt_bias[head]; c_al = A.A_log[head]; }
   pdl_wait(); pdl_trigger();
   const float w0 = bf2f(cw0), w1 = bf2f(cw1), w2 = bf2f(cw2), w3 = bf2f(cw3);
-  auto xin = [&](int r) { return r >= 0 ? bf2f(A.mixed[(size_t)r * Q35_CONV + c]) : bf2f(hv[r - dp + 3]); };              
-  const float s1 = xin(dp - 3), s2 = xin(dp - 2), s3 = xin(dp - 1), x = bf2f(A.mixed[(size_t)t * Q35_CONV + c]);          
+  auto xin = [&](int r) { return r >= 0 ? bf2f(A.mixed[(size_t)r * Q35_CONV + c]) : bf2f(hv[r - dp + 3]); };
+  const bool wbdt_c = (W.wk && W.wk[48] == 2);
+  const int r3c = dp >= 1 ? (wbdt_c ? (int)W.wk[64 + t]  : dp - 1) : (dp - 1);
+  const int r2c = dp >= 2 ? (wbdt_c ? (int)W.wk[64 + r3c] : dp - 2) : (dp - 2);
+  const int r1c = dp >= 3 ? (wbdt_c ? (int)W.wk[64 + r2c] : dp - 3) : (dp - 3);
+  const float s1 = xin(r1c), s2 = xin(r2c), s3 = xin(r3c), x = bf2f(A.mixed[(size_t)t * Q35_CONV + c]);
   const float acc = __fadd_rn(__fadd_rn(__fadd_rn(__fmul_rn(w0, s1), __fmul_rn(w1, s2)), __fmul_rn(w2, s3)), __fmul_rn(w3, x));
   const float act = rbf(q35_silu(rbf(acc)));
   if (kind == 2) {
@@ -79,18 +83,27 @@ void launch_wk_conv(const Q35ConvArgs& A, const uint8_t* wk, cudaStream_t st) {
 __global__ void __launch_bounds__(128) wk_state_kernel(WkStateArgs W) {
   const Q35StateArgs& A = W.a;
   __shared__ float sk[2][Q35_GD], sq[2][Q35_GD], skv[2][4][32], so[2][4][32];
+  __shared__ float s_fork[4][32][32];
   const int h = blockIdx.x, tid = threadIdx.x, warp = tid >> 5, lane = tid & 31, j = blockIdx.y * 32 + lane, kh = h / (Q35_GV / Q35_GK);
   float* const Sp = A.S + (size_t)h * Q35_GD * Q35_GD;
   float s[32];
   #pragma unroll
   for (int r = 0; r < 32; ++r) s[r] = __ldcg(Sp + (size_t)(warp * 32 + r) * Q35_GD + j);
-  const bool tab = W.wk != nullptr;                                        
-  unsigned long long sw0 = 0ull, sw1 = 0ull;
-  if (tab) { const uint4 u = __ldcg(reinterpret_cast<const uint4*>(W.wk + 16));
-    sw0 = (unsigned long long)u.x | ((unsigned long long)u.y << 32); sw1 = (unsigned long long)u.z | ((unsigned long long)u.w << 32); }
-  auto step = [&](int i) { return tab ? (int)(((i < 8 ? sw0 : sw1) >> (8 * (i & 7))) & 0xffull) : i; };   
+  const bool tab = W.wk != nullptr;
+  const bool wbdt = tab && (W.wk[48] == 2);
+  unsigned long long sw0 = 0ull, sw1 = 0ull, ow0 = 0ull, ow1 = 0ull;
+  if (tab) {
+    const uint4 u = __ldcg(reinterpret_cast<const uint4*>(W.wk + 16));
+    sw0 = (unsigned long long)u.x | ((unsigned long long)u.y << 32); sw1 = (unsigned long long)u.z | ((unsigned long long)u.w << 32);
+    if (wbdt) {
+      const uint4 v = __ldcg(reinterpret_cast<const uint4*>(W.wk + 80));
+      ow0 = (unsigned long long)v.x | ((unsigned long long)v.y << 32); ow1 = (unsigned long long)v.z | ((unsigned long long)v.w << 32);
+    }
+  }
+  auto step = [&](int i) { return tab ? (int)(((i < 8 ? sw0 : sw1) >> (8 * (i & 7))) & 0xffull) : i; };
+  auto wop  = [&](int i) { return (int)(((i < 8 ? ow0 : ow1) >> (8 * (i & 7))) & 0xffull); };
   pdl_wait(); pdl_trigger();
-  if (A.n_commit > 0) {                                                    
+  if (A.n_commit > 0) {
     const int gt = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x + tid;
     if (gt < Q35_CONV) { const int n = A.n_commit; uint16_t o[3], nw[3];
       #pragma unroll
@@ -104,13 +117,21 @@ __global__ void __launch_bounds__(128) wk_state_kernel(WkStateArgs W) {
     k = A.k[((size_t)t * Q35_GK + kh) * Q35_GD + tid]; q = A.q[((size_t)t * Q35_GK + kh) * Q35_GD + tid];
     g = A.g[(size_t)t * Q35_GV + h]; b = A.beta[(size_t)t * Q35_GV + h]; v = A.v[((size_t)t * Q35_GV + h) * Q35_GD + j]; };
   float nk = 0.f, nq = 0.f, ng = 0.f, nb = 0.f, nv = 0.f;
-  int e = A.M > 0 ? step(0) : 0, prow = 0;                                 
+  int e = A.M > 0 ? step(0) : 0, prow = 0;
   if (A.M > 0) ld(e & 0x7f, nk, nq, ng, nb, nv);
   for (int i = 0; i < A.M; ++i) {
-    const int pb = i & 1, row = e & 0x7f; const bool leaf = (e & 0x80) != 0;                  
+    const int pb = i & 1, row = e & 0x7f;
+    const int op = wbdt ? wop(i) : ((e & 0x80) ? 4 : 0);
+    const bool pop_f  = (op & 1) != 0;
+    const bool leaf   = (op & 4) != 0;
+    const bool push_f = (op & 16) != 0;
+    if (pop_f) {
+      #pragma unroll
+      for (int r = 0; r < 32; ++r) s[r] = s_fork[warp][r][lane];
+    }
     sk[pb][tid] = nk; sq[pb][tid] = nq;
     const float eg = q35_exp(ng), bt = nb, vj = nv;
-    const int en = i + 1 < A.M ? step(i + 1) : 0;                                             
+    const int en = i + 1 < A.M ? step(i + 1) : 0;
     if (i + 1 < A.M) ld(en & 0x7f, nk, nq, ng, nb, nv);
     __syncthreads();
     if (i > 0 && warp == 0) { const int qb = pb ^ 1;
@@ -119,7 +140,7 @@ __global__ void __launch_bounds__(128) wk_state_kernel(WkStateArgs W) {
     if (!leaf) {
       #pragma unroll
       for (int r = 0; r < 32; ++r) { s[r] = __fmul_rn(s[r], eg); kv = __fadd_rn(kv, __fmul_rn(s[r], sk[pb][warp * 32 + r])); }
-    } else {                                                                                  
+    } else {
       #pragma unroll
       for (int r = 0; r < 32; ++r) { const float sr = __fmul_rn(s[r], eg); kv = __fadd_rn(kv, __fmul_rn(sr, sk[pb][warp * 32 + r])); }
     }
@@ -130,7 +151,11 @@ __global__ void __launch_bounds__(128) wk_state_kernel(WkStateArgs W) {
     if (!leaf) {
       #pragma unroll
       for (int r = 0; r < 32; ++r) { s[r] = __fadd_rn(s[r], __fmul_rn(sk[pb][warp * 32 + r], d)); o = __fadd_rn(o, __fmul_rn(s[r], sq[pb][warp * 32 + r])); }
-    } else {                                                                                  
+      if (push_f) {
+        #pragma unroll
+        for (int r = 0; r < 32; ++r) s_fork[warp][r][lane] = s[r];
+      }
+    } else {
       #pragma unroll
       for (int r = 0; r < 32; ++r) { const float sr = __fadd_rn(__fmul_rn(s[r], eg), __fmul_rn(sk[pb][warp * 32 + r], d)); o = __fadd_rn(o, __fmul_rn(sr, sq[pb][warp * 32 + r])); }
     }
@@ -139,7 +164,7 @@ __global__ void __launch_bounds__(128) wk_state_kernel(WkStateArgs W) {
       #pragma unroll
       for (int r = 0; r < 32; ++r) Sp[(size_t)(warp * 32 + r) * Q35_GD + j] = s[r];
     }
-    prow = row; e = en;                                                                       
+    prow = row; e = en;
   }
   __syncthreads();
   if (A.M > 0 && warp == 0) { const int qb = (A.M - 1) & 1;
@@ -244,8 +269,15 @@ __global__ void __launch_bounds__(128) wk_attention_kernel(WkAttnArgs W) {
   pdl_wait(); pdl_trigger();
   if (!A.early) base = *A.d_pos;
   const int len = base + dp + 1, per = (len + A.splits - 1) / A.splits, t0 = split * per, t1 = min(len, t0 + per);                     
-  const int own = base + tok;                                              
-  auto sl_of = [&](int t) { return (size_t)(t == len - 1 ? own : t); };    
+  const int own = base + tok;
+  const bool wbdt_a = (W.wk && W.wk[48] == 2);
+  const int mend_a = wbdt_a ? (base + (int)W.wk[96 + tok]) : (len - 1);
+  const uint8_t ap_a = wbdt_a ? W.wk[112 + tok] : 0u;
+  auto sl_of = [&](int t) -> size_t {
+    if (t == len - 1) return (size_t)own;
+    if (wbdt_a && t >= mend_a) return (size_t)(base + (int)((t == mend_a) ? (ap_a & 0xfu) : (ap_a >> 4)));
+    return (size_t)t;
+  };
   #pragma unroll
   for (int i = 0; i < PF; ++i) { const int t = t0 + warp + 4 * i;
     if (t < t1 && (t >= base || !A.early)) { ldkv(kq[i], vq[i], ksq[i], vsq[i], sl_of(t)); } }   

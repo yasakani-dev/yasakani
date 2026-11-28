@@ -44,7 +44,10 @@ DEFAULT_ENV: Dict[str, str] = {
     "YSKN_Q35_PMAX": "2048",
     "YSKN_Q35_SHARED_WEIGHTS": "1",
     "YSKN_Q35_ATX": "1",
-    "YSKN_TB_CAP": "1",
+    # 0: the 8-bit row-scaled KV.  The packed KV (k = 5) quantises a group of rows together, so a
+    # row's result depends on how many rows share the pass: reads of 2..64 rows then differ in the
+    # last bits from 16-row reads (see .\17-note).  Width invariance needs 0.
+    "YSKN_TB_CAP": "0",
     "YSKN_TB_VIT2": "1",
     "YSKN_ATX_PK3_PLUT": "1",
     "YSKN_ATX_PKV": "3",
@@ -66,8 +69,9 @@ SPEC_FIELDS = ("gamma", "use_d0", "use_d1", "d0_nmin", "d0_nmax", "d0_priority_n
                "use_d3", "d3_steps", "d1_bigram", "d1_static", "d3_extend", "d3_lazy", "d3_gate", "gamma_long", "long_n", "d1_trigram",
                "eos1", "eos2", "long_d0", "sel", "cost_tok_us", "cost_row_us", "cost_nd_us", "nd_auto", "prmode", "cost_row2_us",
                "lfrow", "lfrow_q_pm", "mark_tok", "cost_tok_k", "cost_row2_k", "cost_nd_k", "bdraft", "bdr_long_n", "bdr_adapt",
-               "bdr_probe", "bdr_d0_len", "prefill_head", "snap", "snap_tok", "copy_rows", "copy_index")
-assert len(SPEC_FIELDS) == 46
+               "bdr_probe", "bdr_d0_len", "prefill_head", "snap", "snap_tok", "copy_rows", "copy_index",
+               "frontier", "det", "wide_need0")
+assert len(SPEC_FIELDS) == 49
 
 DEFAULT_SPEC: Dict[str, int] = dict(
     gamma=7, use_d0=1, use_d1=1, d0_nmin=2, d0_nmax=8, d0_priority_n=3, extend=1, d1_rejected=1, auto_gamma=0, use_graph=1,
@@ -75,7 +79,12 @@ DEFAULT_SPEC: Dict[str, int] = dict(
     eos1=EOS_IDS[0], eos2=EOS_IDS[1], long_d0=8, sel=0, cost_tok_us=0, cost_row_us=0, cost_nd_us=0, nd_auto=0, prmode=0,
     cost_row2_us=0, lfrow=0, lfrow_q_pm=300, mark_tok=-1, cost_tok_k=0, cost_row2_k=0, cost_nd_k=0, bdraft=1, bdr_long_n=4,
     bdr_adapt=1, bdr_probe=4, bdr_d0_len=15, prefill_head=1, snap=1, snap_tok=IM_START,
-    copy_rows=64, copy_index=1)            # 0.1.4: copy passes up to 64 rows, copy index with cursor (copy_rows=16, copy_index=0 = 0.1.3)
+    copy_rows=64, copy_index=1,            # det = 1: the copy loop decides by the tokens the passes carried, not by their times,
+    # 0.1.8: det=1 and wide_need0=0 are the defaults now.  det takes the clock out of the copy loop (free generation is
+    # unchanged, token for token); wide_need0=0 tries a wide copy pass as soon as a copy run starts (edits -4.7% on the three
+    # edit tasks of bench --edit, prose and code unchanged).  bdr_adapt stays 1: =2 halves the diff of the long edit but costs
+    # 8.9% on a free-generation math prompt, so it is a preset and not the default.
+    frontier=0, det=1, wide_need0=0)      # wide_need0: fully accepted copy passes before a wide one is tried (2 = 0.1.7)                     # so that a run is repeatable; frontier is experimental (yskn_ms.h) and stays 0            # 0.1.4: copy passes up to 64 rows, copy index with cursor (copy_rows=16, copy_index=0 = 0.1.3)
 assert tuple(DEFAULT_SPEC) == SPEC_FIELDS
 
 # settings that decide how the engine keeps its state between calls; not tunable per request
@@ -117,6 +126,9 @@ class RuntimeProfile:
         env = dict(DEFAULT_ENV)
         env["YSKN_BDR_SHEAD"] = str(pack.draft_head)
         env["YSKN_TB_PROFILE"] = str(pack.kv_profile)
+        for k in ("YSKN_OMEGA", "YSKN_OMEGA_T12", "YSKN_OMEGA_T16", "YSKN_HCAP", "YSKN_BLK16_LOG"):
+            if k in os.environ:      # experimental getenv() knobs of the engine library: the shell value passes through
+                env[k] = os.environ[k]
         for k, v in (overrides or {}).items():
             if not k.startswith("YSKN_"):
                 raise ValueError("engine settings start with YSKN_: " + k)
